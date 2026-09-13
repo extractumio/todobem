@@ -1,0 +1,30 @@
+# Build output
+/todobem
+/todobem.exe
+/dist/
+*.test
+*.out
+*.prof
+coverage.*
+
+# Session logs are private conversations — never commit them (a synthetic fixture needs `git add -f`)
+*.jsonl
+
+# Local scratch; `cmd/dump <id> export.json` writes a full model with verbatim user messages
+/export*.json
+*.log
+
+# Validation reports quote real sessions verbatim; they stay local (summary: docs/VALIDATION.md)
+/docs/validation-reports/
+# Russian draft; goes public only as an English docs/ARCHITECTURE.md
+/docs/ARCHITECTURE.html
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Claude Code local overrides
+.claude/settings.local.json

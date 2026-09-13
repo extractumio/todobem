@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#17222d">
+<title>todobem · Agent sessions</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<aside class="sidebar" aria-label="Main navigation">
+  <button class="brand" data-action="sessions" aria-label="todobem, open sessions"><i class="brand-mark" aria-hidden="true"></i>todobem</button>
+  <p class="brand-caption">A little less time in the loop.</p>
+  <p class="eyebrow nav-label">WORKSPACE</p>
+  <button class="nav-item" data-action="sessions" id="navSessions"><span data-icon="grid"></span>Sessions<span class="nav-count" id="navCount"></span></button>
+  <button class="nav-item" data-action="session" id="navSession"><span data-icon="timeline"></span>Session view</button>
+  <p class="eyebrow nav-label">IN FOCUS</p>
+  <div id="focusCard"></div>
+  <div class="sidebar-bottom">
+    <button class="nav-item" data-action="guide"><span data-icon="help"></span>Reading the timeline</button>
+    <div class="sidebar-note" id="sidebarNote">Codex rollouts · local only<br><span class="note-sub">todobem / 0.1</span></div>
+  </div>
+</aside>
+<div class="main-shell">
+  <header class="topbar">
+    <div class="breadcrumb" id="breadcrumb"></div>
+    <button class="brand mobile-brand" data-action="sessions"><i class="brand-mark" aria-hidden="true"></i>todobem</button>
+    <div class="top-actions">
+      <span class="live-label" id="liveLabel"></span>
+      <nav class="mobile-nav" aria-label="Mobile navigation"><button class="btn" data-action="sessions" id="mobileSessions">Sessions</button><button class="btn" data-action="session" id="mobileSession">View</button></nav>
+      <button class="btn icon-only ghost" data-action="guide" aria-label="How to read the timeline"><span data-icon="help"></span></button>
+    </div>
+  </header>
+  <main id="main" tabindex="-1"><div class="loading">Loading…</div></main>
+</div>
+<dialog class="inspector" id="inspector" aria-labelledby="inspectorTitle"></dialog>
+<dialog class="guide-dialog" id="guide" aria-labelledby="guideTitle"></dialog>
+<div class="tooltip" id="tooltip" role="tooltip"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="app.js"></script>
+</body>
+</html>
