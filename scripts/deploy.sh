@@ -11,7 +11,11 @@
 #
 # It KEEPS the loopback bind (127.0.0.1) from the security model  nothing is exposed off-host.
 # For a remote host, tunnel it:  ssh -L 7788:127.0.0.1:7788 <host>   then open the URL locally.
-# Override with env: ADDR=127.0.0.1:9000  CODEX=~/.codex  RULES=/path/rules.json  todobem flags after --
+# Override with env: ADDR=127.0.0.1:9000  CODEX=~/.codex  RULES=/path/rules.json  AUTH=/path/auth.key
+# (AUTH=off leaves the UI open)  todobem flags after --
+#
+# The UI is locked until a one-time token is used. `start` prints a login link (one use, 5 min);
+# later: ./todobem token   (or ./todobem token -revoke to end every session).
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -20,6 +24,7 @@ BINARY=${BINARY:-todobem}
 ADDR=${ADDR:-127.0.0.1:7788}
 CODEX=${CODEX:-$HOME/.codex}
 RULES=${RULES:-}
+AUTH=${AUTH:-}
 PIDFILE=${PIDFILE:-$ROOT/todobem.pid}
 LOGFILE=${LOGFILE:-$ROOT/todobem.out}
 CMD=${1:-start}
@@ -59,6 +64,14 @@ url_hint() {
   case "$host" in 127.0.0.1|localhost|"[::1]") echo "remote host? tunnel it:  ssh -L $port:127.0.0.1:$port <this-host>  then open http://127.0.0.1:$port/" ;; esac
 }
 
+# login_hint prints a one-time login link to THIS terminal only — never into the log file.
+login_hint() {
+  if [ "$AUTH" = off ]; then echo "auth: OFF"; return; fi
+  set -- -addr "$ADDR"
+  [ -n "$AUTH" ] && set -- "$@" -auth "$AUTH"
+  "./$BINARY" token "$@" || echo "could not mint a login token; run: ./$BINARY token" >&2
+}
+
 case "$CMD" in
   stop) stop ;;
   status) if running; then echo "running (pid $(cat "$PIDFILE"))  log: $LOGFILE"; else echo "not running"; fi ;;
@@ -66,16 +79,20 @@ case "$CMD" in
     build; warn_addr
     set -- -addr "$ADDR" -codex "$CODEX" -open=false "$@"
     [ -n "$RULES" ] && set -- "$@" -rules "$RULES"
+    [ -n "$AUTH" ] && set -- "$@" -auth "$AUTH"
     echo "running in foreground: ./$BINARY $*"
+    echo "login link: run  ./$BINARY token  in another terminal"
     exec "./$BINARY" "$@" ;;
   start|"")
     build; warn_addr
     running && stop
     set -- -addr "$ADDR" -codex "$CODEX" -open=false "$@"
     [ -n "$RULES" ] && set -- "$@" -rules "$RULES"
-    nohup "./$BINARY" "$@" >"$LOGFILE" 2>&1 &
+    [ -n "$AUTH" ] && set -- "$@" -auth "$AUTH"
+    : >"$LOGFILE"; chmod 600 "$LOGFILE"   # the log names sessions; keep it to this user
+    nohup "./$BINARY" "$@" >>"$LOGFILE" 2>&1 &
     echo $! >"$PIDFILE"
     sleep 1
-    if running; then url_hint; echo "logs: $LOGFILE  stop: ./scripts/deploy.sh stop"; else echo "failed to start; see $LOGFILE" >&2; tail -n 20 "$LOGFILE" >&2 || true; exit 1; fi ;;
+    if running; then url_hint; login_hint; echo "logs: $LOGFILE  stop: ./scripts/deploy.sh stop"; else echo "failed to start; see $LOGFILE" >&2; tail -n 20 "$LOGFILE" >&2 || true; exit 1; fi ;;
   *) echo "usage: $0 [start|run|stop|status] [-- extra todobem flags]" >&2; exit 2 ;;
 esac

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/extractumio/todobem/internal/auth"
 	"github.com/extractumio/todobem/internal/classify"
 	"github.com/extractumio/todobem/internal/codex"
 	"github.com/extractumio/todobem/internal/model"
@@ -24,6 +25,7 @@ import (
 )
 
 type Server struct {
+	auth      *auth.Verifier // nil = the UI is open (-auth=off)
 	ix        *codex.Index
 	home      string
 	mu        sync.Mutex
@@ -35,6 +37,7 @@ type Server struct {
 	web       fs.FS
 	maxOpen   int
 	maxCached int
+	insights  *insightsSvc // /api/insights/*: period reports over the project's sessions
 }
 
 // cachedEntry is a fingerprint-validated model served without a parser. Its model is immutable
@@ -65,6 +68,7 @@ func NewWithCache(codexHome string, web fs.FS, cacheDir string) *Server {
 		codexHome = abs
 	}
 	s := &Server{ix: codex.NewIndex(codexHome), home: codexHome, opened: map[string]*codex.Session{}, lastUse: map[string]time.Time{}, cached: map[string]*cachedEntry{}, cache: store.New(cacheDir), web: web, maxOpen: 6, maxCached: 32}
+	s.insights = newInsights(s)
 	return s
 }
 
@@ -96,6 +100,7 @@ func (s *Server) Handler(listenAddr ...string) http.Handler {
 	mux.HandleFunc("/api/sessions/", s.handleSession)
 	mux.HandleFunc("/api/event", s.handleEvent)
 	mux.HandleFunc("/api/rules", s.handleRules)
+	mux.HandleFunc("/api/insights/", s.insights.handle)
 	static := http.FileServer(http.FS(s.web))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
@@ -106,10 +111,15 @@ func (s *Server) Handler(listenAddr ...string) http.Handler {
 		configuredHost = hostName(listenAddr[0])
 	}
 	next := gzipMiddleware(mux)
+	api := s.authGate(next) // API answers stay gzipped once the gate lets them through
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := hostName(r.Host)
 		if host == "" || (host != "localhost" && net.ParseIP(host) == nil && host != configuredHost) {
 			http.Error(w, "untrusted host", http.StatusForbidden)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			api.ServeHTTP(w, r)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -125,13 +135,7 @@ func hostName(authority string) string {
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	s.maybeScan(20 * time.Second)
-	s.mu.Lock()
-	opened := map[string]*codex.Session{}
-	for k, v := range s.opened {
-		opened[k] = v
-	}
-	s.mu.Unlock()
-	writeJSON(w, codex.Summaries(s.ix, opened))
+	writeJSON(w, s.summaries())
 }
 
 // session returns an opened (and refreshed) session, opening it on demand.
@@ -432,11 +436,23 @@ func validJSON(b []byte) []byte {
 }
 
 func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
+	defaults := map[classify.Phase]classify.Lifecycle{}
+	for p := range classify.Priority {
+		defaults[p] = classify.PhaseLifecycle(p)
+	}
 	writeJSON(w, map[string]any{
 		"rules":         classify.Rules,
 		"priority":      classify.Priority,
 		"builtin_rules": classify.BuiltinRuleCount(), // rules[:n] are built-in; rules[n:] are user-added
 		"review_skills": classify.ReviewSkillMatchers(),
+		// the lifecycle (SDLC stage) partition: stage order, the phase → stage defaults, the
+		// command kinds pinned to another stage, and the skill / role / path matchers
+		"lifecycle": map[string]any{
+			"stages":   classify.WorkLifecycles,
+			"defaults": defaults,
+			"pins":     classify.LifecyclePins,
+			"matchers": classify.Matchers(),
+		},
 	})
 }
 
@@ -468,4 +484,19 @@ func gzipMiddleware(next http.Handler) http.Handler {
 		defer gz.Close()
 		next.ServeHTTP(&gzipWriter{ResponseWriter: w, gz: gz}, r)
 	})
+}
+
+// Roots lists the root sessions the index knows, newest first (for command-line tools that walk
+// sessions the way the UI's list does).
+func (s *Server) Roots() []codex.FileMeta { return s.ix.Roots() }
+
+// Model gives fn a read-only view of a session's current model, served from the parsed-session
+// cache when its fingerprint still matches and parsed otherwise — the same path as the UI.
+func (s *Server) Model(id string, fn func(*model.Session)) error {
+	v, err := s.loadModel(id, false)
+	if err != nil {
+		return err
+	}
+	v.View(fn)
+	return nil
 }

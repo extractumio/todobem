@@ -1,6 +1,7 @@
 # Build output
 /todobem
 /todobem.exe
+/dump
 /dist/
 *.test
 *.out
@@ -33,3 +34,18 @@ coverage.*
 /todobem.pid
 /todobem.out
 /.todobem
+
+# Local idea notes (never committed)
+/TODO.md
+
+# Scratch that lands in the tree by accident: screenshots and stray files dropped in the root,
+# machine output of review / fix tools (the human-readable REVIEW*.md records stay tracked)
+/*.png
+/*.jpg
+/*.jpeg
+/*.gif
+/--*
+/docs/*.json
+/docs/*.jsonl
+/docs/*.txt
+/docs/*.log

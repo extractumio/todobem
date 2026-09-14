@@ -19,16 +19,21 @@ source-agnostic (a Claude Code adapter would not touch the UI), but the server i
 Stack: Go 1.22, standard library only; vanilla JS + SVG embedded into the binary — no build
 step, no npm. Module `github.com/extractumio/todobem`; AGPL-3.0 (`LICENSE`) with a commercial
 option from Extractum (`LICENSING.md`). Run `go run ./cmd/todobem -open=false` →
-`http://127.0.0.1:7788` (flags `-addr`, `-codex`, `-open`, `-rules`, `-cache`). A user rules overlay
+`http://127.0.0.1:7788` (flags `-addr`, `-codex`, `-open`, `-rules`, `-cache`, `-auth`); the UI is
+locked until a link from `todobem token` is used. A user rules overlay
 (`-rules`/`$TODOBEM_RULES`/`~/.todobem/rules.json`) adds project-specific commands and
-review-skill names to the built-in classifier; see `docs/SCHEMA.md`. Parsed sessions are cached to
-disk (`-cache`/`$TODOBEM_CACHE`, `off` to disable). `make`/`scripts/deploy.sh` build and run it.
+review/plan skill names, reviewer agent roles and document paths that pin a lifecycle stage; see
+`docs/SCHEMA.md`. Parsed sessions are cached to disk (`-cache`/`$TODOBEM_CACHE`, `off` to
+disable). `make`/`scripts/deploy.sh` build and run it.
 
 ## Repository map — where to look, where to change
 
 Pipeline: `codex.Index.Scan` → `codex.Open`/`Refresh` → `laneParser` (one file → lane) →
 `model.Derive` → `server` JSON → `app.js`.
-- `cmd/todobem/main.go` — entry point, flags, embeds `web/`. `cmd/todobem/web/` — the SPA
+- `cmd/todobem/main.go` — entry point, flags, subcommands (`token`, `cache`), embeds `web/`;
+  `unknown.go` — `todobem unknown`: unmatched commands and telemetry gaps across sessions, the
+  loop the `resolve-unknown` skill runs (`.claude/skills/resolve-unknown/`, symlinked from
+  `.codex/skills/`) to grow the user overlay. `cmd/todobem/web/` — the SPA
   (`index.html`, `app.js` timeline/breakdown/inspector, `app.css`); `cmd/todobem/app_test.js` —
   its regressions (`node --test`, no dependencies).
 - `cmd/dump/` — dev tool: totals, per-lane partition check, groups, longest and unknown ops.
@@ -39,20 +44,42 @@ Pipeline: `codex.Index.Scan` → `codex.Open`/`Refresh` → `laneParser` (one fi
 - `internal/classify/` — `Rules` in `classify.go` is the single source of truth for command →
   phase/kind (served at `/api/rules`), plus the heredoc and remote/queued regexes right below
   it; `shell.go` splits commands and masks heredocs; `Identity` normalizes commands for retry
-  groups. Definitions: `docs/SCHEMA.md`, `docs/DESIGN.md` §2.
+  groups; `lifecycle.go` holds the SDLC-stage type, the phase → stage defaults, the kind pins
+  and the skill / role / path matchers; `userconfig.go` the overlay. Definitions:
+  `docs/SCHEMA.md`, `docs/DESIGN.md` §2.
 - `internal/model/` — `model.go` is the normalized schema (`docs/SCHEMA.md`); `derive.go`
-  builds the exclusive partition, stages, retry groups, background flags and totals.
+  builds the exclusive partition, stages, retry groups, background flags and totals;
+  `lifecycle.go` assigns the second partition (turn signal → op pin → phase default, the
+  operations-before-release guard, model output to the next tool call).
 - `internal/server/` — JSON API on loopback: `/api/sessions`, `…/{id}` (`?refresh=1` re-parses),
   `…/{id}/version`, `…/{id}/op/{opId}`, `/api/event`, `/api/rules`; host check, gzip, LRU of 6
-  parser-backed sessions plus a separate pool of cache-served models.
+  parser-backed sessions plus a separate pool of cache-served models. `auth.go` is the gate:
+  `/api/auth`, `POST /api/login` (one-time token → HttpOnly SameSite=Strict cookie, Path=/api),
+  `POST /api/logout`; static files stay open, every other `/api/*` answers 401 without a session.
+- `internal/auth/` — the lite authentication: key file (0600, refused when group/world-readable,
+  re-read on change so `todobem token -revoke` kills every session live), 52-char one-time tokens
+  (5-minute window, single use, refused when minted before the server booted), stateless
+  HMAC-signed sessions; token and session MACs are domain-separated. `todobem token` lives in
+  `cmd/todobem/main.go`.
+- `internal/insights/` — the Insights report (`docs/INSIGHTS-SPEC.md`): `facts.go` extracts a
+  compact per-session `Facts` from the model (pure; never reads a rollout); `detect_*.go` hold the
+  rule catalogue, one pure function per rule (`Facts → Result`); `report.go` selects the period's
+  sessions, aggregates per rule and key, ranks groups and cards; `scan.go` parses pending sessions
+  on demand through a `Loader`. `internal/server/insights.go` serves `/api/insights/{report,scan,
+  status,rules}` and owns the facts sidecar (`store.LoadSidecar/SaveSidecar`, `<id>.facts.json.gz`).
+  `cmd/todobem/web/insights.js` is the page; every visible string is in its `INSIGHT_TEXT`.
 - `internal/store/` — the derived-session cache (gzipped JSON per session). A default open serves
   the cache when its fingerprint (source files + a hash of the effective classifier) still matches;
   a grown file or a rule change auto-invalidates it; the Refresh button forces a full re-parse.
-  Cache is derived, local, gitignored, safe to delete. Design: `docs/DESIGN.md` §4.
+  Cache is derived, local, gitignored, safe to delete; `todobem cache -prune` drops the entries
+  the current codex home does not list. Design: `docs/DESIGN.md` §4.
 - `docs/` — `DESIGN.md` (format research, design, review outcomes), `SCHEMA.md` (schema, phases,
   kinds), `VALIDATION-PROTOCOL.md` + `VALIDATION.md` (ground-truth checks), `REVIEW*` (history).
 - A new rule: a row in `Rules`, a case in `classify_test.go`, `SCHEMA.md` if a phase or kind
-  changes. A new source: a package under `internal/` emitting `model.*` only. A schema change:
+  changes; a stage pin goes in `LifecyclePins` with a case in `userconfig_test.go`. A new insight:
+  a `Detector` in `internal/insights/detect_*.go` (a literal signal, no duration threshold that
+  explains anything, no estimate), a positive and a negative fixture, a text entry in
+  `INSIGHT_TEXT` written in plain English, a row in `docs/INSIGHTS-SPEC.md` §5. A new source: a package under `internal/` emitting `model.*` only. A schema change:
   `model.go`, `SCHEMA.md`, `app.js` and `cmd/dump` together.
 
 ## Product rules — every number's credibility rests on these
@@ -67,10 +94,19 @@ Pipeline: `codex.Index.Scan` → `codex.Open`/`Refresh` → `laneParser` (one fi
 6. Session totals are the root lane's exclusive partition: `sum(by_phase) == elapsed_ms`
    (unit-tested on totals, checked per lane by `cmd/dump`). Sub-agent time is `parallel`, never
    added to root totals. Background ops (outlived their turn) leave the partition: thin bars.
-7. Lane fills and every number use the raw partition; LLM time is its own phase. Stage brackets
-   are a grouping view, never a total. Raw op-sum is shown next to exclusive time.
-8. Nothing leaves the machine. Loopback bind, read-only access to the rollout tree, `/api/event`
-   serves only recorded source spans, no disk writes, no telemetry, no outbound calls. Ever.
+7. Lane fills and every activity number use the raw partition; LLM time is its own phase. The
+   lifecycle (SDLC stage) partition is a *second* exclusive partition of the same segments —
+   `sum(by_lifecycle) == sum(by_phase)` — that attributes model output to the stage of the tool
+   call that followed it, or to the turn's harness signal; model output nothing followed stays
+   `llm`. It is always shown with its model/tools split and never compared per key with the
+   activity partition. Stage brackets are a grouping view, never a total. Raw op-sum is shown
+   next to exclusive time.
+8. Nothing leaves the machine, and nothing is shown to a stranger. Loopback bind **and** a
+   token-locked UI: every `/api/*` route needs a session opened with a one-time `todobem token`
+   (key file `~/.todobem/auth.key`, 0600, the root of trust; `-auth=off` is an explicit choice
+   the server announces). Read-only access to the rollout tree, `/api/event` serves only recorded
+   source spans, the only writes are under `~/.todobem/` (cache, key), no telemetry, no outbound
+   calls. Ever.
 
 ## Engineering rules
 
@@ -85,7 +121,13 @@ Pipeline: `codex.Index.Scan` → `codex.Open`/`Refresh` → `laneParser` (one fi
   decoded, tool outputs reduced to `call_id`, per-file byte offset, rewrite detection by
   `ordinal`. Raw events are never kept in memory; ops store `(file, off, len)`.
 - Search before writing; share duplicated rules and parsers, not similar shapes. No commented-out
-  code, no `TODO` without an owner. Fix an unrelated bug only when one sentence explains it.
+  code, no `TODO` without an owner.
+- **Leave it better than you found it.** A defect, quirk or misleading output you notice while
+  reading code, verifying a change or exercising the product on real sessions is yours to fix in
+  the same change — with a regression case (a row in the rule table, a fixture, a JS test) so it
+  cannot come back, and one line in the report — not to list for later. Defer only when the fix
+  needs a decision (a schema or classification semantics change, a product-rule trade-off): then
+  name the decision. Scope stays what one sentence explains; a wider fix is its own change.
 
 ## Privacy and security
 
@@ -104,8 +146,9 @@ Pipeline: `codex.Index.Scan` → `codex.Open`/`Refresh` → `laneParser` (one fi
   mismatch`, no new `unknown` heads. Classifier changes also pass `docs/VALIDATION-PROTOCOL.md`.
 - UI changes: exercise the real page in a browser (session list, timeline, brush, inspector,
   Follow mode) and check the console. Tests and source reading do not replace this.
-- Report what changed, why, how it was verified, what was excluded and **Noticed, not fixed**.
-  Unverified work is unfinished; a missing gate is absent, never passing.
+- Report what changed, why, how it was verified, what was excluded and **Noticed, not fixed** —
+  the last list holds only items that need a decision (see "Leave it better"); anything else
+  noticed was fixed. Unverified work is unfinished; a missing gate is absent, never passing.
 
 ## Workflow and git
 

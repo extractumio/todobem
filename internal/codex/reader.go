@@ -16,7 +16,6 @@ import (
 // line prefix only, so multi-megabyte `compacted` lines are never JSON-decoded.
 var skipTypes = map[string]bool{
 	"compacted":                          true,
-	"token_usage_record":                 true,
 	"world_state":                        true,
 	"inter_agent_communication_metadata": true,
 }

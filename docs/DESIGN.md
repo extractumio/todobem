@@ -36,7 +36,10 @@ parent via `session_meta.payload.source.subagent.thread_spawn.parent_thread_id`
 | `response_item/message` role user/assistant/developer | `content_item_kinds` distinguishes `user.text` from injected `agents_md.instructions`, `environment_context` | fallback for user text |
 | `response_item/agent_message` | `author`/`recipient` (`/root/x` → `/root`) | result-returned markers |
 | `compacted` | replacement history, **up to 5 MB per line** | skipped without decoding |
-| `token_usage_record`, `event_msg/token_count`, `world_state`, `turn_context`, `inter_agent_communication_metadata` | | skipped |
+| `event_msg/token_count` | `total_token_usage` (cumulative), `last_token_usage` (the call just made), written more than once per call, restarts on resume, all-zero around compactions | tokens per lane, turn and compaction (`codex/tokens.go`) |
+| `turn_context` | model, reasoning effort, collaboration mode per turn | turn model/effort, plan mode |
+| `token_usage_record` (CLI ≥ 0.153, one per model call) | `turn_id`, `root_turn_id`, per-call / per-turn / per-thread usage | `root_turn_id` on sub-agent files only (the harness's link from a sub-agent turn to the root turn) |
+| `world_state`, `inter_agent_communication_metadata` | | skipped |
 
 Facts that shape the design:
 * Command timing is exact in new files (`started_at_ms`/`completed_at_ms` match `duration`); in old files (< ~0.150) only the call/output timestamps exist and a long process is polled with `write_stdin{session_id}` → the op must be stitched from `exec_command` + its polls.
@@ -76,29 +79,78 @@ turn never closed, next turn/meta → no_telemetry(orphaned_turn)
 * Phase priority also resolves parallel overlaps within a lane when building the exclusive partition.
 
 **Retry / iteration groups** use only explicit identity: the normalized command string
-(redirections `> file 2>&1` and `| tee` stripped, env prefixes kept) of test/build/release
-ops. ≥2 occurrences in the session → a group; attempt N = N-th occurrence in start order.
+(redirections `> file 2>&1` and `| tee` stripped, env prefixes kept) of test/build/release ops
+and of infra ops whose kind is a verdict (`docker`, `kubectl`, `ssh`, `brew`, … — a literal
+allowlist, `classify.infraAttemptKinds`; `kill` exits 1 when nothing matched, so routine kinds
+stay out; added 2026-09-14 after a failed `docker run …` and its identical retry proved invisible
+as a retry). ≥2 occurrences in the session → a group; attempt N = N-th occurrence in start
+order; an infra group additionally needs a failed attempt (all-successful repeats such as
+`ssh host 'cat lease.json'` ×7 are polls, not retries).
 Kinds: `first`, `retry_after_failure` (previous attempt exit≠0), `rerun` (previous passed/aborted).
 Develop/explore ops between a failed attempt and the next attempt of the same group → kind `fix`;
-infra ops there → `infra_recovery`; wait ops there → `worker_queue`. No text similarity, no duration.
+infra ops there → `infra_recovery` (unless they are attempts of a group themselves); wait ops
+there → `worker_queue`. No text similarity, no duration.
 
-**Code-review spans (skill runs)**: the harness records an *actual* skill invocation by injecting
-`skills.selected_skill_instructions` (a `<skill><name>…` message, role user). Parsing that name —
-never prose in a user/model message — gives a `skill` marker and sets the turn's `skill`. A
-review/cleanup skill (`code-review`, `codereview`, `simplify`, plus user-added names) marks the
-turn `review`. This is a span/bucket (`totals.review_ms`, drawn as a thin band under the fill),
-deliberately **not** a phase: the partition and the visible LLM time stay untouched. Span =
-selecting turn, so a review reused across later turns without a fresh invocation undercounts — an
-honest floor rather than an inferred total.
+**Lifecycle: the second partition (SDLC stages)**. The user asked for code review "as a phase
+like Coding" and a breakdown shaped after the SDLC (planning, requirements, design,
+implementation, review, testing, release, maintenance). A single enum cannot say "this `go test`
+ran inside a code review" without losing either the activity (retry groups, kinds, the validated
+rule table) or the purpose — so every segment carries two labels, `phase` (what the call was) and
+`lc` (which stage it served), each an exclusive partition of the same segments
+(`sum(by_lifecycle) == sum(by_phase) == elapsed_ms`, tested). Signals are harness-level and
+literal only (corpus of 2,175 rollouts checked, 2026-09-14): Codex plan collaboration mode
+(`turn_context.collaboration_mode.mode`, enum `plan|default` — 0 plan turns seen so far),
+`update_plan` calls creating a plan (1,075 calls), the harness's `skills.selected_skill_instructions`
+injection (`code-review-cc` 358×), Codex review mode, a sub-agent's spawn `agent_role`
+(`pragmatic` 905× — a user-defined reviewer, so overlay-mapped, not built-in), PR/MR review verbs,
+and a short list of operations kinds (logs, service control, diagnostics). Model-chosen sub-agent
+`task_name`s (review 594×, design 63×) are prose and rejected as a source. Nothing in a Codex
+rollout marks requirements or design: those stages exist, the guide says "no built-in detector",
+and the overlay's `lifecycle.skills/roles/paths` can pin them. A turn signal covers the whole
+turn (tests, waits, model output); otherwise model output takes the stage of the next tool call
+in the turn (the stage-bracket rule) or stays an honest `llm` bucket. The one order-dependent
+rule is the operations guard — an operations candidate before the lane's first release op is
+implementation — the user's "maintenance cannot precede coding" constraint, made a same-lane
+demotion rather than a detector after the design review (`docs/REVIEW-lifecycle.md`).
 
 **Two detection sources**: classification is built-in plus an optional user overlay
-(`--rules`/`$TODOBEM_RULES`/`~/.todobem/rules.json`) for project-specific commands and
-review-skill names, appended to the same table and served at `/api/rules` (SCHEMA.md).
+(`--rules`/`$TODOBEM_RULES`/`~/.todobem/rules.json`) for project-specific commands, lifecycle
+pins on those commands, and the skill / role / path matchers, appended to the same tables and
+served at `/api/rules` (SCHEMA.md).
 
 **Stages for the coarse view**: per lane, `think` segments are attributed to the
 phase of the *next* tool op in the same turn (the model was deciding what to do next); then
 consecutive equal-phase segments coalesce into stage blocks. Raw phases (with think separate)
 remain available in the breakdown. Nothing is dropped — stage blocks are a view over segments.
+
+## 2b. Insights — the period report (2026-09-14)
+
+*Where is my harness inefficient?* is answered by `internal/insights`, a layer over the derived
+model that never reads a rollout: `Extract(*model.Session) Facts` builds a compact per-session
+record (turns with tokens, gaps with what preceded them, waits with sub-agent concurrency, retry
+groups with their command shape, compactions with context and re-read, long and unknown ops,
+lifecycle × model × effort cells); every rule of the catalogue (`detect_*.go`) is a pure function
+`Facts → Result{Findings, Measurable, Reason, NoData, Stats}`; `report.go` selects the closed
+sessions of a project whose last activity lies inside the period (live sessions never count),
+aggregates findings per rule and per key (a command shape, a gap bucket, an agent type), computes
+exposure, distribution and the printed denominator, arranges cards in seven groups ordered by
+exposure on the chosen axis (time; or tokens not from cache + output — cached input and reasoning
+are shown, never weighted) and keeps the ten best evidence rows per card. `Info` cards (long
+breaks, counts, shares) are measurements: shown, never ranked or totalled. No estimate of savings
+exists anywhere (the design review showed each one rested on something the log does not record);
+a card without evidence is not rendered; "did not happen" and "no data" are separate counts.
+
+Cross-session keys are command *shapes* (phase + head word + subcommand): exact commands almost
+never recur across sessions (temp paths, MR numbers — 0 of 662 in the largest project), shapes do
+(7 of 40 failing shapes in 2+ sessions). Retry groups themselves stay exact (product rule 5).
+
+Facts are cached as a sidecar of the model cache (`<id>.facts.json.gz`, same fingerprint plus
+`FactsVersion`): a report over 47 cached sessions builds in well under a second; sessions with no
+cache are "pending" and are parsed only on the page's Analyze, by a scanner with its own parse
+path (a private `codex.Session`, refreshed once, model cached when closed, dropped after
+Extract) that never touches the server's session pools. An LLM step in the product was
+considered and rejected: it would trade "nothing leaves the machine" for one job (clustering
+unknown commands) the user can run in their own agent from the card's list.
 
 ## 3. Lanes and aggregation
 
@@ -127,9 +179,11 @@ remain available in the breakdown. Nothing is dropped — stage blocks are a vie
   cache by (path,size,mtime). Names from `~/.codex/session_index.jsonl`. Root threads only;
   sub-agent files are attached to their parent.
 * Open session: parse root + descendant files streaming line-by-line. The line type is read
-  from the prefix (`"type":"…"`); skip-set lines (`compacted`, `token_usage_record`,
-  `world_state`, `turn_context`, `token_count`, …) are never JSON-decoded, and long skipped lines
-  are discarded chunk by chunk without buffering. Tool-output lines (52 MB in the sample) are
+  from the prefix (`"type":"…"`); skip-set lines (`compacted`, `world_state`,
+  `inter_agent_communication_metadata`) are never JSON-decoded, and long skipped lines are
+  discarded chunk by chunk without buffering; the small per-call lines (`token_count`,
+  `turn_context`, and `token_usage_record` on sub-agent files) are decoded for tokens, model
+  and effort. Tool-output lines (52 MB in the sample) are
   reduced to their `call_id` by prefix scan. Measured on the 151 MB sample (286 MB with
   sub-agents): 40% of bytes decoded, 1.5 s wall, 63 MB RSS.
 * Each file keeps `offset` (end of last complete line) and the last `ordinal`. Refresh = `stat`;
@@ -149,7 +203,7 @@ remain available in the breakdown. Nothing is dropped — stage blocks are a vie
   disable). A default open serves the cache when its fingerprint still matches, so an unchanged
   session is returned without parsing (measured on the 354 MB sample: ~3.7 s cold parse → ~0.16 s
   cache load across a restart). The fingerprint is the source files (path/size/mtime, from the
-  index — no parse) **plus a hash of the effective classifier** (rule table + review matchers +
+  index — no parse) **plus a hash of the effective classifier** (rule table + lifecycle pins and matchers +
   schema version): if a file grew or a rule changed, the entry is stale and the session is
   re-parsed automatically — the cache never serves a wrong number or an outdated classification.
   The Refresh button (`?refresh=1`) forces a full re-parse and rewrites the cache. Live sessions
@@ -157,6 +211,46 @@ remain available in the breakdown. Nothing is dropped — stage blocks are a vie
   pool so browsing history never evicts a live parser-backed session. `Operation.Detail`
   (`json:"-"`, kept out of the payload) travels in a sidecar map inside the cache file so the
   inspector's per-op detail works from a cache hit without re-reading the source line.
+
+## 4b. Access control (lite authentication, 2026-09-14)
+
+The viewer shows whatever the agents read and wrote, so a loopback bind alone was not enough:
+anyone at an unlocked laptop, any local user on a deploy host reached through `ssh -L`, saw
+everything. Threats covered: a stranger at the browser; other local users on a shared host; a
+foreign page in the same browser riding the session (CSRF); a script injection in our own UI
+(it renders agent text through `esc()`, but defense in depth). Not covered: same-user malware —
+it can read the key and the rollouts anyway.
+
+Design (`internal/auth`, `internal/server/auth.go`, `todobem token`):
+- **Key file is the root of trust.** `~/.todobem/auth.key`, 32 random bytes, 0600, refused if
+  group/world-readable, created by whichever of server or CLI runs first (`O_EXCL`, re-read on
+  `EEXIST`). Reading it is what authorises minting — the CLI never contacts the server.
+- **One-time token** (52 chars base32): `nonce ‖ issued ‖ session-ttl ‖ HMAC[:16]`. Accepted
+  within 5 minutes of minting, once (in-memory nonce set), and never if minted before the server
+  booted — that comparison closes the replay window a restart would open without persisting
+  nonces. Typed tokens are case-insensitive.
+- **Session** is stateless: `expiry ‖ nonce ‖ HMAC`, in an HttpOnly, SameSite=Strict cookie,
+  Path=/api, distinctive name, Max-Age only (no Secure — Safari drops it on plain http — no
+  Expires, no Domain; the expiry is inside the signed value). Cookie over localStorage because
+  an XSS bug could read localStorage and exfiltrate a bearer; it cannot read this cookie.
+  Survives restarts; revocation = rotate the key (`todobem token -revoke`), which the running
+  server notices on the next request because it re-reads the key file when its mtime/size
+  changes. Token and session MACs are domain-separated by a type byte.
+- **CSRF**: login/logout are JSON POSTs — a foreign page cannot send `application/json` without a
+  preflight, and we answer no CORS; `mime.ParseMediaType` decides, so `text/plain` and form
+  bodies are 415; non-POST is 405; a browser-declared `Sec-Fetch-Site: cross-site` is 403 on
+  every `/api/*`; the host check already closes DNS rebinding.
+- **Static files stay open** (no data in them); the lock screen is the SPA on a 401. The
+  token never reaches the server's stdout (a log file may be world-readable on a shared host):
+  `deploy.sh` mints it to the terminal and chmods the log 600; `-open` passes it straight to the
+  browser in the URL fragment, which the page scrubs with `history.replaceState`.
+- Residual, documented: cookies are not port-scoped, so a local and a tunnelled todobem on the
+  same port share a cookie jar with different keys — use different ports.
+
+Review record: approve with conditions (all taken): cookie not localStorage; stateless sessions;
+pre-boot rejection instead of persisted nonces; `mime.ParseMediaType`; no failure delay
+(goroutine-per-request rate-limits nothing); key re-read for live revocation; harness extensions
+for the 401 path.
 
 ## 5. Review outcomes (pragmatic review, 2026-09-12)
 

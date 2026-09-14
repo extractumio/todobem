@@ -3,13 +3,16 @@ BINARY ?= todobem
 ADDR   ?= 127.0.0.1:7788
 CODEX  ?= $(HOME)/.codex
 
-.PHONY: build run install test fmt vet clean deploy stop
+.PHONY: build run token install test fmt vet clean deploy stop
 
 build: ## compile the single binary (embeds web/)
 	go build -o $(BINARY) ./cmd/todobem
 
-run: build ## build then run in the foreground (loopback by default)
+run: build ## build then run in the foreground (loopback by default); the UI is token-locked
 	./$(BINARY) -addr $(ADDR) -codex $(CODEX)
+
+token: build ## print a one-time login link for the UI (see also: ./todobem token -revoke)
+	./$(BINARY) token -addr $(ADDR)
 
 install: ## go install todobem into $GOBIN / $GOPATH/bin
 	go install ./cmd/todobem

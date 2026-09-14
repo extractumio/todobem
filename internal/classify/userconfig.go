@@ -11,7 +11,8 @@ import (
 
 // UserConfig is the second detection source: a user-supplied overlay that augments the built-in
 // table for a custom setup — project-specific commands, in-house CI wrappers, and the names of
-// per-project review/cleanup skills. It never edits the built-ins; it only appends.
+// per-project skills, agent roles and document paths that pin an SDLC stage. It never edits the
+// built-ins; it only appends.
 //
 // File format (JSON), all fields optional:
 //
@@ -19,19 +20,40 @@ import (
 //	  "rules": [
 //	    {"match": "seg:^myci\\b",   "phase": "test",    "kind": "in-house ci"},
 //	    {"match": "deploy-thing",   "phase": "release", "kind": "deploy"},
-//	    {"match": "./dev integration", "phase": "test", "kind": "integration"}
+//	    {"match": "./dev integration", "phase": "test", "kind": "integration"},
+//	    {"match": "prodctl", "phase": "infra", "kind": "prodctl", "lifecycle": "operate"}
 //	  ],
-//	  "review_skills": ["audit-.*", "my-review"]
+//	  "lifecycle": {
+//	    "skills": {"review": ["audit-.*", "my-review"], "plan": ["^brainstorm$"]},
+//	    "roles":  {"review": ["^pragmatic$"]},
+//	    "paths":  {"design": ["(^|/)docs/DESIGN\\.md$"], "requirements": ["(^|/)SPEC\\.md$"]}
+//	  }
 //	}
 //
 // `rules` entries use the SAME match forms as the built-in table (a bare word or "word sub" for
 // an exact head match, or a "seg:"/"re:"/"head:"/"headpath:" regex). They are appended after the
 // built-ins, so a word rule with an existing key overrides it and a regex rule can only raise the
-// matched phase (highest priority wins). `review_skills` entries are regexes matched against a
-// selected skill's name, OR-ed with the built-in review-skill matcher.
+// matched phase (highest priority wins). An optional "lifecycle" pins the SDLC stage the command
+// serves (one of the eight work stages; see lifecycle.go), otherwise the phase's default applies.
+// `lifecycle.skills` / `roles` / `paths` are regexes keyed by the stage they pin, matched against
+// a selected skill's name, a sub-agent's spawn role, and the path of an edited file respectively;
+// they are OR-ed with the built-in matchers (only code review has one).
 type UserConfig struct {
-	Rules        []Rule   `json:"rules"`
-	ReviewSkills []string `json:"review_skills"`
+	Rules     []UserRule             `json:"rules"`
+	Lifecycle LifecycleMatcherConfig `json:"lifecycle"`
+}
+
+// UserRule is an overlay rule row: a built-in Rule plus an optional lifecycle pin for its kind.
+type UserRule struct {
+	Rule
+	Lifecycle Lifecycle `json:"lifecycle,omitempty"`
+}
+
+// LifecycleMatcherConfig holds the overlay's stage matchers, keyed by lifecycle value.
+type LifecycleMatcherConfig struct {
+	Skills map[Lifecycle][]string `json:"skills"`
+	Roles  map[Lifecycle][]string `json:"roles"`
+	Paths  map[Lifecycle][]string `json:"paths"`
 }
 
 var validPhases = map[Phase]bool{
@@ -64,13 +86,16 @@ func LoadUserConfig(path string) error {
 // ApplyUserConfig validates cfg and merges it. Exposed separately so callers can build a config
 // in memory (tests, other adapters) without a file.
 func ApplyUserConfig(cfg UserConfig, source string) error {
-	rules := make([]Rule, 0, len(cfg.Rules))
+	rules := make([]UserRule, 0, len(cfg.Rules))
 	for i, r := range cfg.Rules {
 		if r.Match == "" {
 			return fmt.Errorf("%s: rule %d has an empty match", source, i)
 		}
 		if !validPhases[r.Phase] {
 			return fmt.Errorf("%s: rule %d (%q) has unknown phase %q", source, i, r.Match, r.Phase)
+		}
+		if r.Lifecycle != "" && !IsWorkLifecycle(r.Lifecycle) {
+			return fmt.Errorf("%s: rule %d (%q) has unknown lifecycle %q", source, i, r.Match, r.Lifecycle)
 		}
 		for _, pfx := range []string{"re:", "seg:", "head:", "headpath:"} {
 			if len(r.Match) > len(pfx) && r.Match[:len(pfx)] == pfx {
@@ -84,20 +109,49 @@ func ApplyUserConfig(cfg UserConfig, source string) error {
 		}
 		rules = append(rules, r)
 	}
-	res := make([]*regexp.Regexp, 0, len(cfg.ReviewSkills))
-	for i, pat := range cfg.ReviewSkills {
-		if pat == "" {
-			return fmt.Errorf("%s: review_skills[%d] is empty", source, i)
+	compileSet := func(field string, raw map[Lifecycle][]string) (map[Lifecycle][]*regexp.Regexp, error) {
+		out := map[Lifecycle][]*regexp.Regexp{}
+		for lc, pats := range raw {
+			if !IsWorkLifecycle(lc) {
+				return nil, fmt.Errorf("%s: lifecycle.%s has unknown lifecycle %q", source, field, lc)
+			}
+			for i, pat := range pats {
+				if pat == "" {
+					return nil, fmt.Errorf("%s: lifecycle.%s.%s[%d] is empty", source, field, lc, i)
+				}
+				re, err := regexp.Compile("(?i)" + pat)
+				if err != nil {
+					return nil, fmt.Errorf("%s: lifecycle.%s.%s[%d] (%q) is an invalid regex: %w", source, field, lc, i, pat, err)
+				}
+				out[lc] = append(out[lc], re)
+			}
 		}
-		re, err := regexp.Compile("(?i)" + pat)
-		if err != nil {
-			return fmt.Errorf("%s: review_skills[%d] (%q) is an invalid regex: %w", source, i, pat, err)
-		}
-		res = append(res, re)
+		return out, nil
+	}
+	skills, err := compileSet("skills", cfg.Lifecycle.Skills)
+	if err != nil {
+		return err
+	}
+	roles, err := compileSet("roles", cfg.Lifecycle.Roles)
+	if err != nil {
+		return err
+	}
+	paths, err := compileSet("paths", cfg.Lifecycle.Paths)
+	if err != nil {
+		return err
 	}
 	// Commit only after every entry validated.
-	Rules = append(Rules, rules...)
-	reviewSkillREs = append(reviewSkillREs, res...)
+	for _, r := range rules {
+		Rules = append(Rules, r.Rule)
+		if r.Lifecycle != "" {
+			LifecyclePins[r.Kind] = r.Lifecycle
+		}
+	}
+	for _, lc := range WorkLifecycles { // fixed order keeps /api/rules and the fingerprint stable
+		lifecycleSkills[lc] = append(lifecycleSkills[lc], skills[lc]...)
+		lifecycleRoles[lc] = append(lifecycleRoles[lc], roles[lc]...)
+		lifecyclePaths[lc] = append(lifecyclePaths[lc], paths[lc]...)
+	}
 	compileRules()
 	return nil
 }

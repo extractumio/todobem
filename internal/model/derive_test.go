@@ -189,3 +189,97 @@ func TestPendingOperationAtLiveBoundaryPreservesPartition(t *testing.T) {
 		t.Fatalf("recorded completion retained live bounds: op=%+v session=%+v", op, s)
 	}
 }
+
+func TestInfraAttemptsFormGroupsAndLoneInfraStaysRecovery(t *testing.T) {
+	l := &Lane{ID: "L", Path: "/root", Started: 0, Ended: 1000}
+	l.Turns = []*Turn{{ID: "t", Start: 0, End: 1000, Status: "completed"}}
+	l.Ops = []*Operation{
+		// a test attempt fails, a lone infra command runs in between, the test is retried
+		mkOp("t1", classify.Test, 100, 150, "failed", "go test"),
+		mkOp("d0", classify.Infra, 160, 170, "completed", "docker compose up"),
+		mkOp("t2", classify.Test, 200, 250, "completed", "go test"),
+		// an infra command fails and is retried with the identical command: a group of its own
+		mkOp("d1", classify.Infra, 300, 390, "failed", "docker run --rm img cmd"),
+		mkOp("e1", classify.Code, 400, 410, "completed", ""),
+		mkOp("d2", classify.Infra, 500, 520, "completed", "docker run --rm img cmd"),
+		// a kill that exits 1 (nothing matched) carries no identity from the classifier
+		// (infraAttemptKinds) and never becomes an attempt, whatever its status
+		mkOp("k1", classify.Infra, 560, 561, "failed", ""),
+		mkOp("k2", classify.Infra, 570, 571, "failed", ""),
+		// an identical infra command repeated with every run succeeding is a poll, not retries
+		mkOp("p1", classify.Infra, 600, 610, "completed", "ssh host cat lease.json"),
+		mkOp("p2", classify.Infra, 700, 710, "completed", "ssh host cat lease.json"),
+		mkOp("p3", classify.Infra, 800, 810, "completed", "ssh host cat lease.json"),
+	}
+	s := &Session{ID: "s", Lanes: []*Lane{l}}
+	Derive(s, 2000)
+	get := func(id string) *Operation {
+		for _, o := range l.Ops {
+			if o.ID == id {
+				return o
+			}
+		}
+		return nil
+	}
+	if len(s.Groups) != 2 {
+		t.Fatalf("groups %+v", s.Groups)
+	}
+	if get("k1").Group != "" || get("k2").Group != "" || get("p1").Group != "" || get("p3").Group != "" || RoleOf(get("p2").Kind) != "" {
+		t.Fatalf("all-successful infra repeats must not group: %s/%s", get("p1").Group, get("p2").Kind)
+	}
+	if RoleOf(get("d1").Kind) != "first" || RoleOf(get("d2").Kind) != "retry_after_failure" || get("d2").Group != get("d1").Group {
+		t.Fatalf("infra attempts: %s %s (%s/%s)", get("d1").Kind, get("d2").Kind, get("d1").Group, get("d2").Group)
+	}
+	if RoleOf(get("e1").Kind) != "fix" || get("e1").Group != get("d1").Group {
+		t.Fatalf("code between infra attempts is a fix: %s %s", get("e1").Kind, get("e1").Group)
+	}
+	// d0 has an identity but no second occurrence: not an attempt, so it is still the recovery
+	// between the two test attempts
+	if RoleOf(get("d0").Kind) != "infra_recovery" || get("d0").Group == "" {
+		t.Fatalf("lone infra op between test attempts: %s group=%q", get("d0").Kind, get("d0").Group)
+	}
+}
+
+func TestQueryMissesAreNotFailures(t *testing.T) {
+	// the harness records status "failed" and the exit code for a search with no match or a
+	// read of a missing path; the record stays literal, the failure count does not include it
+	one, two := 1, 2
+	s := fixture()
+	l := s.Lanes[0]
+	miss := mkOp("q1", classify.Code, 132, 134, "failed", "")
+	miss.Kind, miss.Exit = "search", &one
+	missing := mkOp("q2", classify.Code, 136, 138, "failed", "")
+	missing.Kind, missing.Exit = "read", &two
+	edit := mkOp("e1", classify.Code, 140, 142, "failed", "")
+	edit.Kind, edit.Exit = "sed -i", &one
+	probe := mkOp("p1", classify.Code, 150, 152, "failed", "")
+	probe.Kind, probe.Exit = "probe", &one
+	l.Ops = append(l.Ops, miss, missing, edit, probe)
+	Derive(s, 2000)
+	if !miss.QueryMiss || !missing.QueryMiss || edit.QueryMiss {
+		t.Fatalf("query_miss: search=%v read=%v sed -i=%v", miss.QueryMiss, missing.QueryMiss, edit.QueryMiss)
+	}
+	if miss.Status != "failed" || *miss.Exit != 1 {
+		t.Fatalf("the literal record changed: %+v", miss)
+	}
+	// c1 (test, failed) + e1 (edit, exit 1) are failures; the three query misses are counted apart
+	if s.Totals.Failed != 2 || s.Totals.QueryMisses != 3 {
+		t.Fatalf("failed=%d query_misses=%d", s.Totals.Failed, s.Totals.QueryMisses)
+	}
+	if probe.Failure() || !edit.Failure() {
+		t.Fatalf("Failure: probe=%v edit=%v", probe.Failure(), edit.Failure())
+	}
+}
+
+func TestTotalsTokensSumLanes(t *testing.T) {
+	s := fixture()
+	s.Lanes[0].Tokens = &TokenUsage{Input: 100, Cached: 40, Output: 10, Reasoning: 5, Total: 110}
+	child := &Lane{ID: "C", Path: "/root/c", Parent: "L", Depth: 1, Started: 100, Ended: 500, Tokens: &TokenUsage{Input: 30, Output: 3, Total: 33}}
+	child.Turns = []*Turn{{ID: "ct", Start: 100, End: 500, Status: "completed"}}
+	s.Lanes = append(s.Lanes, child)
+	Derive(s, 2000)
+	want := TokenUsage{Input: 130, Cached: 40, Output: 13, Reasoning: 5, Total: 143}
+	if s.Totals.Tokens != want {
+		t.Fatalf("tokens %+v, want %+v", s.Totals.Tokens, want)
+	}
+}

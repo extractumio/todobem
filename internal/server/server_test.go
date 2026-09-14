@@ -181,6 +181,12 @@ func TestRulesPayload(t *testing.T) {
 		Rules        []map[string]any `json:"rules"`
 		BuiltinRules int              `json:"builtin_rules"`
 		ReviewSkills []string         `json:"review_skills"`
+		Lifecycle    struct {
+			Stages   []string                       `json:"stages"`
+			Defaults map[string]string              `json:"defaults"`
+			Pins     map[string]string              `json:"pins"`
+			Matchers map[string]map[string][]string `json:"matchers"`
+		} `json:"lifecycle"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
@@ -190,5 +196,9 @@ func TestRulesPayload(t *testing.T) {
 	}
 	if len(payload.ReviewSkills) == 0 {
 		t.Error("review_skills should list at least the built-in matcher")
+	}
+	lc := payload.Lifecycle
+	if len(lc.Stages) != 8 || lc.Defaults["code"] != "implement" || lc.Defaults["test"] != "test" || lc.Pins["pr review"] != "review" || lc.Pins["journalctl"] != "operate" || len(lc.Matchers["skills"]["review"]) == 0 {
+		t.Errorf("lifecycle tables not served: %+v", lc)
 	}
 }

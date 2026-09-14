@@ -17,7 +17,16 @@ Session {
   parallel      { agent_ms, wall_ms }  // sub-agent time, reported separately
   version       string     // changes when any file grew
 }
+SessionSummary (/api/sessions) { id, title, cwd, branch, started, updated, bytes, agents, live,
+  cli, model, last_answer, totals? }
 ```
+`last_answer` is the final message of the last completed root turn (`task_complete.
+last_agent_message`), verbatim and clipped, read from the file's tail by the index (no parse)
+and replaced by the parsed turn once the session is open. It is the only recorded description
+of what a session ended on: the Codex TUI's "recap" is generated in a temporary thread and
+never written to the rollout, so there is nothing to extract and nothing is generated (rule 2).
+The UI shows its first paragraph under the title and in the session list, labelled "last answer".
+
 
 ## Lane (= one agent thread)
 ```
@@ -29,14 +38,37 @@ Lane {
   depth     int
   file      string   // rollout path
   started, ended int64
-  turns     Turn[]      // {id, start, end, status: completed|aborted|open|orphaned, trigger: user|system, skill, review}
+  turns     Turn[]      // {id, start, end, status: completed|aborted|open|orphaned, trigger: user|system,
+                        //  skill, review, mode: "plan"|"", lc: turn-level lifecycle or ""}
   ops       Operation[] // may overlap (parallel commands)
   segments  Segment[]   // exclusive partition of [started, ended]
   stages    Stage[]     // coalesced view of segments (think attributed to next op)
   markers   Marker[]    // point events
-  active    [start,end][] // sub-agent: intervals between started/interacted and completed/interrupted
+  active    [start,end][] // the lane's own turns (derive.activeIntervals): a sub-agent is active inside its turns
+  tokens    {input, cached, cache_write, output, reasoning, total} // usage consumed by this thread: per-call usage
+                        // summed on every change of the cumulative counter — survives a counter restart (resumed thread)
+                        // and a forked child's inherited counter; never the last cumulative value, never a plain sum of records
+  by_phase, by_lifecycle {…: ms} // the two exclusive partitions of [started, ended]; same sum
+  lc        Lifecycle   // lane-level stage pinned by the agent's spawn role (overlay), or ""
 }
 ```
+
+## Turn
+```
+Turn {
+  id, start, end, status: completed|aborted|open|orphaned, trigger: user|system, model, effort,
+  final, skill, review, mode: "plan"|"", lc
+  tokens       {…}    // sum of the turn's counted model calls (the counting rule above); absent = no record
+  responses    int    // number of counted calls in the turn
+  first        {…}    // the first counted call: its uncached input (input − cached) is what the model re-read
+                      // after a gap; on a sub-agent's first turn it is the cost of being spawned. Absent = no record
+  context_peak int    // largest input of one call in the turn (the context size it reached)
+  root_turn    string // sub-agent turns, CLI ≥ 0.153: the root turn this turn ran inside, from the harness's
+                      // token_usage_record.root_turn_id; "" = not recorded. Never inferred
+}
+```
+Every `token_count` in the corpus sits inside a turn, so per lane `Σ turns.tokens == lane.tokens`
+(`cmd/dump` prints the check); a record outside a turn would count for the lane only.
 
 ## Operation
 ```
@@ -46,20 +78,29 @@ Operation {
   turn     string
   phase    Phase     // see table
   kind     string    // sub-kind, see table
+  lc       Lifecycle // SDLC stage served (see "Lifecycle"); lc_rule: the literal signal that decided it
   start, end int64
   open     bool      // no end recorded yet
-  status   string    // completed | failed | aborted | running | recorded
+  status   string    // completed | failed | aborted | running | recorded (the harness's word, verbatim)
   exit     *int      // exit code when known
+  query_miss bool    // status "failed" on a query kind (read, search, listing, probe, git diff/show/status/log,
+                     // read-only docker/gh/glab/kubectl queries; classify.queryKinds): the non-zero exit is an
+                     // answer, not a failed step. Derived; status and exit stay literal; not counted in failed_ops
   title    string    // short human label (command head / file / tool)
   detail   string    // full command / file list (≤ 2 KB)
-  identity string    // "<cwd>\n<normalized command>" for test/build/release ops ("" otherwise)
+  identity string    // "<cwd>\n<normalized command>" for test/build/release ops and verdict-kind infra ops (classify.infraAttemptKinds); "" otherwise
   group    string    // group id when member of a retry group
-  attempt  int       // attempt number within the group (test/build/release ops)
+  attempt  int       // attempt number within the group (test/build/release/infra ops)
   parallel int       // number of sibling commands started in the same tool call
   background bool    // outlived its turn (dev server, watcher): thin bar, excluded from totals
+  context  int       // compaction ops: input of the last counted call before it (the context it started from)
+  tokens   {…}       // compaction ops: the first counted call after it (what the model re-read); absent = none
   src      {file, off, len}   // exact source line for the inspector
 }
 ```
+Around every `ContextCompaction` the harness writes an all-zero `token_count` before (and often
+after) the item; zero records are never counted, so `context` is the last real call and `tokens`
+the first real call after (measured: contexts 190–246 k, re-reads ~26 k of which ~12–14 k uncached).
 
 ### Phases
 | phase | meaning | rule source |
@@ -82,6 +123,10 @@ Attempts of a retry group: `first`, `retry_after_failure` (previous attempt fail
 (previous passed/aborted), `parallel` (started before the previous attempt ended).
 Other ops on the same lane between a failed attempt and its retry, when exactly one group is
 in that state: `fix` (code), `infra_recovery` (infra), `worker_queue` (wait_worker).
+Kind `probe` (`test`, `[`, `which`, `type`, `command -v`): a shell question whose exit code is the
+answer. Query kinds (`classify.queryKinds`) are the code-phase kinds that only read state; their
+non-zero exits are `query_miss`, everything else — edits, patches, scripts, `shell`, every other
+phase — is a verdict.
 `remote` flag when the command targets a remote host (`ssh`, `*_REMOTE_HOST=`, `--remote`);
 `queued` flag when a `while … sleep` loop precedes the work inside one command.
 The kind is stored as `"<tool kind>|<role>"`.
@@ -125,7 +170,7 @@ partition, the raw sums or retry groups.
 
 ## Segment / Stage
 ```
-Segment { start, end, phase, op }   // exclusive; op = the winning op id or ""
+Segment { s, e, p: phase, lc: lifecycle, op }   // exclusive; op = the winning op id or ""
 Stage   { start, end, phase, ops:int, turn }
 ```
 
@@ -149,46 +194,109 @@ kept verbatim when safe normalization is uncertain.
 ## Totals
 ```
 Totals { elapsed_ms, in_turn_ms, raw_ops_ms, by_phase: {phase: ms}, raw_by_phase: {phase: ms},
-         by_kind: {kind: ms}, ops, turns, user_messages, system_messages, questions,
-         compactions, failed_ops, background_ms, background_ops, review_ms, reviews }
+         by_lifecycle: {lifecycle: ms}, by_kind: {kind: ms}, ops, turns, user_messages,
+         system_messages, questions, compactions, failed_ops, query_misses, background_ms, background_ops,
+         reviews, tokens }
 ```
-`sum(by_phase) == elapsed_ms` always (partition property, tested). `raw_ops_ms` is the plain
-sum of op durations and is larger when commands ran in parallel inside one lane.
+`failed_ops` counts failed steps only (`Operation.Failure`: a recorded failure or non-zero exit that
+is not a query miss); `query_misses` counts the rest, so the two together are the harness's
+literal failure count. `tokens` is the sum of the lanes' `tokens`.
+`sum(by_phase) == sum(by_lifecycle) == elapsed_ms` always (partition property, tested).
+`raw_ops_ms` is the plain sum of op durations and is larger when commands ran in parallel inside
+one lane.
 
-### Code-review spans (a bucket, never a phase)
+## Lifecycle (SDLC stage) — the second partition
+Every segment carries two labels. `phase` says **what** the tool call was (a test run, an edit,
+a push); `lc` says **which stage of the software lifecycle** the time served. Both are exclusive
+partitions of the same segments, so each sums to the lane's elapsed time — but they are **not
+comparable per key**: the activity partition keeps model output in its own `llm` phase, the
+lifecycle partition attributes it to the stage of the tool call that followed (or to the turn's
+signal). A code-review hour includes its model time; the Coding row never does. The UI therefore
+shows every stage row with its model / tools split.
+
+| lifecycle | meaning | assigned from (literal signals only) |
+|---|---|---|
+| `plan` | planning, scoping, writing the plan | turn: Codex `collaboration_mode.mode == "plan"` (`turn_context`); op: an `update_plan` call that *creates* a plan (no step `completed` yet) is an instantaneous `llm`/`plan` op, so the model output before it is planning; progress updates stay markers |
+| `requirements` | eliciting / specifying requirements | **no built-in detector** — overlay `lifecycle.skills` / `roles` / `paths` |
+| `design` | architecture and detailed design | **no built-in detector** — overlay |
+| `implement` | writing code, building, environment work | default for `code`, `build`, `infra` phases; operations candidates before this lane's first release op |
+| `review` | code review / cleanup | turn: an invoked skill matching the review matcher (`code-review`, `codereview`, `simplify`, overlay), Codex review mode (`EnteredReviewMode`); lane: a sub-agent whose spawn `agent_role` matches overlay `lifecycle.roles`; op: kinds `pr review`, `pr comment`, `mr note`, `mr approve` |
+| `test` | testing / QA | default for the `test` phase |
+| `release` | push, PR/MR create/merge, deploy, publish | default for the `release` phase |
+| `operate` | maintenance / operations on a running system | kinds `journalctl`, `systemctl`, `launchctl`, `diagnostics`, `docker logs`, `kubectl logs`, `kubectl describe` (and overlay rules with `"lifecycle": "operate"`) — **only after this lane's first release op** |
+| `llm` | model output no tool call followed in the turn (final answers, text-only turns) | the stage-bracket convention has nothing to attribute it to; only a harness signal can |
+| `wait_user`, `wait_worker`, `idle`, `compaction`, `no_telemetry`, `unknown` | pass-through | their phase name |
+
+Precedence: lane role → turn signal (the **whole** turn: tests, waits, compaction and model
+output alike) → op-level pin (command kind, edited path) → phase default. Model output inside a
+turn with no turn signal takes the stage of the next tool call in the same turn — exactly the
+stage-bracket rule (`buildStages`); a non-work tool call (a wait, a compaction, an unknown
+command) or the turn's end closes the bracket. Segments are cut at turn boundaries first so a
+signal never leaks into the neighbouring turn. No cross-lane inference: the root's wait for a
+review sub-agent stays `wait_worker`.
+
+The single **order-dependent** rule is the operations guard: an operations candidate that starts
+before the lane's first `release` op is `implement` ("nothing is after launch before anything
+shipped"); the op's `lc_rule` says so in the inspector. Nothing is ever inferred from a duration.
+
 A `skill` marker records that a skill was *actually invoked* — parsed from the harness's
-`skills.selected_skill_instructions` injection (the record of a real invocation), never from the
-words in a user or model message. A turn's `skill` names that skill; `review` is true when the
-name matches the review/cleanup matcher (`classify.ReviewSkill`: `code-review`, `codereview`,
-`simplify`, plus user-added names; bare `review` is excluded so `security-review` etc. do not
-match). `reviews` counts those invocations across all lanes; `review_ms` is the root-lane wall
-clock of the turns they ran in. This is a separate bucket like `background_ms`/`parallel`: it is
-**not** a phase, does **not** enter `by_phase`, and leaves the partition unchanged. A turn that
-reuses a skill later without re-invoking it is not counted, so `review_ms` is a floor, not the
-total time ever spent reviewing.
+`skills.selected_skill_instructions` injection, never from the words in a user or model message.
+A turn's `skill` names it; `review` is true when the name matches the review matcher (bare
+`review` is excluded so `security-review` etc. do not match). `reviews` counts those invocations
+across all lanes; the time is `by_lifecycle.review`. A turn that reuses a skill later without
+re-invoking it carries no signal, so review time is a floor.
 
 ## Command classification table (head word → phase)
 Rules are evaluated per top-level shell segment; the operation takes the highest-priority
-phase found. Priority: release > test > build > workers > infra > code > unknown.
+phase found. Priority: release > test > build > workers > infra > code > unknown. At equal
+priority the first segment decides, except that a `shell` segment (`cd`, `echo`, `set`) yields
+to a substantive one: `cd x && rg foo` is the search (kind, title and query-miss status follow it).
 The table lives in `internal/classify/classify.go` and is the single source of truth; the
-`/api/rules` endpoint exposes it (plus the review-skill matchers) so the UI "How to read" page
-shows the live table.
+`/api/rules` endpoint exposes it (plus the lifecycle defaults, pins and matchers) so the UI
+"How to read" page shows the live tables.
 
 ### Two detection sources (built-in + user overlay)
 Detection has two layers. The **built-in** set covers common tools, commands and embedded skills
 (`glab`/`gh`, `make`, build/test/release commands, `simplify`/`code-review`). A **user overlay**
-adds project-specific commands and per-project review-skill names for a custom setup, loaded at
-startup from `--rules <path>`, `$TODOBEM_RULES`, and `~/.todobem/rules.json` (all merged).
-Format (all fields optional):
+adds project-specific commands and the skill names, agent roles and document paths that pin a
+lifecycle stage for a custom setup, loaded at startup from `--rules <path>`, `$TODOBEM_RULES`,
+and `~/.todobem/rules.json` (all merged). Format (all fields optional):
 ```
 { "rules": [ {"match": "seg:^myci\\b", "phase": "test", "kind": "in-house ci"},
-             {"match": "deploy-thing", "phase": "release"} ],
-  "review_skills": ["audit-.*", "my-review"] }
+             {"match": "deploy-thing", "phase": "release"},
+             {"match": "prodctl", "phase": "infra", "kind": "prodctl", "lifecycle": "operate"} ],
+  "lifecycle": {
+    "skills": {"review": ["audit-.*", "my-review"], "plan": ["^brainstorm$"]},
+    "roles":  {"review": ["^pragmatic$"]},
+    "paths":  {"design": ["(^|/)docs/DESIGN\\.md$"], "requirements": ["(^|/)SPEC\\.md$"]} } }
 ```
 `rules` entries use the same match forms as the built-in table (a bare word / `word sub`, or a
 `seg:`/`re:`/`head:`/`headpath:` regex) and are appended after the built-ins, so a word rule
-overrides a built-in with the same key and a regex rule can only raise the matched phase.
-`review_skills` are regexes OR-ed with the built-in review-skill matcher. A malformed overlay
-(bad phase, empty match, uncompilable regex) fails loudly at startup and changes nothing. User
-rules are served at `/api/rules` alongside the built-ins (flagged), keeping one inspectable source
-of truth.
+overrides a built-in with the same key and a regex rule can only raise the matched phase. An
+optional `lifecycle` on a rule pins the stage its kind serves (one of the eight work stages).
+`lifecycle.skills` / `roles` / `paths` are regexes keyed by stage, matched against a selected
+skill's name, a sub-agent's spawn role and an edited file's path, OR-ed with the built-in
+matchers (only code review has one). A malformed overlay (bad phase or lifecycle, empty match,
+uncompilable regex, unknown key) fails loudly at startup and changes nothing. User rules and
+matchers are served at `/api/rules` alongside the built-ins (flagged), keeping one inspectable
+source of truth.
+
+
+## Insights report (`/api/insights/report`)
+```
+Report { generated_at, params: {cwd, period: {kind: 7d|30d|90d|all|custom|session, from, to, session}, include_live},
+  scope: { sessions, live_excluded, pending: [{id, title, ended}], root_elapsed_ms, root_in_turn_ms, wait_user_ms, tokens, clis },
+  top_time: [rule…], top_tokens: [rule…],
+  groups: [ { id, cards: [Card], time_ms, tokens, order_time, order_tokens } ],   // not_measured last
+  no_data: [ { rule, title, sessions, reason, items } ],
+  fallback?: fewer_than_3_sessions | no_sessions, sources: [{id, fp, title, ended}], sources_hash }
+Card { rule, group, title, info?, exposure: {time_ms, tokens?, count}, share?: {pct, of_ms, of},
+  distribution: [{label, n, time_ms, tokens?, sessions}], sessions, of, no_data, reason?, no_data_items?,
+  conventions?: [string], evidence: [{session, title, lane, lane_id, a, b, op?, time_ms, tokens?, note}], stats?: {name: int} }
+```
+A session belongs to the period when its last activity lies inside `[from, to]`; live sessions
+never count unless `include_live=1`; `period=session` selects one id. Facts (`internal/insights`
+`Facts`, cached as `<id>.facts.json.gz` next to the model cache) are derived from the model only.
+`POST /api/insights/scan` parses the pending sessions in the background; `GET …/status` reports
+progress; `GET …/rules` lists the catalogue. The visible texts live in `web/insights.js`
+(`INSIGHT_TEXT`), the rules in `docs/INSIGHTS-SPEC.md` §5.

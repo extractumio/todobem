@@ -2,6 +2,7 @@ package codex
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io/fs"
 	"os"
@@ -29,6 +30,10 @@ type FileMeta struct {
 	Model      string
 	Started    int64 // ms
 	Originator string
+	// LastAnswer is the final message of the last completed turn recorded in the file
+	// (task_complete.last_agent_message), verbatim, clipped; read from the file's tail so the
+	// session list can describe a session that was never parsed. Root files only.
+	LastAnswer string
 	Valid      bool
 }
 
@@ -129,7 +134,55 @@ func readMeta(path string, st fs.FileInfo) FileMeta {
 		}
 	}
 	fm.Valid = fm.ThreadID != ""
+	if fm.Valid && fm.ParentID == "" {
+		fm.LastAnswer = readLastAnswer(f, st.Size())
+	}
 	return fm
+}
+
+// lastAnswerTail bounds the tail read: task_complete lines are small and the last one is near
+// the end of the file. A multi-megabyte compacted line at the very end pushes it out of reach;
+// then there is no answer to show, which is honest.
+const lastAnswerTail = 256 << 10
+
+// readLastAnswer finds the last complete task_complete line in the file's tail and returns its
+// last_agent_message, clipped. Only that one line is JSON-decoded.
+func readLastAnswer(f *os.File, size int64) string {
+	off := size - lastAnswerTail
+	if off < 0 {
+		off = 0
+	}
+	buf := make([]byte, size-off)
+	n, err := f.ReadAt(buf, off)
+	if err != nil && n == 0 {
+		return ""
+	}
+	buf = buf[:n]
+	if off > 0 {
+		// drop the partial first line
+		if i := bytes.IndexByte(buf, '\n'); i >= 0 {
+			buf = buf[i+1:]
+		} else {
+			return ""
+		}
+	}
+	var last []byte
+	for _, line := range bytes.Split(buf, []byte{'\n'}) {
+		if lineType(line) == "event_msg" && payloadType(line) == "task_complete" {
+			last = line
+		}
+	}
+	if last == nil {
+		return ""
+	}
+	var rl rawLine
+	var tc struct {
+		Last string `json:"last_agent_message"`
+	}
+	if json.Unmarshal(last, &rl) != nil || json.Unmarshal(rl.Payload, &tc) != nil {
+		return ""
+	}
+	return clip(strings.TrimSpace(tc.Last), 1200)
 }
 
 // Index knows every rollout file under the sessions root, keyed by thread id.
@@ -171,8 +224,14 @@ func (ix *Index) Scan() {
 				return nil
 			}
 			if old, ok := ix.files[path]; ok && old.Valid {
-				// Only size/mtime changed: keep meta, refresh stats.
+				// Only size/mtime changed: keep meta, refresh stats and the last answer.
 				old.Size, old.ModTime = st.Size(), st.ModTime()
+				if old.ParentID == "" {
+					if f, err := os.Open(path); err == nil {
+						old.LastAnswer = readLastAnswer(f, st.Size())
+						f.Close()
+					}
+				}
 				ix.files[path] = old
 				ix.byID[old.ThreadID] = old
 				return nil
@@ -227,6 +286,21 @@ func (ix *Index) Roots() []FileMeta {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ModTime.After(out[j].ModTime) })
+	return out
+}
+
+// IDs returns every valid thread id the index knows, roots and sub-agents alike (a sub-agent
+// can be opened as a session of its own).
+func (ix *Index) IDs() []string {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	out := make([]string, 0, len(ix.byID))
+	for id, fm := range ix.byID {
+		if fm.Valid {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
 	return out
 }
 

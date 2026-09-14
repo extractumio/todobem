@@ -12,6 +12,7 @@ import (
 
 	"github.com/extractumio/todobem/internal/classify"
 	"github.com/extractumio/todobem/internal/codex"
+	"github.com/extractumio/todobem/internal/insights"
 	"github.com/extractumio/todobem/internal/model"
 )
 
@@ -28,7 +29,8 @@ func firstField(s string) string {
 }
 
 func main() {
-	opsOnly := flag.Bool("ops", false, "print every operation (all lanes) as TSV: phase, kind, rule, duration, status, lane, command; nothing else")
+	insightsOnly := flag.Bool("insights", false, "print the Insights facts summary and per-rule findings for the session (TSV lines prefixed INSIGHT); nothing else")
+	opsOnly := flag.Bool("ops", false, "print every operation (all lanes) as TSV: phase, kind, rule, lifecycle, lifecycle rule, duration, status, lane, command; nothing else")
 	rules := flag.String("rules", "", "path to a user rules overlay (JSON); also loads $TODOBEM_RULES and ~/.todobem/rules.json")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: dump [-ops] <root-thread-id> [export.json]")
@@ -61,6 +63,10 @@ func main() {
 		printOps(m)
 		return
 	}
+	if *insightsOnly {
+		printInsights(m)
+		return
+	}
 	fmt.Println("scan", scanTime)
 	fmt.Println("parse", time.Since(t1))
 	rd, dec := s.IOStats()
@@ -77,7 +83,51 @@ func main() {
 		if part != l.Ended-l.Started {
 			fmt.Printf("  !! partition mismatch %s: %d vs %d\n", l.Path, part, l.Ended-l.Started)
 		}
+		var lcSum int64
+		for _, v := range l.ByLifecycle {
+			lcSum += v
+		}
+		if lcSum != part {
+			fmt.Printf("  !! lifecycle partition mismatch %s: %d vs %d\n", l.Path, lcSum, part)
+		}
 		fmt.Printf("  lane %-40s partition-elapsed=%d raw-ops=%s in-turn=%s\n", l.Path, part-(l.Ended-l.Started), fmtd(raw), fmtd(l.InTurnMs))
+	}
+	// Token reconstruction check: the sum of the turns' counted calls must equal the lane's
+	// (every token_count sits inside a turn in the corpus; a difference is a record outside one).
+	var contexts, rereads []int64
+	for _, l := range m.Lanes {
+		var turns model.TokenUsage
+		responses := 0
+		for _, t := range l.Turns {
+			turns.Add(t.Tokens)
+			responses += t.Responses
+		}
+		var lane int64
+		if l.Tokens != nil {
+			lane = l.Tokens.Total
+		}
+		flag := ""
+		if turns.Total != lane {
+			flag = "  !! turn tokens != lane tokens"
+		}
+		fmt.Printf("  tokens %-40s lane=%d turns=%d responses=%d%s\n", l.Path, lane, turns.Total, responses, flag)
+		for _, o := range l.Ops {
+			if o.Phase == classify.Compaction && o.Context > 0 {
+				contexts = append(contexts, o.Context)
+				if o.Tokens != nil {
+					rereads = append(rereads, o.Tokens.Input-o.Tokens.Cached)
+				}
+			}
+		}
+	}
+	if len(contexts) > 0 {
+		sort.Slice(contexts, func(i, j int) bool { return contexts[i] < contexts[j] })
+		sort.Slice(rereads, func(i, j int) bool { return rereads[i] < rereads[j] })
+		var reread int64
+		if len(rereads) > 0 {
+			reread = rereads[len(rereads)/2]
+		}
+		fmt.Printf("  compactions with context: %d, context median=%d min=%d max=%d, uncached re-read median=%d\n", len(contexts), contexts[len(contexts)/2], contexts[0], contexts[len(contexts)-1], reread)
 	}
 	heads := map[string]int{}
 	for _, l := range m.Lanes {
@@ -124,10 +174,31 @@ func main() {
 		fmt.Printf("  %-14s %10s %5.1f%%\n", x.k, fmtd(x.v), float64(x.v)*100/float64(m.Totals.ElapsedMs))
 	}
 	fmt.Println("  partition sum", fmtd(sum), "elapsed", fmtd(m.Totals.ElapsedMs))
+	fmt.Println("  by_lifecycle (root, SDLC order):")
+	var lcSum int64
+	for _, lc := range classify.WorkLifecycles {
+		if v := m.Totals.ByLifecycle[lc]; v > 0 {
+			fmt.Printf("    %-14s %10s %5.1f%%\n", lc, fmtd(v), float64(v)*100/float64(m.Totals.ElapsedMs))
+		}
+	}
+	for lc, v := range m.Totals.ByLifecycle {
+		lcSum += v
+		if !classify.IsWorkLifecycle(lc) {
+			fmt.Printf("    %-14s %10s %5.1f%%  (pass-through)\n", lc, fmtd(v), float64(v)*100/float64(m.Totals.ElapsedMs))
+		}
+	}
+	fmt.Println("  lifecycle partition sum", fmtd(lcSum))
+	for _, l := range m.Lanes {
+		for _, t := range l.Turns {
+			if t.Lifecycle != "" {
+				fmt.Printf("  TURN-LC %s %-10s %-8s skill=%q mode=%q\n", time.UnixMilli(t.Start).UTC().Format("01-02 15:04"), l.Path, t.Lifecycle, t.Skill, t.Mode)
+			}
+		}
+	}
 	fmt.Println("  by_kind:", m.Totals.ByKind)
 	fmt.Println("  parallel:", m.Parallel.Agents, "agents", fmtd(m.Parallel.AgentMs), "agent-time", fmtd(m.Parallel.WallMs), "wall")
-	fmt.Println("  users:", m.Totals.UserMessages, "questions:", m.Totals.Questions, "compactions:", m.Totals.Compactions, "failed:", m.Totals.Failed)
-	fmt.Println("  reviews:", m.Totals.Reviews, "review-span (root):", fmtd(m.Totals.ReviewMs))
+	fmt.Println("  users:", m.Totals.UserMessages, "questions:", m.Totals.Questions, "compactions:", m.Totals.Compactions, "failed:", m.Totals.Failed, "query misses:", m.Totals.QueryMisses, "tokens:", m.Totals.Tokens.Total)
+	fmt.Println("  reviews:", m.Totals.Reviews, "review time (root, by_lifecycle):", fmtd(m.Totals.ByLifecycle[classify.LcReview]))
 	for _, l := range m.Lanes {
 		for _, mk := range l.Markers {
 			if mk.Kind == "skill" {
@@ -196,7 +267,29 @@ func printOps(m *model.Session) {
 			if detail == "" {
 				detail = o.Title
 			}
-			fmt.Printf("%s\t%s\t%s\t%d\t%s\t%s\t%s\n", o.Phase, o.Kind, o.Rule, (o.End-o.Start)/1000, o.Status, l.Path, detail)
+			fmt.Printf("%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", o.Phase, o.Kind, o.Rule, o.Lifecycle, o.LifecycleRule, (o.End-o.Start)/1000, o.Status, l.Path, detail)
+		}
+	}
+}
+
+// printInsights runs the detector catalogue on one session and prints, per rule, the exposure
+// and every finding as a TSV line (INSIGHT, rule, key, time_ms, uncached input, output, lane,
+// start, note) so a run over many sessions can be aggregated with sort/uniq (output stays local).
+func printInsights(m *model.Session) {
+	f := insights.Extract(m)
+	fmt.Printf("FACTS\t%s\t%s\tcli=%s\telapsed=%s\tin_turn=%s\tagents=%d\tturns=%d\tgaps=%d\twaits=%d\tgroups=%d\tcompactions=%d\tunknown_heads=%d\tcells=%d\n",
+		f.ID, f.CWD, f.CLI, fmtd(f.Root.ElapsedMs), fmtd(f.Root.InTurnMs), len(f.Agents), len(f.Turns), len(f.Gaps), len(f.Waits), len(f.Groups), len(f.Compactions), len(f.Unknown), len(f.Cells))
+	results := insights.RunAll(&f)
+	for _, d := range insights.Catalogue {
+		r := results[d.ID]
+		sum := insights.Summarize(r)
+		fmt.Printf("RULE\t%s\t%s\tmeasurable=%v\tfindings=%d\tno_data=%d\ttime=%s\tuncached_in=%d\toutput=%d\t%s\n", d.ID, d.Title, r.Measurable, sum.Count, r.NoData, fmtd(sum.TimeMs), sum.Tokens.Input-sum.Tokens.Cached, sum.Tokens.Output, r.Reason)
+		for _, x := range r.Findings {
+			var unc, out int64
+			if x.Tokens != nil {
+				unc, out = x.Tokens.Input-x.Tokens.Cached, x.Tokens.Output
+			}
+			fmt.Printf("INSIGHT\t%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\n", x.Rule, x.Key, x.TimeMs, unc, out, x.Lane, time.UnixMilli(x.A).UTC().Format("01-02 15:04"), x.Note)
 		}
 	}
 }

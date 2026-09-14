@@ -5,6 +5,10 @@ import "github.com/extractumio/todobem/internal/classify"
 
 type Phase = classify.Phase
 
+// Lifecycle is the SDLC stage a segment served (classify.Lifecycle): the second exclusive
+// partition of a lane's time, orthogonal to Phase. See docs/SCHEMA.md "Lifecycle".
+type Lifecycle = classify.Lifecycle
+
 // Src points at the exact source line of an event so the inspector can show it.
 type Src struct {
 	File string `json:"file"`
@@ -13,31 +17,52 @@ type Src struct {
 }
 
 type Operation struct {
-	ID       string `json:"id"`
-	Lane     string `json:"lane"`
-	Turn     string `json:"turn"`
-	Phase    Phase  `json:"phase"`
-	Kind     string `json:"kind"`
-	Start    int64  `json:"start"`
-	End      int64  `json:"end"`
-	Open     bool   `json:"open,omitempty"`
-	Status   string `json:"status"` // completed | failed | aborted | running | recorded
-	Exit     *int   `json:"exit,omitempty"`
-	Title    string `json:"title"`
-	Detail   string `json:"-"` // full command / file list; served per-op, not in the model payload
-	Identity string `json:"identity,omitempty"`
-	Group    string `json:"group,omitempty"`
-	Attempt  int    `json:"attempt,omitempty"`
-	Parallel int    `json:"parallel,omitempty"`
-	Remote   bool   `json:"remote,omitempty"`
-	Queued   bool   `json:"queued,omitempty"` // a polling loop preceded the work inside this command
+	ID     string `json:"id"`
+	Lane   string `json:"lane"`
+	Turn   string `json:"turn"`
+	Phase  Phase  `json:"phase"`
+	Kind   string `json:"kind"`
+	Start  int64  `json:"start"`
+	End    int64  `json:"end"`
+	Open   bool   `json:"open,omitempty"`
+	Status string `json:"status"` // completed | failed | aborted | running | recorded
+	Exit   *int   `json:"exit,omitempty"`
+	// QueryMiss: the harness recorded a non-zero exit (status "failed") for a query kind — a
+	// search with no match, a read or listing of a path that is not there, `git diff --quiet`
+	// saying "there are changes", `test`/`which` probes. Status and exit stay the literal record;
+	// the op is not counted as a failure (classify.QueryKind; set by Derive).
+	QueryMiss bool   `json:"query_miss,omitempty"`
+	Title     string `json:"title"`
+	Detail    string `json:"-"` // full command / file list; served per-op, not in the model payload
+	Identity  string `json:"identity,omitempty"`
+	Group     string `json:"group,omitempty"`
+	Attempt   int    `json:"attempt,omitempty"`
+	Parallel  int    `json:"parallel,omitempty"`
+	Remote    bool   `json:"remote,omitempty"`
+	Queued    bool   `json:"queued,omitempty"` // a polling loop preceded the work inside this command
 	// Background: the op outlived the turn it started in (or started outside any turn), i.e.
 	// the agent moved on while the process kept running. Excluded from the partition.
 	Background bool   `json:"background,omitempty"`
 	Rule       string `json:"rule,omitempty"`
-	Src        *Src   `json:"src,omitempty"`
+	// Lifecycle is the SDLC stage this op served; LifecycleRule says which literal signal decided
+	// it (a turn's skill or mode, the lane's agent role, the command's kind, the phase default).
+	// An adapter may pre-pin it from the classifier or an edited path; Derive fills the rest.
+	Lifecycle     Lifecycle `json:"lc"`
+	LifecycleRule string    `json:"lc_rule,omitempty"`
+	Src           *Src      `json:"src,omitempty"`
+	// Compaction ops only: Context is the input of the last counted model call before the
+	// compaction (the context it started from); Tokens the first counted call after it (what
+	// the model re-read). Zero / nil = no usage record around it.
+	Context int64       `json:"context,omitempty"`
+	Tokens  *TokenUsage `json:"tokens,omitempty"`
 	// call links this op to a tool-call envelope (old-format process polling).
 	call string
+}
+
+// Failure reports whether the op counts as a failed step: a recorded failure or non-zero exit
+// that is not a query miss.
+func (o *Operation) Failure() bool {
+	return !o.QueryMiss && (o.Status == "failed" || (o.Exit != nil && *o.Exit != 0))
 }
 
 // SetCall/CallID are used by adapters to stitch polls to their originating command.
@@ -45,10 +70,11 @@ func (o *Operation) SetCall(id string) { o.call = id }
 func (o *Operation) CallID() string    { return o.call }
 
 type Segment struct {
-	Start int64  `json:"s"`
-	End   int64  `json:"e"`
-	Phase Phase  `json:"p"`
-	Op    string `json:"op,omitempty"`
+	Start     int64     `json:"s"`
+	End       int64     `json:"e"`
+	Phase     Phase     `json:"p"`
+	Lifecycle Lifecycle `json:"lc"`
+	Op        string    `json:"op,omitempty"`
 }
 
 type Stage struct {
@@ -81,6 +107,21 @@ type Turn struct {
 	Final   string `json:"final,omitempty"`
 	Skill   string `json:"skill,omitempty"`  // name of a skill actually invoked in this turn (harness injection)
 	Review  bool   `json:"review,omitempty"` // Skill is a code-review / cleanup skill (classify.ReviewSkill)
+	Mode    string `json:"mode,omitempty"`   // harness collaboration mode from turn_context ("plan"); "" = default
+	// Lifecycle is the stage a harness-level signal pinned on the WHOLE turn (plan mode, an
+	// invoked skill, review mode, or the lane's agent role); "" = decided per op.
+	Lifecycle Lifecycle `json:"lc,omitempty"`
+	// Token accounting of the turn's counted model calls (codex/tokens.go): Tokens is their
+	// sum, Responses their number, First the usage of the first one (its uncached input is what
+	// the model re-read after a gap; a sub-agent's first turn: the cost of being spawned),
+	// ContextPeak the largest input of one call. Nil / zero = no usage record in the turn.
+	Tokens      *TokenUsage `json:"tokens,omitempty"`
+	Responses   int         `json:"responses,omitempty"`
+	First       *TokenUsage `json:"first,omitempty"`
+	ContextPeak int64       `json:"context_peak,omitempty"`
+	// RootTurn is the root turn a sub-agent turn ran inside, from the harness's own
+	// token_usage_record.root_turn_id (CLI >= 0.153); "" = not recorded. Never inferred.
+	RootTurn string `json:"root_turn,omitempty"`
 }
 
 type Interval struct {
@@ -88,13 +129,16 @@ type Interval struct {
 	End   int64 `json:"e"`
 }
 
-// TokenUsage is the cumulative usage reported by the harness for one thread.
+// TokenUsage is usage reported by the harness: one model call, or a sum of calls (a turn, a
+// thread, a session). Cached is the part of Input served from the prompt cache; CacheWrite the
+// part written to it; Reasoning the part of Output spent on reasoning.
 type TokenUsage struct {
-	Input     int64 `json:"input"`
-	Cached    int64 `json:"cached"`
-	Output    int64 `json:"output"`
-	Reasoning int64 `json:"reasoning"`
-	Total     int64 `json:"total"`
+	Input      int64 `json:"input"`
+	Cached     int64 `json:"cached"`
+	CacheWrite int64 `json:"cache_write,omitempty"`
+	Output     int64 `json:"output"`
+	Reasoning  int64 `json:"reasoning"`
+	Total      int64 `json:"total"`
 }
 
 func (t *TokenUsage) Add(o *TokenUsage) {
@@ -103,6 +147,7 @@ func (t *TokenUsage) Add(o *TokenUsage) {
 	}
 	t.Input += o.Input
 	t.Cached += o.Cached
+	t.CacheWrite += o.CacheWrite
 	t.Output += o.Output
 	t.Reasoning += o.Reasoning
 	t.Total += o.Total
@@ -125,11 +170,15 @@ type Lane struct {
 	Segments   []Segment       `json:"segments"`
 	Stages     []Stage         `json:"stages"`
 	Markers    []Marker        `json:"markers"`
-	Active     []Interval      `json:"active,omitempty"`
-	Tokens     *TokenUsage     `json:"tokens,omitempty"` // latest cumulative usage reported for this thread
+	Active     []Interval      `json:"active,omitempty"` // the lane's own turns (Derive); a sub-agent is active inside them
+	Tokens     *TokenUsage     `json:"tokens,omitempty"` // usage consumed by this thread: per-call usage summed on every change of the cumulative counter (survives counter restarts and a forked child's inherited counter)
 	ByPhase    map[Phase]int64 `json:"by_phase"`         // exclusive partition
 	RawByPhase map[Phase]int64 `json:"raw_by_phase"`     // plain sum of op durations (overlaps counted)
-	InTurnMs   int64           `json:"in_turn_ms"`
+	// ByLifecycle is the same exclusive partition keyed by SDLC stage (sums to the same total).
+	ByLifecycle map[Lifecycle]int64 `json:"by_lifecycle"`
+	// Lifecycle is the stage the lane's agent role pins on every turn (overlay roles); "" = none.
+	Lifecycle Lifecycle `json:"lc,omitempty"`
+	InTurnMs  int64     `json:"in_turn_ms"`
 }
 
 type Group struct {
@@ -146,30 +195,31 @@ type Group struct {
 }
 
 type Totals struct {
-	ElapsedMs    int64            `json:"elapsed_ms"`
-	InTurnMs     int64            `json:"in_turn_ms"` // time inside turns (agent responsible)
-	RawOpsMs     int64            `json:"raw_ops_ms"` // sum of op durations, overlaps counted
-	ByPhase      map[Phase]int64  `json:"by_phase"`
-	RawByPhase   map[Phase]int64  `json:"raw_by_phase"`
-	ByKind       map[string]int64 `json:"by_kind"` // test sub-kinds
-	Ops          int              `json:"ops"`
-	Turns        int              `json:"turns"`
-	UserMessages int              `json:"user_messages"`
-	SystemMsgs   int              `json:"system_messages"` // harness-injected (goal loop, notifications)
-	Questions    int              `json:"questions"`
-	Compactions  int              `json:"compactions"`
-	Failed       int              `json:"failed_ops"`
-	BackgroundMs int64            `json:"background_ms"` // sum of background process durations (root lane)
-	Background   int              `json:"background_ops"`
-	Tokens       TokenUsage       `json:"tokens"`        // sum over all lanes
-	CompactionMs int64            `json:"compaction_ms"` // summed compaction durations, all lanes (may overlap tests)
-	// Code review: turns in which a review/cleanup skill (classify.ReviewSkill) was actually
-	// invoked. ReviewMs is the wall clock of those turns on the root lane; Reviews counts the
-	// invocations across all lanes. A separate bucket (like background/parallel), never a phase —
-	// it does NOT enter by_phase and the partition is unchanged. Turns that reuse the skill later
-	// without a fresh invocation are not counted (see docs/SCHEMA.md).
-	ReviewMs int64 `json:"review_ms"`
-	Reviews  int   `json:"reviews"`
+	ElapsedMs  int64           `json:"elapsed_ms"`
+	InTurnMs   int64           `json:"in_turn_ms"` // time inside turns (agent responsible)
+	RawOpsMs   int64           `json:"raw_ops_ms"` // sum of op durations, overlaps counted
+	ByPhase    map[Phase]int64 `json:"by_phase"`
+	RawByPhase map[Phase]int64 `json:"raw_by_phase"`
+	// ByLifecycle is the root lane's exclusive partition by SDLC stage: sum(by_lifecycle) ==
+	// sum(by_phase) == elapsed_ms. LLM time inside a turn is attributed to the stage of the tool
+	// call that followed it (or the turn's signal); the two partitions are not comparable per key.
+	ByLifecycle  map[Lifecycle]int64 `json:"by_lifecycle"`
+	ByKind       map[string]int64    `json:"by_kind"` // test sub-kinds
+	Ops          int                 `json:"ops"`
+	Turns        int                 `json:"turns"`
+	UserMessages int                 `json:"user_messages"`
+	SystemMsgs   int                 `json:"system_messages"` // harness-injected (goal loop, notifications)
+	Questions    int                 `json:"questions"`
+	Compactions  int                 `json:"compactions"`
+	Failed       int                 `json:"failed_ops"`    // failed steps (Operation.Failure): query misses excluded
+	QueryMisses  int                 `json:"query_misses"`  // non-zero exits of query kinds (Operation.QueryMiss)
+	BackgroundMs int64               `json:"background_ms"` // sum of background process durations (root lane)
+	Background   int                 `json:"background_ops"`
+	Tokens       TokenUsage          `json:"tokens"`        // sum over all lanes
+	CompactionMs int64               `json:"compaction_ms"` // summed compaction durations, all lanes (may overlap tests)
+	// Reviews counts the turns, across all lanes, in which a review/cleanup skill was actually
+	// invoked (Turn.Review). The time is in by_lifecycle["review"].
+	Reviews int `json:"reviews"`
 }
 
 type Parallel struct {
@@ -211,6 +261,9 @@ type SessionSummary struct {
 	Live    bool   `json:"live"`
 	CLI     string `json:"cli,omitempty"`
 	Model   string `json:"model,omitempty"`
+	// LastAnswer is the final message of the last completed root turn, verbatim (clipped):
+	// the only recorded description of what a session ended on. Never generated.
+	LastAnswer string `json:"last_answer,omitempty"`
 	// Filled when the session has been parsed at least once.
 	Totals *Totals `json:"totals,omitempty"`
 }

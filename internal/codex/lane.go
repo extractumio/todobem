@@ -9,6 +9,7 @@ import (
 	"io"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -35,6 +36,12 @@ type laneParser struct {
 	provisional map[string]*model.Operation
 	sawUserItem bool
 	question    bool // a request_user_input is pending
+	// tokenTotal is the cumulative total_tokens of the last counted token_count record. The
+	// counter restarts (a resumed thread) and a forked child inherits its parent's value, so
+	// the lane's usage is the sum of last_token_usage over the records where it changed.
+	tokenTotal  int64
+	lastCall    tokenUsage       // the last counted call: its input is the context a compaction starts from
+	compaction  *model.Operation // a compaction op waiting for the first counted call after it (the re-read)
 	nextOp      int
 	lastOrdinal int64
 	Bytes       int64 // bytes read
@@ -417,6 +424,8 @@ func (p *laneParser) handle(line []byte, start int64) {
 		p.handleEvent(line, start, ts)
 	case "response_item":
 		p.handleResponseItem(line, start, ts)
+	case "token_usage_record":
+		p.noteTokenUsageRecord(line) // tokens.go: a sub-agent turn's root turn
 	case "turn_context":
 		// small line: model id and reasoning effort for the turn
 		var rl rawLine
@@ -425,6 +434,7 @@ func (p *laneParser) handle(line []byte, start int64) {
 			Model  string `json:"model"`
 			Effort string `json:"effort"`
 			Collab struct {
+				Mode     string `json:"mode"` // "plan" | "default" (Codex collaboration modes)
 				Settings struct {
 					Model  string `json:"model"`
 					Effort string `json:"reasoning_effort"`
@@ -445,6 +455,9 @@ func (p *laneParser) handle(line []byte, start int64) {
 		for i := len(p.lane.Turns) - 1; i >= 0; i-- {
 			if p.lane.Turns[i].ID == tc.TurnID {
 				p.lane.Turns[i].Model, p.lane.Turns[i].Effort = model, effort
+				if strings.EqualFold(tc.Collab.Mode, "plan") {
+					p.lane.Turns[i].Mode = "plan"
+				}
 				break
 			}
 		}
@@ -460,23 +473,7 @@ func (p *laneParser) handleEvent(line []byte, start int64, ts int64) {
 	case "thread_settings_applied":
 		return
 	case "token_count":
-		// small line; keep the latest cumulative usage for this thread
-		var rl rawLine
-		var tc struct {
-			Info *struct {
-				Total struct {
-					Input     int64 `json:"input_tokens"`
-					Cached    int64 `json:"cached_input_tokens"`
-					Output    int64 `json:"output_tokens"`
-					Reasoning int64 `json:"reasoning_output_tokens"`
-					Total     int64 `json:"total_tokens"`
-				} `json:"total_token_usage"`
-			} `json:"info"`
-		}
-		if json.Unmarshal(line, &rl) == nil && json.Unmarshal(rl.Payload, &tc) == nil && tc.Info != nil && tc.Info.Total.Total > 0 {
-			u := tc.Info.Total
-			p.lane.Tokens = &model.TokenUsage{Input: u.Input, Cached: u.Cached, Output: u.Output, Reasoning: u.Reasoning, Total: u.Total}
-		}
+		p.noteTokenCount(line) // tokens.go: lane, turn and compaction accounting
 		return
 	case "task_started":
 		p.Decoded += int64(len(line))
@@ -642,12 +639,14 @@ func (p *laneParser) handleItem(line []byte, start int64, ts int64) {
 		if json.Unmarshal(ic.Item, &fc) != nil {
 			return
 		}
-		var names []string
+		var names, paths []string
 		var detail []string
 		for path, ch := range fc.Changes {
 			names = append(names, filepath.Base(path))
+			paths = append(paths, path)
 			detail = append(detail, ch.Type+" "+path)
 		}
+		sort.Strings(paths) // map order is random; the first matching path must be stable
 		title := strings.Join(names, ", ")
 		if len(names) > 3 {
 			title = fmt.Sprintf("%s +%d files", strings.Join(names[:3], ", "), len(names)-3)
@@ -656,6 +655,9 @@ func (p *laneParser) handleItem(line []byte, start int64, ts int64) {
 		op.Title = "edit " + title
 		op.Detail = clip(strings.Join(detail, "\n"), 2000)
 		op.Status = orDefault(fc.Status, "completed")
+		if lc, ok := classify.PathLifecycle(paths); ok {
+			op.Lifecycle, op.LifecycleRule = lc, "edited path"
+		}
 	case "Reasoning":
 		op := p.newOp(head.ID, ic.TurnID, classify.LLM, "reasoning", s, e, src)
 		op.Title = "reasoning"
@@ -679,6 +681,7 @@ func (p *laneParser) handleItem(line []byte, start int64, ts int64) {
 		op := p.newOp(head.ID, ic.TurnID, classify.Compaction, "compaction", s, e, src)
 		op.Title = "context compaction"
 		op.Status = "completed"
+		p.noteCompaction(op) // context before, re-read after (tokens.go)
 		p.addMarker(s, "compaction", ic.TurnID, "", op.ID, nil)
 	case "McpToolCall":
 		var mi mcpItem
@@ -852,7 +855,17 @@ func (p *laneParser) onCall(fc funcCall, ts int64, start int64, line []byte, cus
 		op.Open, op.Status = true, "running"
 		pc.op = op
 	case "update_plan":
-		p.addMarker(ts, "plan", turn, clip(planSummary(fc.Arguments), 1500), "", src)
+		summary, created := planSummary(fc.Arguments)
+		p.addMarker(ts, "plan", turn, clip(summary, 1500), "", src)
+		if created {
+			// A plan with no completed step is the agent writing its plan; the op is instantaneous
+			// (phase llm: it is model output) and pins the planning stage so the reasoning before
+			// it is attributed to planning. Later progress updates stay markers only.
+			op := p.newOp(fc.CallID, turn, classify.LLM, "plan", ts, ts, src)
+			op.Title = "plan"
+			op.Status = "completed"
+			op.Lifecycle, op.LifecycleRule = classify.LcPlan, "plan created (update_plan)"
+		}
 	case "request_user_input_async", "request_user_input":
 		var qs []string
 		for _, m := range reQuestion.FindAllStringSubmatch(fc.Arguments, -1) {
@@ -990,6 +1003,7 @@ func (p *laneParser) commandOp(id, turn, cmd, codexKind string, s, e int64, src 
 	op.Remote = res.Remote
 	op.Queued = res.Queued
 	op.Rule = res.Rule
+	op.Lifecycle = res.Lifecycle
 	return op
 }
 
@@ -1131,7 +1145,10 @@ func unescapeJSON(s string) string {
 	return s
 }
 
-func planSummary(args string) string {
+// planSummary renders an update_plan call's steps; created is true when no step is completed
+// yet — the plan is being written, not ticked off (a fresh plan often starts with step 1 already
+// in progress, so "all pending" would miss it).
+func planSummary(args string) (summary string, created bool) {
 	var v struct {
 		Plan []struct {
 			Step   string `json:"step"`
@@ -1140,20 +1157,22 @@ func planSummary(args string) string {
 		Explanation string `json:"explanation"`
 	}
 	if json.Unmarshal([]byte(args), &v) != nil {
-		return clip(args, 500)
+		return clip(args, 500), false
 	}
+	created = len(v.Plan) > 0
 	var sb strings.Builder
 	for _, s := range v.Plan {
 		mark := "☐"
 		switch s.Status {
 		case "completed":
 			mark = "☑"
+			created = false
 		case "in_progress":
 			mark = "▶"
 		}
 		sb.WriteString(mark + " " + s.Step + "\n")
 	}
-	return strings.TrimSpace(sb.String())
+	return strings.TrimSpace(sb.String()), created
 }
 
 func clip(s string, n int) string {

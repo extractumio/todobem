@@ -14,7 +14,7 @@ const flush = async () => { for (let i = 0; i < 16; i++) await Promise.resolve()
 
 // Run the complete application, including startup and event registration. DOM nodes
 // track replacement so a stale inspector write cannot hide behind a permissive mock.
-function harness() {
+function harness({ hash = '#sessions' } = {}) {
   const nodes = new Map(), requests = [], intervals = new Map(), timeouts = new Map(), errors = [];
   let timerID = 0;
   function events(object = {}) {
@@ -63,19 +63,24 @@ function harness() {
     querySelector: selector => selector.startsWith('#') ? nodes.get(selector.slice(1)) || null : element(),
     querySelectorAll: () => [],
   });
-  const location = { hash: '#sessions' };
+  const location = { hash };
   const window = events({ innerWidth: 1200, innerHeight: 900, scrollTo() {} });
   const context = vm.createContext({
-    document, window, location, history: { pushState: (_state, _title, hash) => { location.hash = hash; } },
+    document, window, location, history: { pushState: (_state, _title, hash) => { location.hash = hash; }, replaceState: (_state, _title, hash) => { location.hash = hash; } },
     console: { error: e => errors.push(e), warn: e => errors.push(e) },
     setInterval: (fn, delay) => { const id = ++timerID; intervals.set(id, { fn, delay }); return id; },
     clearInterval: id => intervals.delete(id),
     setTimeout: fn => { const id = ++timerID; timeouts.set(id, fn); return id; },
     clearTimeout: id => timeouts.delete(id),
-    fetch: url => new Promise((resolve, reject) => {
+    fetch: (url, options = {}) => new Promise((resolve, reject) => {
       const request = {
-        url, done: false,
-        resolve(data) { this.done = true; resolve({ ok: true, json: async () => JSON.parse(JSON.stringify(data)) }); },
+        url, options, done: false,
+        // resolve(data, status): status 204 carries no body; any status ≥ 400 is a failed response
+        resolve(data, status = 200) {
+          this.done = true;
+          const body = JSON.stringify(data === undefined ? null : data);
+          resolve({ ok: status >= 200 && status < 300, status, json: async () => JSON.parse(body), text: async () => body });
+        },
         reject(error = new Error('synthetic request failure')) { this.done = true; reject(error); },
       };
       requests.push(request);
@@ -89,7 +94,7 @@ function harness() {
     return request;
   }
   return {
-    run, take, requests, errors, document, location,
+    run, take, requests, errors, document, location, window,
     node: id => nodes.get(id),
     action(action, data = {}) {
       const target = element(); target.dataset = { action, ...data };
@@ -101,7 +106,9 @@ function harness() {
       assert.ok(timer, 'Polling must be scheduled');
       return timer.fn();
     },
-    async ready() {
+    // ready boots the app with the gate off: /api/auth, then the two session-list loads
+    async ready({ auth = { enabled: false, authenticated: true } } = {}) {
+      take('/api/auth').resolve(auth); await flush();
       take('/api/sessions').resolve([]); await flush();
       take('/api/sessions').resolve([]); await flush();
       assert.equal(errors.length, 0);
@@ -387,7 +394,8 @@ test('sub-agent labels carry the nickname and model, long names are cut with an 
   assert.match(chart, />late_verifier_with_…</);
   assert.ok(attributeValues(chart, 'data-lane').filter((v, i, all) => all.indexOf(v) === i).length >= 3, 'every lane row carries its id');
   assert.deepEqual(attributeValues(chart, 'data-action').filter(a => a === 'lane-card').length, 3, 'one card glyph per lane row');
-  assert.match(h.node('agentsTable').innerHTML, /sub-agent · Galileo · gpt-test \/ high|root · Galileo · gpt-test \/ high/);
+  assert.match(h.node('agentsTable').innerHTML, /sub-agent · Galileo · gpt-test \/ high/, 'a sub-agent without a recorded role is still a sub-agent');
+  assert.match(h.node('agentsTable').innerHTML, />main thread<\/button><div class="lane-meta">mother agent</, 'the first lane is the main thread');
 });
 
 test('the agent card shows a plain-text spawn prompt and the final answer', async () => {
@@ -433,6 +441,38 @@ test('the root card shows the first user message; zooming to a lane frames its l
   const a = h.run('state.a'), b = h.run('state.b');
   assert.ok(a <= 80000 && b >= 100000, 'window covers the lifetime');
   assert.ok(a >= 40000 && b - a <= 80000, 'window is framed around the lifetime, not the whole session');
+});
+
+test('a block click frames the block, a second click zooms in; a turn glyph inside the view keeps the window', async () => {
+  const h = await harness().ready();
+  const model = session();
+  model.ended = model.now = model.lanes[0].ended = 3600000;
+  model.lanes[0].turns = [{ id: 'turn', start: 1000, end: 3600000, status: 'completed' }];
+  await h.open('session', model);
+  h.run('setWindow(0, 3600000)');
+  // a 5-minute block in a 60-minute view: framed with a margin, centred on the block
+  h.run('zoomToBlock(1200000, 1500000)');
+  let a = h.run('state.a'), b = h.run('state.b');
+  assert.equal(b - a, 390000, 'block × 1.3');
+  assert.equal((a + b) / 2, 1350000, 'centred on the block');
+  // the same block again already fills the view: zoom in on its centre
+  h.run('zoomToBlock(1200000, 1500000)');
+  a = h.run('state.a'); b = h.run('state.b');
+  assert.equal(b - a, 130000, 'a third of the framed view');
+  assert.equal((a + b) / 2, 1350000);
+  // a tiny block never goes below two minutes
+  h.run('zoomToBlock(1350000, 1351000)');
+  assert.equal(h.run('state.b') - h.run('state.a'), 120000);
+  // a turn glyph whose turn is in view: the window stays, the band appears
+  h.run('setWindow(1000000, 2000000)');
+  h.run('focusInterval(1200000, 1500000)');
+  assert.deepEqual([h.run('state.a'), h.run('state.b')], [1000000, 2000000], 'the view is kept');
+  assert.equal(JSON.stringify(h.run('state.focus')), JSON.stringify({ a: 1200000, b: 1500000 }));
+  // partly in view: framed; entirely elsewhere: the whole session for orientation
+  h.run('focusInterval(1900000, 2200000)');
+  assert.equal(h.run('state.b') - h.run('state.a'), 390000, 'framed');
+  h.run('focusInterval(3000000, 3100000)');
+  assert.deepEqual([h.run('state.a'), h.run('state.b')], [1000, 3600000], 'whole session');
 });
 
 test('a lane focused in the operations list stays on the timeline outside its window', async () => {
@@ -486,6 +526,27 @@ test('phase and retry-role quick filters are mutually exclusive', async () => {
   assert.equal(h.run('state.phase'), 'all', 'clicking the active phase again clears it');
 });
 
+test('"Failures only" lists failed steps and leaves query misses out; both counts are named in the heading', async () => {
+  const h = await harness().ready();
+  const model = session();
+  const lane = model.lanes[0];
+  lane.ops.push(
+    { id: 'miss', lane: 'lane', turn: 'turn', title: 'rg needle src', phase: 'code', kind: 'search', status: 'failed', exit: 1, query_miss: true, start: 7000, end: 7100 },
+    { id: 'fail', lane: 'lane', turn: 'turn', title: 'go test ./...', phase: 'test', kind: 'go test', status: 'failed', exit: 1, start: 8000, end: 9000 },
+  );
+  model.totals.failed_ops = 1;
+  model.totals.query_misses = 1;
+  await h.open('session', model);
+  assert.match(h.node('main').innerHTML, /1 failed<\/span> · <span [^>]*>1 query misses<\/span>/);
+  h.run('state.failedOnly = true; renderLower()');
+  const listed = attributeValues(h.node('operationList').innerHTML, 'data-id');
+  assert.deepEqual(listed, ['fail'], 'the search miss is not a failure');
+  assert.match(h.node('operationCount').textContent, /^1 operation · failures only/);
+  h.run('state.failedOnly = false; state.sort = "failed"; renderLower()');
+  assert.equal(attributeValues(h.node('operationList').innerHTML, 'data-id')[0], 'fail', '"Failed first" puts the failed step, not the miss, on top');
+  assert.match(h.node('operationList').innerHTML, /rg needle src[^]*?failed exit 1 · query miss, not a failure/);
+});
+
 // A root lane with two turns and a wait for the user between them.
 function waitingSession() {
   const model = session();
@@ -509,17 +570,17 @@ test('the breakdown shows a record count per row and hides rows with neither tim
   const row = phase => (body.match(new RegExp(`data-phase="${phase}"[^]*?</button>`)) || [''])[0];
   assert.match(row('code'), /<span class="count num">2<\/span>/);
   assert.match(row('wait_user'), /<span class="count num">1<\/span>/);
-  assert.match(row('wait_user'), /1 intervals in the list/);
+  assert.match(row('wait_user'), /1 interval in the list/);
   assert.equal(row('test'), '', 'a phase with no time and no operations in the window is hidden');
   assert.equal(row('no_telemetry'), '');
-  assert.doesNotMatch(body, /Inside testing & release/, 'an all-empty section is hidden too');
+  assert.doesNotMatch(body, /Attempts &amp; retries/, 'an all-empty section is hidden too');
 });
 
 test('waiting for the user lists the gaps themselves and opens the waiting inspector', async () => {
   const h = await harness().ready();
   await h.open('session', waitingSession());
   h.action('filter', { phase: 'wait_user' });
-  assert.match(h.node('operationCount').textContent, /^1 intervals/);
+  assert.match(h.node('operationCount').textContent, /^1 interval /);
   const list = h.node('operationList').innerHTML;
   assert.match(list, /data-action="inspect-interval"/);
   assert.match(list, /data-ta="50000" data-tb="70000"/);
@@ -602,4 +663,426 @@ test('identical consecutive operations in one lane fold into one row that unfold
   assert.ok(attributeValues(list, 'data-id').includes('sleep-1'), 'unfolded members are listed');
   assert.match(list, /fold run/);
   assert.match(h.node('operationCount').textContent, /^9 operations · durations/);
+});
+
+// A session with a code-review turn: the second partition keys the same segments by SDLC stage.
+function lifecycleSession() {
+  const model = session();
+  const lane = model.lanes[0];
+  model.ended = model.now = lane.ended = 301000;
+  lane.turns = [
+    { id: 'turn', start: 1000, end: 50000, status: 'completed' },
+    { id: 'turn2', start: 70000, end: 301000, status: 'completed', skill: 'code-review-cc', review: true, lc: 'review' },
+  ];
+  lane.ops = [
+    { id: 'op-A', lane: 'lane', turn: 'turn', title: 'Operation A', phase: 'code', kind: 'read', status: 'completed', start: 2000, end: 3000, lc: 'implement', lc_rule: 'phase code' },
+    { id: 'op-T', lane: 'lane', turn: 'turn', title: 'go test', phase: 'test', kind: 'go test', status: 'completed', start: 10000, end: 20000, lc: 'test', lc_rule: 'phase test' },
+    { id: 'op-B', lane: 'lane', turn: 'turn2', title: 'go test', phase: 'test', kind: 'go test', status: 'completed', start: 80000, end: 90000, lc: 'review', lc_rule: 'skill code-review-cc' },
+    { id: 'op-P', lane: 'lane', turn: 'turn2', title: 'journalctl -u app', phase: 'infra', kind: 'journalctl', status: 'completed', start: 100000, end: 101000, lc: 'review', lc_rule: 'skill code-review-cc' },
+  ];
+  lane.segments = [
+    { s: 1000, e: 2000, p: 'llm', lc: 'implement' },
+    { s: 2000, e: 3000, p: 'code', lc: 'implement', op: 'op-A' },
+    { s: 3000, e: 10000, p: 'llm', lc: 'test' },
+    { s: 10000, e: 20000, p: 'test', lc: 'test', op: 'op-T' },
+    { s: 20000, e: 50000, p: 'llm', lc: 'llm' },
+    { s: 50000, e: 70000, p: 'wait_user', lc: 'wait_user' },
+    { s: 70000, e: 80000, p: 'llm', lc: 'review' },
+    { s: 80000, e: 90000, p: 'test', lc: 'review', op: 'op-B' },
+    { s: 90000, e: 100000, p: 'llm', lc: 'review' },
+    { s: 100000, e: 101000, p: 'infra', lc: 'review', op: 'op-P' },
+    { s: 101000, e: 301000, p: 'llm', lc: 'review' },
+  ];
+  lane.stages = [{ s: 1000, e: 3000, p: 'code' }, { s: 3000, e: 20000, p: 'test' }, { s: 70000, e: 90000, p: 'test' }, { s: 90000, e: 101000, p: 'infra' }];
+  lane.by_phase = { llm: 248000, code: 1000, test: 20000, infra: 1000, wait_user: 20000 };
+  lane.by_lifecycle = { implement: 2000, test: 17000, llm: 30000, wait_user: 20000, review: 231000 };
+  model.totals = { ops: 4, user_messages: 0, tokens: {}, reviews: 1, by_phase: lane.by_phase, by_lifecycle: lane.by_lifecycle };
+  return model;
+}
+
+test('the breakdown leads with lifecycle stages: same total as the activity list, with each stage split into model and tool time', async () => {
+  const h = await harness().ready();
+  await h.open('session', lifecycleSession());
+  const body = h.node('breakdownBody').innerHTML;
+  const lifecycleAt = body.indexOf('Lifecycle stage'), activityAt = body.indexOf('>Activity<');
+  assert.ok(lifecycleAt >= 0 && activityAt > lifecycleAt, 'lifecycle section precedes the activity section');
+  const row = lc => (body.match(new RegExp(`data-lc="${lc}"[^]*?</button>`)) || [''])[0];
+  assert.match(row('review'), /Code review/);
+  assert.match(row('review'), /<span class="time num">3m</);
+  assert.match(row('review'), /model 3m · tools 11s/, 'a review stage includes its model time and says so');
+  assert.match(row('implement'), /model 1s · tools 1s/);
+  assert.match(row('llm'), /Model output — no tool call followed/);
+  assert.match(row('llm'), /<span class="time num">30s/);
+  assert.equal(row('operate'), '', 'a stage with no time and no records is hidden');
+  const shares = [...body.matchAll(/data-lc="([a-z_]+)"[^]*?<span class="share num">([^<]*)<\/span>/g)].map(m => parseFloat(m[2]));
+  assert.ok(Math.abs(shares.reduce((n, x) => n + x, 0) - 100) < 0.2, `lifecycle shares sum to 100: ${shares}`);
+  const activity = [...body.matchAll(/data-phase="([a-z_]+)"[^]*?<span class="share num">([^<]*)<\/span>/g)].map(m => parseFloat(m[2]));
+  assert.ok(Math.abs(activity.reduce((n, x) => n + x, 0) - 100) < 0.2, `activity shares still sum to 100: ${activity}`);
+  assert.match(row('review'), /<span class="count num">2<\/span>/, 'the two operations inside the review turn');
+});
+
+test('a lifecycle row filters the operations list by stage and is exclusive with the activity filter', async () => {
+  const h = await harness().ready();
+  await h.open('session', lifecycleSession());
+  h.action('filter-lifecycle', { lc: 'review' });
+  assert.match(h.node('operationCount').textContent, /^2 operations/);
+  assert.match(h.node('operationList').innerHTML, /journalctl -u app/);
+  assert.doesNotMatch(h.node('operationList').innerHTML, /Operation A/);
+  assert.match(h.node('roleFilter').innerHTML, /data-action="clear-lifecycle"[^]*?Code review/);
+  h.action('filter', { phase: 'test' });
+  assert.equal(h.run('state.lifecycle'), 'all', 'an activity filter replaces the stage filter');
+  assert.match(h.node('operationCount').textContent, /^2 operations/, 'both go test runs, whichever stage they served');
+  h.action('filter-lifecycle', { lc: 'test' });
+  assert.equal(h.run('state.phase'), 'all');
+  assert.match(h.node('operationCount').textContent, /^1 operation /, 'only the test run that served the testing stage');
+  h.action('filter-lifecycle', { lc: 'wait_user' });
+  assert.equal(h.run('state.phase'), 'wait_user', 'a pass-through stage is its activity phase');
+  assert.match(h.node('operationCount').textContent, /^1 interval /);
+  h.action('clear-filters');
+  assert.equal(h.run('state.lifecycle'), 'all');
+});
+
+test('the timeline draws a lifecycle strip under the fill for work stages only, and the inspector names the stage and its rule', async () => {
+  const h = await harness().ready();
+  await h.open('session', lifecycleSession());
+  const svg = timelineHTML(h);
+  const strips = [...svg.matchAll(/class="lc-strip"[^>]*data-lc="([a-z_]+)"/g)].map(m => m[1]);
+  assert.ok(strips.includes('review') && strips.includes('implement'), `strips: ${strips}`);
+  assert.ok(!strips.includes('llm') && !strips.includes('wait_user'), 'pass-through stages draw no strip');
+  assert.match(svg, /<title>Code review · /);
+  // the tiles are part of the page markup; the metrics container is not a tracked node
+  assert.match(h.node('main').innerHTML, /Code review<\/span><strong class="metric-value num">3m</);
+  assert.doesNotMatch(h.node('main').innerHTML, /Planning<\/span>/);
+  h.action('inspect', { id: 'op-P' });
+  assert.match(h.node('inspector').innerHTML, /Lifecycle stage<\/dt><dd class="mono">Code review · skill code-review-cc/);
+});
+
+test('the guide lists every lifecycle stage with its rule sources and says which have no detector', async () => {
+  const h = await harness().ready();
+  await h.open('session', lifecycleSession());
+  h.action('guide');
+  h.take('/api/rules').resolve({ rules: [{ match: 'go test', phase: 'test', kind: 'go test' }], priority: {}, builtin_rules: 1, review_skills: ['(?i)code-review'], lifecycle: { stages: ['plan', 'requirements', 'design', 'implement', 'review', 'test', 'release', 'operate'], defaults: { code: 'implement', build: 'implement', infra: 'implement', test: 'test', release: 'release' }, pins: { 'pr review': 'review', journalctl: 'operate' }, matchers: { skills: { review: ['(?i)code-review'] }, roles: { review: ['^pragmatic$'] }, paths: {} } } });
+  await flush();
+  const table = h.node('lifecycleTable').innerHTML;
+  for (const name of ['Planning', 'Requirements', 'Design', 'Implementation', 'Code review', 'Testing / QA', 'Deployment / release', 'Maintenance / operations']) assert.match(table, new RegExp(name));
+  assert.match(table, /Requirements[^]*?no built-in detector/);
+  assert.match(table, /command kinds: pr review/);
+  assert.match(table, /agent roles: <code>\^pragmatic\$<\/code>/);
+  assert.match(table, /after this lane's first release only/);
+});
+
+test('the session heading names the source next to the id, model and CLI version', async () => {
+  const h = await harness().ready();
+  await h.open('session', { ...session(), source: 'codex', model: 'gpt-6-astra', cli: '0.153.4' });
+  assert.match(h.node('main').innerHTML, /<span class="source-tag">codex<\/span> Session session · gpt-6-astra · cli 0\.153\.4/);
+});
+
+test('the recorded request and the recorded answer share one prose style and one header height', async () => {
+  const h = await harness().ready();
+  const model = session();
+  model.lanes[0].markers = [{ kind: 'user_message', t: 1000, text: 'Do the thing.' }, { kind: 'final_answer', t: 60000, text: 'Done.' }];
+  model.lanes[0].turns = [{ id: 'turn', start: 1000, end: 60000, status: 'completed', final: 'Done.' }];
+  await h.open('session', model);
+  const main = h.node('main').innerHTML;
+  assert.match(main, /<div class="answer-head"><span class="eyebrow">First user message · [^<]*<\/span><\/div><p class="prose-block scroll-fade">Do the thing\.<\/p>/);
+  assert.match(main, /<div class="answer-block prose-block scroll-fade" tabindex="0">Done\.<\/div>/);
+  // a live session without an answer yet keeps the same header, so the two eyebrows still align
+  const live = { ...session('live'), live: true };
+  live.lanes[0].markers = [{ kind: 'user_message', t: 1000, text: 'Do the thing.' }];
+  await h.open('live', live);
+  assert.match(h.node('main').innerHTML, /<div id="lastRecorded"><div class="answer-head"><span class="eyebrow">Last answer<\/span><\/div><p class="muted-note">No final answer recorded yet/);
+});
+
+test('the stylesheet keeps [hidden] above every display rule (the Lock button hid only in the DOM property)', () => {
+  // .btn sets display:inline-flex, which beats the UA's [hidden]{display:none}; with the gate off
+  // the Lock button therefore rendered although lockBtn.hidden was true
+  const css = readFileSync(join(__dirname, 'web/app.css'), 'utf8');
+  assert.match(css, /\[hidden\]\{display:none!important\}/);
+});
+
+test('a stage bracket tooltip states the real split: tool time of the phase vs model output before it', async () => {
+  const h = await harness().ready();
+  const model = session();
+  const lane = model.lanes[0];
+  // 47 s of model output ending in a 2 s infra command: the bracket is Infra 49 s, the fill is llm
+  lane.ops = [{ id: 'dk', lane: 'lane', turn: 'turn', title: 'docker run', phase: 'infra', kind: 'docker', status: 'completed', start: 48000, end: 50000 }];
+  lane.segments = [{ s: 1000, e: 48000, p: 'llm' }, { s: 48000, e: 50000, p: 'infra', op: 'dk' }, { s: 50000, e: 121000, p: 'llm' }];
+  lane.stages = [{ s: 1000, e: 50000, p: 'infra', n: 1 }];
+  lane.by_phase = { llm: 118000, infra: 2000 };
+  await h.open('session', model);
+  h.run("const bracket = { dataset: { bracket: '1', stage: '1', ta: '1000', tb: '50000', phase: 'infra', lane: 'lane' }, classList: { contains: () => false } }; bracket.closest = () => bracket; tooltip({ target: bracket, clientX: 10, clientY: 10 })");
+  const tip = h.node('tooltip').innerHTML;
+  assert.match(tip, /Stage: Infrastructure · 49s/);
+  assert.match(tip, /tools 2s · model output before them 47s/);
+  assert.match(tip, /1 infra operation plus the LLM time before each/);
+});
+
+test('the session list shows the last completed answer as its description, verbatim; the session page leaves it to the Last answer panel', async () => {
+  const h = await harness().ready();
+  // the list: from the index's tail read (last_answer), first paragraph only, markdown stripped
+  h.run("go('sessions')");
+  h.take('/api/sessions').resolve([{ id: 'abc', title: 'Ship it', cwd: '/synthetic', started: 1000, updated: 2000, bytes: 10, agents: 0, last_answer: 'Deployed **1.0.14** to the device, including the fix.\n\nDetails:\n- a\n- b' }]);
+  await flush();
+  const rows = h.node('fleetRows').innerHTML;
+  assert.match(rows, /<em class="desc"[^>]*>Deployed 1\.0\.14 to the device, including the fix\.<\/em>/);
+  assert.doesNotMatch(rows, /Details:/, 'only the first paragraph');
+  // the page: from the last completed turn's final message of the loaded model
+  const model = session();
+  model.lanes[0].turns = [
+    { id: 'turn', start: 1000, end: 60000, status: 'completed', final: 'Earlier answer.' },
+    { id: 'turn2', start: 61000, end: 121000, status: 'completed', final: 'На iPad 7 установлена и запущена версия.\n\nПодробности ниже.' },
+    { id: 'turn3', start: 121000, end: 121000, status: 'aborted', final: '' },
+  ];
+  await h.open('session', model);
+  const main = h.node('main').innerHTML;
+  assert.match(main, /<h1>Synthetic session<\/h1><p class="subtitle">/, 'no description under the title: the panel below shows the whole answer');
+  assert.doesNotMatch(main, /session-desc/);
+});
+
+// ---- lite authentication ----
+test('a 401 locks the viewer: the lock screen replaces the page, nothing of a session is rendered, polling stops', async () => {
+  const h = await harness().ready({ auth: { enabled: true, authenticated: true } });
+  assert.equal(h.node('lockBtn').hidden, false, 'the Lock button shows when the gate is on');
+  await h.open('session', session());
+  assert.ok(h.run('state.pollTimer') != null, 'polling runs on a session page');
+  // the next poll answers 401: the session is dropped and the lock screen shown
+  const polling = h.poll();
+  h.take('/api/sessions/session/version').resolve({ error: 'auth' }, 401);
+  await polling; await flush();
+  assert.equal(h.run('state.locked'), true);
+  assert.equal(h.run('state.pollTimer'), null, 'polling stopped');
+  assert.equal(h.run('state.model'), null, 'no session data kept while locked');
+  const main = h.node('main').innerHTML;
+  assert.match(main, /<h1 id="lockTitle">Enter a login token<\/h1>/);
+  assert.match(main, /todobem token/);
+  assert.doesNotMatch(main, /Synthetic session/);
+  // navigation is inert while locked
+  h.run("go('sessions')");
+  assert.equal(h.run('state.locked'), true);
+  assert.doesNotMatch(h.node('main').innerHTML, /Sessions in view/);
+});
+
+test('a valid token unlocks: JSON POST to /api/login, then a normal boot; a bad token explains why', async () => {
+  const h = await harness().ready({ auth: { enabled: true, authenticated: false } });
+  // the first list load answers 401 → locked
+  h.run("state.locked = false; loadSessions().catch(() => {})");
+  h.take('/api/sessions').resolve({ error: 'auth' }, 401); await flush();
+  assert.equal(h.run('state.locked'), true);
+  // a used token
+  h.node('lockToken').value = 'USEDTOKEN';
+  h.run("unlock('USEDTOKEN').catch(e => console.error(e))");
+  const bad = h.take('/api/login');
+  assert.equal(bad.options.method, 'POST');
+  assert.equal(bad.options.headers['Content-Type'], 'application/json');
+  assert.deepEqual(JSON.parse(bad.options.body), { token: 'USEDTOKEN' });
+  bad.resolve({ error: 'auth', reason: 'used' }, 401); await flush();
+  assert.match(h.node('main').innerHTML, /already used/);
+  assert.equal(h.run('state.locked'), true);
+  // a good token: 204, then the app boots again
+  h.run("unlock('  goodtoken  ').catch(e => console.error(e))");
+  const good = h.take('/api/login');
+  assert.deepEqual(JSON.parse(good.options.body), { token: 'goodtoken' }, 'trimmed');
+  good.resolve(undefined, 204); await flush();
+  h.take('/api/auth').resolve({ enabled: true, authenticated: true }); await flush();
+  h.take('/api/sessions').resolve([]); await flush();
+  h.take('/api/sessions').resolve([]); await flush();
+  assert.equal(h.run('state.locked'), false);
+  assert.match(h.node('main').innerHTML, /<h1>Sessions<\/h1>/);
+  assert.equal(h.errors.length, 0);
+});
+
+test('the CLI link (#token=…) is redeemed once on load and scrubbed from the URL', async () => {
+  const h = harness({ hash: '#token=ABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRST' });
+  // boot is already running (scripts executed at harness creation): it must have posted the token
+  const req = h.take('/api/login');
+  assert.deepEqual(JSON.parse(req.options.body), { token: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRST' });
+  assert.equal(h.location.hash, '#sessions', 'the fragment is replaced before the request is answered');
+  req.resolve(undefined, 204); await flush();
+  h.take('/api/auth').resolve({ enabled: true, authenticated: true }); await flush();
+  h.take('/api/sessions').resolve([]); await flush();
+  h.take('/api/sessions').resolve([]); await flush();
+  assert.equal(h.run('state.locked'), false);
+  assert.match(h.node('main').innerHTML, /<h1>Sessions<\/h1>/);
+  assert.equal(h.errors.length, 0);
+});
+
+test('a login link arriving as a hash change (tab already open) is redeemed too', async () => {
+  const h = await harness().ready({ auth: { enabled: true, authenticated: true } });
+  h.location.hash = '#token=ABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRST';
+  h.window.emit('hashchange');
+  const req = h.take('/api/login');
+  assert.deepEqual(JSON.parse(req.options.body), { token: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRST' });
+  assert.equal(h.location.hash, '#sessions');
+  req.resolve(undefined, 204); await flush();
+  h.take('/api/auth').resolve({ enabled: true, authenticated: true }); await flush();
+  h.take('/api/sessions').resolve([]); await flush();
+  h.take('/api/sessions').resolve([]); await flush();
+  assert.equal(h.run('state.locked'), false);
+  assert.equal(h.errors.length, 0);
+});
+
+test('the Lock button posts a logout and locks the viewer', async () => {
+  const h = await harness().ready({ auth: { enabled: true, authenticated: true } });
+  h.action('lock');
+  const req = h.take('/api/logout');
+  assert.equal(req.options.method, 'POST');
+  req.resolve(undefined, 204); await flush();
+  assert.equal(h.run('state.locked'), true);
+  assert.match(h.node('main').innerHTML, /Enter a login token/);
+});
+
+test('with the gate off the Lock button stays hidden and no login is ever attempted', async () => {
+  const h = await harness().ready();
+  assert.equal(h.node('lockBtn').hidden, true);
+  assert.equal(h.requests.filter(r => r.url === '/api/login').length, 0);
+});
+
+test('a 401 while opening a session keeps the lock screen (no "Could not load session") and names the command to run', async () => {
+  const h = await harness().ready({ auth: { enabled: true, authenticated: true } });
+  h.run("go('session', 'abc')");
+  h.take('/api/sessions/abc').resolve({ error: 'auth' }, 401); await flush();
+  const main = h.node('main').innerHTML;
+  assert.equal(h.run('state.locked'), true);
+  assert.doesNotMatch(main, /Could not load session/);
+  assert.match(main, /Enter a login token/);
+  assert.match(main, /Run the following command in the project root/);
+  assert.match(main, /<pre class="lock-cmd">\.\/todobem token -ttl 30d<\/pre>/);
+  assert.equal(h.errors.length, 0, 'a lock is not an error');
+});
+
+/* ---------- Insights page ---------- */
+function insightsReport({ sessions = 3, fallback = '', pending = [] } = {}) {
+  const card = (rule, group, time_ms, tokens, extra = {}) => ({
+    rule, group, title: rule, exposure: { time_ms, count: 2, tokens }, sessions: 2, of: sessions, no_data: 0,
+    distribution: [{ label: rule === 'T1' ? 'under 5 min' : '/root/a', n: 2, time_ms, tokens, sessions: 2 }],
+    evidence: [
+      { session: 'S1', title: 'First session', lane: '/root', lane_id: 'L1', a: 2000, b: 3000, time_ms: 1000, note: 'one sub-agent at a time' },
+      { session: 'S2', title: 'Second session', lane: '/root', lane_id: 'L2', a: 4000, b: 5000, time_ms: 1000, note: 'one sub-agent at a time' },
+    ],
+    ...extra,
+  });
+  return {
+    generated_at: 1000, params: { cwd: '', period: { kind: '30d', from: 0, to: 1000 } },
+    scope: { sessions, live_excluded: 0, pending, root_elapsed_ms: 36000e3, root_in_turn_ms: 18000e3, wait_user_ms: 7200e3, tokens: { input: 1e6, cached: 9e5, output: 1e4, reasoning: 0, total: 1.01e6 }, clis: {} },
+    top_time: ['D4'], top_tokens: ['T1'],
+    groups: [
+      { id: 'sub_agents', time_ms: 3600e3, tokens: { input: 0, cached: 0, output: 0 }, order_time: 0, order_tokens: 1, cards: [card('D4', 'sub_agents', 3600e3, null, { share: { pct: 20, of_ms: 18000e3, of: 'in_turn' } })] },
+      { id: 'you_and_the_agent', time_ms: 60e3, tokens: { input: 5e5, cached: 1e5, output: 0 }, order_time: 1, order_tokens: 0, cards: [card('T1', 'you_and_the_agent', 60e3, { input: 5e5, cached: 1e5, output: 0 }, { stats: { starts_after_15m: 3, uncached_after_15m: 4e5 } })] },
+    ],
+    fallback, sources: [{ id: 'S1', fp: 'a' }], sources_hash: 'h1',
+  };
+}
+
+async function openInsights(h, report = insightsReport(), sessions = []) {
+  h.run("go('insights')");
+  h.take('/api/sessions').resolve(sessions); await flush();
+  h.take('/api/insights/report?period=30d').resolve(report); await flush();
+  assert.equal(h.run('state.page'), 'insights');
+  assert.equal(h.errors.length, 0);
+}
+
+test('the insights page loads a 30-day report and renders groups, cards and the period', async () => {
+  const h = await harness().ready();
+  await openInsights(h);
+  const html = h.node('main').innerHTML;
+  assert.match(html, /Sub-agents ran one after another/);
+  assert.match(html, /Cache after a break/);
+  assert.match(html, /Report for/);
+  assert.match(html, /3 closed sessions/);
+  assert.match(html, /Do sub-agents run in parallel/);
+  // time axis: the sub-agents group (1 h) comes before "you and the agent" (1 min)
+  assert.ok(html.indexOf('id="group-sub_agents"') < html.indexOf('id="group-you_and_the_agent"'));
+  // every group is listed, the empty ones say so, not_measured last
+  assert.match(html, /Nothing found in this period/);
+  assert.ok(html.lastIndexOf('id="group-not_measured"') > html.indexOf('id="group-models_and_effort"'));
+  assert.match(html, /The main thread waited 1h while only one sub-agent was working \(of 5h main thread time in turns, 20\.0 %\)\. In 2 of 3 sessions\./);
+});
+
+test('the axis switch reorders groups by tokens and back', async () => {
+  const h = await harness().ready();
+  await openInsights(h);
+  h.action('ins-axis', { axis: 'tokens' });
+  let html = h.node('main').innerHTML;
+  assert.ok(html.indexOf('id="group-you_and_the_agent"') < html.indexOf('id="group-sub_agents"'));
+  assert.match(html, /aria-pressed="true">Tokens/);
+  h.action('ins-axis', { axis: 'time' });
+  html = h.node('main').innerHTML;
+  assert.ok(html.indexOf('id="group-sub_agents"') < html.indexOf('id="group-you_and_the_agent"'));
+});
+
+test('an evidence row opens the session and focuses the interval', async () => {
+  const h = await harness().ready();
+  await openInsights(h);
+  h.action('ins-evidence', { id: 'S1', a: '2000', b: '3000' });
+  h.take('/api/sessions/S1').resolve(session('S1')); await flush();
+  assert.equal(h.run('state.page'), 'session');
+  assert.equal(h.run('state.id'), 'S1');
+  assert.equal(h.run('JSON.stringify(state.focus)'), '{"a":2000,"b":3000}');
+  assert.equal(h.run('state.pendingFocus'), null);
+});
+
+test('a focus parameter in the session hash highlights the interval after the load', async () => {
+  const h = await harness().ready();
+  h.location.hash = '#session/S9?focus=5000-6000';
+  h.run('route()');
+  h.take('/api/sessions/S9').resolve(session('S9')); await flush();
+  assert.equal(h.run('state.id'), 'S9');
+  assert.equal(h.run('JSON.stringify(state.focus)'), '{"a":5000,"b":6000}');
+});
+
+test('changing the period or the project requests a new report', async () => {
+  const h = await harness().ready();
+  await openInsights(h);
+  h.document.emit('change', { target: { id: 'insPeriod', value: '7d' } });
+  h.take('/api/sessions').resolve([{ id: 'S1', title: 'One', cwd: '/proj', updated: Date.now(), started: 1 }]); await flush();
+  h.take('/api/insights/report?period=7d&cwd=%2Fproj').resolve(insightsReport()); await flush();
+  assert.equal(h.run('state.insights.params.period.kind'), '30d', 'the report answers with its own resolved period');
+  h.document.emit('change', { target: { id: 'insProject', value: '' } });
+  h.take('/api/sessions').resolve([]); await flush();
+  h.take('/api/insights/report?period=30d').resolve(insightsReport()); await flush();
+  h.document.emit('change', { target: { id: 'insPeriod', value: 'custom' } });
+  h.take('/api/sessions').resolve([]); await flush();
+  const url = h.requests.find(r => !r.done && r.url.startsWith('/api/insights/report?period=custom')).url;
+  assert.match(url, /period=custom&from=\d+&to=\d+$/);
+  assert.equal(h.errors.length, 0);
+});
+
+test('fewer than three sessions and an empty period are said in plain words', async () => {
+  const h = await harness().ready();
+  await openInsights(h, insightsReport({ sessions: 2, fallback: 'fewer_than_3_sessions' }));
+  assert.match(h.node('main').innerHTML, /Only 2 closed sessions in this period\. Findings across sessions need 3 or more\./);
+  h.action('ins-regenerate');
+  h.take('/api/sessions').resolve([]); await flush();
+  h.take('/api/insights/report?period=30d').resolve(insightsReport({ sessions: 0, fallback: 'no_sessions' })); await flush();
+  assert.match(h.node('main').innerHTML, /No closed sessions in this period\. Change the period\./);
+  assert.equal(h.errors.length, 0);
+});
+
+test('pending sessions show the Analyze button and a scan polls until it finishes', async () => {
+  const h = await harness().ready();
+  await openInsights(h, insightsReport({ pending: [{ id: 'P1', title: 'Pending' }] }));
+  assert.match(h.node('main').innerHTML, /1 session not analyzed yet/);
+  h.action('ins-scan');
+  h.take('/api/insights/scan?period=30d').resolve({ started: true, queued: 1, scan: { running: true, done: 0, total: 1 } }); await flush();
+  assert.match(h.node('reportBar').innerHTML, /Analyzing 0 of 1 sessions/);
+  h.run('insightsPoll()'); // timers are mocked: fire the poll by hand
+  h.take('/api/insights/status').resolve({ running: false, done: 1, total: 1, errors: 0 }); await flush();
+  h.take('/api/sessions').resolve([]); await flush();
+  h.take('/api/insights/report?period=30d').resolve(insightsReport()); await flush();
+  assert.match(h.node('main').innerHTML, /3 closed sessions/);
+  assert.equal(h.errors.length, 0);
+});
+
+test('every visible insights string is plain English', async () => {
+  const h = await harness().ready();
+  const samples = h.run('insightsTextSamples()');
+  const banned = /\b(utilize|leverage|facilitate|via|i\.e\.|e\.g\.|etc\.?|paradigm|orthogonal|granular|heuristic|deterministic|counterfactual)\b/i;
+  assert.ok(samples.length > 60);
+  for (const text of samples) {
+    assert.doesNotMatch(text, banned, text);
+    for (const sentence of text.split(/(?<=[.!?])\s+/)) {
+      const words = sentence.trim().split(/\s+/).filter(Boolean).length;
+      assert.ok(words <= 24, `sentence too long (${words} words): ${sentence}`);
+    }
+  }
 });

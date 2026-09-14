@@ -77,6 +77,18 @@ func TestCommand(t *testing.T) {
 		{"glab mr view 58", Code, "glab mr"},
 		{"glab mr create --fill --yes", Release, "glab mr"},
 		{"glab mr merge 58 --squash", Release, "glab mr"},
+		{"glab mr note 58 -m 'looks good'", Release, "mr note"},
+		{"glab mr approve 58", Release, "mr approve"},
+		{"journalctl -u app -n 50", Infra, "journalctl"},
+		{"xcrun swiftc -parse-as-library -typecheck -warnings-as-errors main.swift", Build, "swiftc"},
+		{"swiftc -O -o out main.swift", Build, "swiftc"},
+		// loop headers carry no command: the variable must not be read as a head word
+		{"for log in artifacts/a.log artifacts/b.log; do tail -n 5 \"$log\"; done", Code, "read"},
+		{"for f in *.go; do gofmt -l $f; done", Code, "format"},
+		{"docker logs web --tail 100", Code, "docker logs"},
+		{"docker compose logs -f api", Code, "docker logs"},
+		{"kubectl logs pod/x", Code, "kubectl logs"},
+		{"kubectl describe pod x", Code, "kubectl describe"},
 		{"glab ci status", Code, "glab ci"},
 		{"glab alias list", Code, "glab"},
 		{"glab api projects/2151/jobs/2777637/trace | rg -n 'FAIL' | tail -130", Code, "glab api"},
@@ -279,6 +291,112 @@ func TestHeredocTransparentRoutes(t *testing.T) {
 		}
 		if got := Command(cmd, ""); got.Phase == Test || got.Phase == Release {
 			t.Errorf("data in %q classified as %s/%s", cmd, got.Phase, got.Kind)
+		}
+	}
+}
+
+func TestInfraIdentityAllowlist(t *testing.T) {
+	// only infra kinds whose exit code is a verdict get a retry identity
+	for _, c := range []struct {
+		cmd  string
+		want bool
+	}{
+		{"docker run --rm img cmd", true},
+		{"docker compose -f x.yml up -d", true},
+		{"ssh buildhost 'cat /tmp/lease.json'", true},
+		{"brew install jq", true},
+		{"pkill -f vite", false},
+		{"kill 1234", false},
+		{"chmod +x run.sh", false},
+		{"open http://127.0.0.1:5173", false},
+		{"rm -rf build", false},
+		{"systemctl restart app", false},
+		{"launchctl list", false},
+		{"log show --last 5m", false},
+	} {
+		if got := Command(c.cmd, "").Identity != ""; got != c.want {
+			t.Errorf("%q identity=%v, want %v (%s/%s)", c.cmd, got, c.want, Command(c.cmd, "").Phase, Command(c.cmd, "").Kind)
+		}
+	}
+}
+
+func TestProbesAndQueryKinds(t *testing.T) {
+	// a non-zero exit of a query kind is an answer (not there, no match, not installed), never a
+	// failed step; edits, scripts, `shell` and every other phase keep their verdict
+	for _, c := range []struct {
+		cmd      string
+		phase    Phase
+		kind     string
+		query    bool
+		identity bool
+	}{
+		{"test -d build/worktrees/x", Code, "probe", true, false},
+		{"[ -f go.mod ] && echo yes", Code, "probe", true, false},
+		{"which node", Code, "probe", true, false},
+		{"type -a python3", Code, "probe", true, false},
+		{"command -v docker", Code, "probe", true, false},
+		{"command -v docker >/dev/null 2>&1", Code, "probe", true, false},
+		{"rg -n 'IQ_DISABLE_SYNC' apps", Code, "search", true, false},
+		{"cat run.sh && sed -n '1,135p' scripts/x.sh", Code, "read", true, false},
+		{"ls -ld .claude/skills", Code, "list", true, false},
+		{"git diff --quiet -- qa", Code, "git diff", true, false},
+		{"git rev-parse HEAD && git cat-file -t abc123", Code, "git", true, false},
+		{"pgrep -f vite", Code, "process", true, false},
+		{"docker image ls --format '{{.Repository}}'", Code, "docker", true, false},
+		{"docker image inspect app:latest --format '{{json .Config}}'", Code, "docker", true, false},
+		{"docker container ls -a", Code, "docker", true, false},
+		{"docker compose ls", Code, "docker", true, false},
+		{"docker run --rm img cmd", Infra, "docker", false, true},
+		{"cd /repo && echo hi", Code, "shell", false, false},
+		{"cd apps/backend && rg -n 'IQ_DISABLE_SYNC' src", Code, "search", true, false},
+		{"cd /repo && ls -la build", Code, "list", true, false},
+		{"cd /repo && git status --short", Code, "git status", true, false},
+		{"cd /repo && sed -i 's/a/b/' x.go", Code, "sed -i", false, false},
+		{"set -o pipefail; cat /tmp/x.log | head -5", Code, "read", true, false},
+		{"cat > /tmp/x.py <<'PY'\nprint(1)\nPY", Code, "write-file", false, false},
+		{"python3 - <<'PY'\nfrom pathlib import Path\nPath('a').write_text('x')\nPY", Code, "script-write", false, false},
+		{"go test ./...", Test, "go test", false, true},
+		{"git push -u origin main", Release, "git push", false, true},
+	} {
+		r := Command(c.cmd, "")
+		if r.Phase != c.phase || r.Kind != c.kind {
+			t.Errorf("%q → %s/%s, want %s/%s (rule %s)", c.cmd, r.Phase, r.Kind, c.phase, c.kind, r.Rule)
+			continue
+		}
+		if got := QueryKind(r.Phase, r.Kind); got != c.query {
+			t.Errorf("%q query=%v, want %v", c.cmd, got, c.query)
+		}
+		if got := r.Identity != ""; got != c.identity {
+			t.Errorf("%q identity=%v, want %v", c.cmd, got, c.identity)
+		}
+	}
+	if r := Command("cd apps/backend && rg -n 'IQ_DISABLE_SYNC' src", ""); r.Title != "rg -n 'IQ_DISABLE_SYNC' src  (+1 more)" {
+		t.Errorf("title follows the deciding segment: %q", r.Title)
+	}
+	// Codex's own parsed kinds are queries; the role suffix of a grouped op does not matter
+	for _, k := range []string{"read", "search", "list_files"} {
+		if !QueryKind(Code, k) || !QueryKind(Code, k+"|first") {
+			t.Errorf("codex kind %q must be a query", k)
+		}
+	}
+	if QueryKind(Test, "read") || QueryKind(Infra, "docker") {
+		t.Error("only the code phase has query kinds")
+	}
+}
+
+func TestHead(t *testing.T) {
+	for _, c := range []struct{ cmd, want string }{
+		{"python3 artifacts/x/capture.py before", "python3"},
+		{"IQ_XCB_SCHEME=iQuantize-iOS IQ_XCB_DESTINATION='platform=iOS Simulator,name=iPad' apps/iquantize/scripts/xcodebuild-app.sh build", "apps/iquantize/scripts/xcodebuild-app.sh"},
+		{"native_path=\"$(skills/screencast/scripts/native/build.sh 2>/dev/null)\"; \"$native_path\" doctor", "$native_path"},
+		{"sudo -n timeout 30 ./deploy-thing --now", "./deploy-thing"},
+		{"env -u FOO bash -lc 'make'", "bash"},
+		{"cd /repo && ./dev build > /tmp/b.log 2>&1", "cd"},
+		{"python3 - <<'PY'\nprint(1)\nPY", "python3"},
+		{"", ""},
+	} {
+		if got := Head(c.cmd); got != c.want {
+			t.Errorf("Head(%q) = %q, want %q", c.cmd, got, c.want)
 		}
 	}
 }

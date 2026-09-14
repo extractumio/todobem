@@ -56,12 +56,18 @@ func Derive(s *Session, now int64) {
 		for _, t := range l.Turns {
 			t.Review = classify.ReviewSkill(t.Skill)
 		}
+		for _, o := range l.Ops {
+			// a query kind's non-zero exit is an answer, not a failed step (before groups: the
+			// retry roles read Operation.Failure)
+			o.QueryMiss = o.Exit != nil && *o.Exit != 0 && classify.QueryKind(o.Phase, o.Kind)
+		}
 		extendPendingOperations(l, now)
 		markBackground(l, now)
 	}
 	assignGroups(s)
 	for _, l := range s.Lanes {
 		buildSegments(l, l.ID == root.ID, now)
+		assignLifecycle(l)
 		buildStages(l)
 		l.Active = activeIntervals(l)
 	}
@@ -397,9 +403,25 @@ func assignGroups(s *Session) {
 	sort.Slice(all, func(i, j int) bool { return all[i].Start < all[j].Start })
 	var ids []string
 	for id, ops := range byID {
-		if len(ops) >= 2 {
-			ids = append(ids, id)
+		if len(ops) < 2 {
+			continue
 		}
+		// Infra groups are retries only: an identical infra command repeated with every run
+		// succeeding is a poll or a routine (`ssh host 'cat lease.json'` ×7), not an attempt
+		// sequence. Test/build/release reruns after a pass are re-verification and stay grouped.
+		if ops[0].Phase == classify.Infra {
+			failed := false
+			for _, o := range ops {
+				if o.Failure() {
+					failed = true
+					break
+				}
+			}
+			if !failed {
+				continue
+			}
+		}
+		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return byID[ids[i]][0].Start < byID[ids[j]][0].Start })
 	roleOf := map[string]string{} // op id -> group role for non-attempt members
@@ -422,7 +444,7 @@ func assignGroups(s *Session) {
 			if o.End > g.End {
 				g.End = o.End
 			}
-			failed := o.Status == "failed" || (o.Exit != nil && *o.Exit != 0)
+			failed := o.Failure()
 			if failed {
 				g.Failed++
 			}
@@ -455,7 +477,8 @@ func assignGroups(s *Session) {
 	// only when exactly one group is in that state at the time and the op is on the same lane
 	// as the failed attempt. Ambiguous cases get no role.
 	for _, x := range all {
-		if x.Identity != "" || x.Phase == classify.LLM || x.Phase == classify.Compaction {
+		// attempts of a group are never also the recovery between two other attempts
+		if x.Group != "" || x.Phase == classify.LLM || x.Phase == classify.Compaction {
 			continue
 		}
 		var hit *window
@@ -551,22 +574,15 @@ func buildTotals(s *Session) {
 			}
 		}
 	}
-	// Code-review spans: turns where a review/cleanup skill was actually invoked. Root turns
-	// contribute wall clock (ReviewMs); every lane's review turns are counted (Reviews).
+	t.ByLifecycle = map[Lifecycle]int64{}
+	for k, v := range root.ByLifecycle {
+		t.ByLifecycle[k] = v
+	}
+	// Review/cleanup skill invocations across all lanes; their time is in by_lifecycle.
 	for _, l := range s.Lanes {
 		for _, tn := range l.Turns {
-			if !tn.Review {
-				continue
-			}
-			t.Reviews++
-			if l == root {
-				end := tn.End
-				if tn.Status == "open" {
-					end = s.Now
-				}
-				if end > tn.Start {
-					t.ReviewMs += end - tn.Start
-				}
+			if tn.Review {
+				t.Reviews++
 			}
 		}
 	}
@@ -575,8 +591,10 @@ func buildTotals(s *Session) {
 		t.Ops += len(l.Ops)
 		t.Turns += len(l.Turns)
 		for _, o := range l.Ops {
-			if o.Status == "failed" {
+			if o.Failure() {
 				t.Failed++
+			} else if o.QueryMiss {
+				t.QueryMisses++
 			}
 			if o.Phase == classify.Compaction {
 				t.Compactions++

@@ -26,8 +26,13 @@ Relevant lines:
   - `Reasoning`, `AgentMessage` — model output, timed by `payload.started_at_ms/completed_at_ms`.
   - `ContextCompaction` — harness pause, timed the same way.
   - `SubAgentActivity` — `item.kind` started/interacted/completed/interrupted, `item.agent_thread_id`, `item.agent_path`.
-- `type=event_msg`, `payload.type=token_count`: `payload.info.total_token_usage.total_tokens` is the
-  CUMULATIVE token total of that thread (take the last one per file). May be `info: null` sometimes.
+- `type=event_msg`, `payload.type=token_count`: `payload.info.total_token_usage` is the CUMULATIVE
+  usage of that thread and `payload.info.last_token_usage` the usage of the call just made. The record
+  is written more often than once per call (repeats carry the same total), the counter restarts when a
+  thread is resumed, and a forked sub-agent's first record carries its PARENT's total. Ground truth
+  for a file is therefore the sum of `last_token_usage` over the records whose `total_tokens` differs
+  from the previous record's — never the last cumulative value, never a plain sum of all records.
+  May be `info: null` or all-zero (around compactions): skip those.
 - Old files (< cli 0.147): commands are `type=response_item, payload.type=function_call, name=exec_command`
   (cmd in `payload.arguments` JSON) paired with `function_call_output` by `call_id`; no CommandExecution items.
 
@@ -37,7 +42,10 @@ Relevant lines:
    between turns (= waiting for user) on the ROOT file.
 3. user messages on the root: count (human only) and first text (first 100 chars).
 4. sub-agent threads: how many files belong to this session (parent chain), and their agent_path.
-5. tokens: sum over root + sub-agent files of the last cumulative `total_tokens`.
+5. tokens: per file, Σ `last_token_usage` over the records whose `total_tokens` changed (see above);
+   session = sum over root + sub-agent files. Where a file has no counter restart and no inherited
+   counter this equals its last cumulative `total_tokens`; where it has, it does not — that is the point.
+   `model_context_window` is not a limit on anything observed (input_tokens exceed it); do not report it as one.
 6. commands on all files: count; the 10 LONGEST by completed_at_ms - started_at_ms, with the command
    text (first 200 chars), exit code, duration, and YOUR OWN category for each:
    code (reading/searching/editing sources, local git), build, test, release (push/PR/deploy/install),

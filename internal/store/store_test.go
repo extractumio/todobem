@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -67,5 +68,91 @@ func TestSafeName(t *testing.T) {
 	}
 	if got := safeName("../escape"); got == "../escape" || filepath.Base(got) != got {
 		t.Errorf("path-y id not neutralized: %q", got)
+	}
+}
+
+func TestPruneKeepsKnownEntriesAndReportsSize(t *testing.T) {
+	dir := t.TempDir()
+	st := New(dir)
+	fp := Fingerprint{Rules: "r1"}
+	for _, id := range []string{"known", "other-home", "weird/id"} {
+		if err := st.Save(id, sampleModel(), fp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "known.json.gz.tmp"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("mine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if files, bytes := st.Size(); files != 3 || bytes <= 0 {
+		t.Fatalf("size before: %d files, %d bytes", files, bytes)
+	}
+	removed, freed, err := st.Prune([]string{"known", "weird/id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the entry of another home and the leftover temp file go; unrelated files stay
+	if removed != 2 || freed <= 0 {
+		t.Fatalf("removed=%d freed=%d", removed, freed)
+	}
+	if _, _, ok := st.Load("known"); !ok {
+		t.Error("the known entry was removed")
+	}
+	if _, _, ok := st.Load("weird/id"); !ok {
+		t.Error("the hashed-name entry was removed")
+	}
+	if _, _, ok := st.Load("other-home"); ok {
+		t.Error("the unknown entry survived")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "notes.txt")); err != nil {
+		t.Error("an unrelated file was removed")
+	}
+	if files, _ := st.Size(); files != 2 {
+		t.Errorf("size after: %d files", files)
+	}
+	if n, _, err := New("").Prune(nil); n != 0 || err != nil {
+		t.Errorf("disabled store: %d, %v", n, err)
+	}
+}
+
+func TestSidecarRoundTripVersionAndPrune(t *testing.T) {
+	dir := t.TempDir()
+	st := New(dir)
+	fp := Fingerprint{Rules: "r1", Files: []FileFP{{Path: "a", Size: 1, Mod: 1}}}
+	type rec struct {
+		N int    `json:"n"`
+		S string `json:"s"`
+	}
+	if err := st.SaveSidecar("facts", "s1", 3, fp, rec{N: 7, S: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	var got rec
+	gotFP, ok := st.LoadSidecar("facts", "s1", 3, &got)
+	if !ok || got.N != 7 || got.S != "x" || !gotFP.Equal(fp) {
+		t.Fatalf("round trip: ok=%v got=%+v fp=%+v", ok, got, gotFP)
+	}
+	if _, ok := st.LoadSidecar("facts", "s1", 4, &got); ok {
+		t.Error("another version must miss")
+	}
+	if _, ok := st.LoadSidecar("other", "s1", 3, &got); ok {
+		t.Error("another kind must miss")
+	}
+	if _, ok := New("").LoadSidecar("facts", "s1", 3, &got); ok || New("").SaveSidecar("facts", "s1", 3, fp, got) != nil {
+		t.Error("disabled store must miss and no-op")
+	}
+	// prune keeps the sidecars of known ids and drops the rest
+	if err := st.SaveSidecar("facts", "gone", 3, fp, got); err != nil {
+		t.Fatal(err)
+	}
+	if removed, _, err := st.Prune([]string{"s1"}); err != nil || removed != 1 {
+		t.Fatalf("prune removed=%d err=%v", removed, err)
+	}
+	if _, ok := st.LoadSidecar("facts", "s1", 3, &got); !ok {
+		t.Error("the known id's sidecar was pruned")
+	}
+	if _, ok := st.LoadSidecar("facts", "gone", 3, &got); ok {
+		t.Error("the unknown id's sidecar survived")
 	}
 }

@@ -192,7 +192,7 @@ func Summaries(ix *Index, opened map[string]*Session) []model.SessionSummary {
 			continue
 		}
 		desc := ix.Descendants(fm.ThreadID)
-		sum := model.SessionSummary{ID: fm.ThreadID, Title: ix.Name(fm.ThreadID), CWD: fm.CWD, Branch: fm.Branch, Started: fm.Started, Updated: fm.ModTime.UnixMilli(), Bytes: fm.Size, Agents: len(desc), CLI: fm.CLIVersion, Model: fm.Model}
+		sum := model.SessionSummary{ID: fm.ThreadID, Title: ix.Name(fm.ThreadID), CWD: fm.CWD, Branch: fm.Branch, Started: fm.Started, Updated: fm.ModTime.UnixMilli(), Bytes: fm.Size, Agents: len(desc), CLI: fm.CLIVersion, Model: fm.Model, LastAnswer: fm.LastAnswer}
 		for _, d := range desc {
 			sum.Bytes += d.Size
 			if d.ModTime.After(fm.ModTime) {
@@ -206,6 +206,14 @@ func Summaries(ix *Index, opened map[string]*Session) []model.SessionSummary {
 			sum.Live = s.Model.Live
 			if s.Model.Title != "" {
 				sum.Title = s.Model.Title
+			}
+			// a parsed session knows its last completed turn exactly
+			if len(s.Model.Lanes) > 0 {
+				for _, tn := range s.Model.Lanes[0].Turns {
+					if tn.Status == "completed" && tn.Final != "" {
+						sum.LastAnswer = clip(tn.Final, 1200)
+					}
+				}
 			}
 			s.mu.Unlock()
 		}

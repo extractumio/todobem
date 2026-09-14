@@ -3,9 +3,6 @@
 package classify
 
 import (
-	"crypto/sha1"
-	"encoding/hex"
-	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -46,6 +43,8 @@ type Result struct {
 	Identity string `json:"identity"` // normalized command for retry grouping ("" if not groupable)
 	Title    string `json:"title"`    // short human label
 	Rule     string `json:"rule"`     // which rule matched (for the inspector)
+	// Lifecycle is the SDLC stage pinned by the winning rule ("" = PhaseLifecycle(Phase)).
+	Lifecycle Lifecycle `json:"lifecycle,omitempty"`
 }
 
 // Rule is one row of the classification table. Match forms:
@@ -86,7 +85,7 @@ var Rules = []Rule{
 	{"gh release", Release, "gh release", ""},
 	{"gh run rerun", Release, "ci rerun", ""},
 	{"gh run cancel", Release, "ci cancel", ""},
-	{"glab mr create", Release, "glab mr", ""}, {"glab mr merge", Release, "glab mr", ""}, {"glab mr approve", Release, "glab mr", ""}, {"glab mr close", Release, "glab mr", ""}, {"glab mr update", Release, "glab mr", ""}, {"glab mr note", Release, "glab mr", ""}, {"glab mr rebase", Release, "glab mr", ""},
+	{"glab mr create", Release, "glab mr", ""}, {"glab mr merge", Release, "glab mr", ""}, {"glab mr approve", Release, "mr approve", ""}, {"glab mr close", Release, "glab mr", ""}, {"glab mr update", Release, "glab mr", ""}, {"glab mr note", Release, "mr note", ""}, {"glab mr rebase", Release, "glab mr", ""},
 	{"glab mr", Release, "glab mr", "create/merge/… ; reads split off below"},
 	{"glab ci", Release, "glab ci", ""},
 	{"glab release", Release, "glab release", ""},
@@ -142,7 +141,8 @@ var Rules = []Rule{
 	{"seg:^(bash|sh|zsh)\\s+-n\\b", Test, "syntax-check", "shell syntax check"},
 
 	// ---- build
-	{"swift build", Build, "swift build", ""}, {"swift package", Build, "swift package", ""}, {"xcodegen", Build, "xcodegen", ""}, {"swift run", Unknown, "swift run", "runs the built product"},
+	{"swift build", Build, "swift build", ""}, {"swift package", Build, "swift package", ""}, {"xcodegen", Build, "xcodegen", ""},
+	{"swiftc", Build, "swiftc", "compiler invoked directly (also -typecheck)"}, {"xcrun swiftc", Build, "swiftc", ""}, {"swift run", Unknown, "swift run", "runs the built product"},
 	{"xcodebuild", Build, "xcodebuild", "any xcodebuild not matched as test"},
 	{"cargo build", Build, "cargo build", ""}, {"cargo check", Build, "cargo check", ""}, {"cargo clippy", Test, "lint", ""}, {"wasm-pack", Build, "wasm-pack", ""}, {"rustup", Infra, "rustup", "toolchain management"},
 	{"go build", Build, "go build", ""}, {"go vet", Test, "lint", ""}, {"go generate", Build, "go generate", ""},
@@ -172,7 +172,7 @@ var Rules = []Rule{
 	{"scp", Infra, "scp", ""}, {"rsync", Infra, "rsync", ""},
 	{"kill", Infra, "kill", ""}, {"pkill", Infra, "kill", ""}, {"killall", Infra, "kill", ""},
 	{"brew", Infra, "brew", ""}, {"apt", Infra, "apt", ""}, {"apt-get", Infra, "apt", ""},
-	{"systemctl", Infra, "systemctl", ""}, {"launchctl", Infra, "launchctl", ""},
+	{"systemctl", Infra, "systemctl", ""}, {"launchctl", Infra, "launchctl", ""}, {"journalctl", Infra, "journalctl", ""},
 	{"chmod", Infra, "chmod", ""}, {"chown", Infra, "chown", ""},
 	{"open", Infra, "open", "macOS open"}, {"osascript", Infra, "osascript", ""},
 	{"xcrun devicectl", Infra, "devicectl", ""},
@@ -207,7 +207,7 @@ var Rules = []Rule{
 	{"rg", Code, "search", ""}, {"grep", Code, "search", ""}, {"egrep", Code, "search", ""}, {"fgrep", Code, "search", ""}, {"ag", Code, "search", ""}, {"ack", Code, "search", ""},
 	{"find", Code, "list", ""}, {"fd", Code, "list", ""}, {"ls", Code, "list", ""}, {"tree", Code, "list", ""}, {"stat", Code, "list", ""}, {"file", Code, "list", ""},
 	{"wc", Code, "inspect", ""}, {"jq", Code, "inspect", ""}, {"yq", Code, "inspect", ""}, {"sort", Code, "inspect", ""}, {"uniq", Code, "inspect", ""}, {"cut", Code, "inspect", ""}, {"awk", Code, "inspect", ""}, {"tr", Code, "inspect", ""}, {"diff", Code, "inspect", ""}, {"cmp", Code, "inspect", ""}, {"strings", Code, "inspect", ""}, {"od", Code, "inspect", ""}, {"xxd", Code, "inspect", ""}, {"md5", Code, "inspect", ""}, {"shasum", Code, "inspect", ""}, {"sha256sum", Code, "inspect", ""},
-	{"echo", Code, "shell", ""}, {"printf", Code, "shell", ""}, {"true", Code, "shell", ""}, {"test", Code, "shell", ""}, {"[", Code, "shell", ""}, {"pwd", Code, "shell", ""}, {"cd", Code, "shell", ""}, {"which", Code, "shell", ""}, {"type", Code, "shell", ""}, {"env", Code, "shell", ""}, {"date", Code, "shell", ""}, {"export", Code, "shell", ""}, {"set", Code, "shell", ""}, {"uname", Code, "shell", ""}, {"whoami", Code, "shell", ""}, {"hostname", Code, "shell", ""}, {"id", Code, "shell", ""}, {"basename", Code, "shell", ""}, {"dirname", Code, "shell", ""}, {"realpath", Code, "shell", ""}, {"read", Code, "shell", ""}, {"exit", Code, "shell", ""}, {"local", Code, "shell", ""}, {"declare", Code, "shell", ""}, {"shift", Code, "shell", ""}, {"return", Code, "shell", ""}, {"break", Code, "shell", ""}, {"continue", Code, "shell", ""}, {"trap", Code, "shell", ""}, {"wait", WaitWorker, "wait", "shell wait for background jobs"},
+	{"echo", Code, "shell", ""}, {"printf", Code, "shell", ""}, {"true", Code, "shell", ""}, {"test", Code, "probe", "exit 1 = the condition is false"}, {"[", Code, "probe", ""}, {"pwd", Code, "shell", ""}, {"cd", Code, "shell", ""}, {"which", Code, "probe", "exit 1 = not installed"}, {"type", Code, "probe", ""}, {"command -v", Code, "probe", "the builtin form of which"}, {"env", Code, "shell", ""}, {"date", Code, "shell", ""}, {"export", Code, "shell", ""}, {"set", Code, "shell", ""}, {"uname", Code, "shell", ""}, {"whoami", Code, "shell", ""}, {"hostname", Code, "shell", ""}, {"id", Code, "shell", ""}, {"basename", Code, "shell", ""}, {"dirname", Code, "shell", ""}, {"realpath", Code, "shell", ""}, {"read", Code, "shell", ""}, {"exit", Code, "shell", ""}, {"local", Code, "shell", ""}, {"declare", Code, "shell", ""}, {"shift", Code, "shell", ""}, {"return", Code, "shell", ""}, {"break", Code, "shell", ""}, {"continue", Code, "shell", ""}, {"trap", Code, "shell", ""}, {"wait", WaitWorker, "wait", "shell wait for background jobs"},
 	{"ps", Code, "process", ""}, {"lsof", Code, "process", ""}, {"pgrep", Code, "process", ""}, {"top", Code, "process", ""}, {"df", Code, "system", ""}, {"du", Code, "system", ""}, {"uptime", Code, "system", ""}, {"sw_vers", Code, "system", ""}, {"system_profiler", Code, "system", ""}, {"defaults", Code, "system", ""}, {"plutil", Code, "inspect", ""}, {"mdls", Code, "inspect", ""},
 	{"git status", Code, "git status", ""}, {"git diff", Code, "git diff", ""}, {"git log", Code, "git log", ""}, {"git show", Code, "git show", ""}, {"git blame", Code, "git blame", ""},
 	{"git rev-parse", Code, "git", ""}, {"git branch", Code, "git branch", ""}, {"git remote", Code, "git", ""}, {"git ls-files", Code, "git", ""}, {"git grep", Code, "search", ""}, {"git describe", Code, "git", ""}, {"git config", Code, "git", ""}, {"git rev-list", Code, "git", ""}, {"git shortlog", Code, "git", ""}, {"git cat-file", Code, "git", ""}, {"git ls-remote", Code, "git", ""}, {"git name-rev", Code, "git", ""}, {"git stash list", Code, "git", ""}, {"git worktree list", Code, "git", ""}, {"git -C", Code, "git", "resolved by next word"}, {"git", Code, "git", "any other git subcommand (local)"}, {"git merge-base", Code, "git", ""}, {"git check-ignore", Code, "git", ""},
@@ -221,8 +221,8 @@ var Rules = []Rule{
 	{"go env", Code, "go env", ""}, {"go list", Code, "go list", ""}, {"go doc", Code, "go doc", ""}, {"cargo metadata", Code, "cargo", ""}, {"npm ls", Code, "npm", ""}, {"npm view", Code, "npm", ""}, {"npm run", Unknown, "npm run", "arbitrary script"}, {"seg:^npm run build\\S*", Build, "npm build", "npm run build:*"},
 	{"xcrun devicectl device info", Code, "devicectl", ""}, {"xcrun devicectl list", Code, "devicectl", ""}, {"xcrun simctl list", Code, "simulator", ""},
 	{"xcode-select", Code, "xcode", ""}, {"xcodebuild -list", Code, "xcode", ""}, {"xcodebuild -showsdks", Code, "xcode", ""}, {"xcodebuild -version", Code, "xcode", ""},
-	{"docker ps", Code, "docker", ""}, {"docker info", Code, "docker", ""}, {"docker version", Code, "docker", ""}, {"docker events", Code, "docker", ""}, {"docker images", Code, "docker", ""}, {"docker logs", Code, "docker", ""}, {"docker inspect", Code, "docker", ""}, {"docker compose ps", Code, "docker", ""}, {"docker compose logs", Code, "docker", ""}, {"docker network ls", Code, "docker", ""}, {"docker volume ls", Code, "docker", ""}, {"docker system df", Code, "docker", ""},
-	{"kubectl get", Code, "kubectl", ""}, {"kubectl describe", Code, "kubectl", ""}, {"kubectl logs", Code, "kubectl", ""},
+	{"docker ps", Code, "docker", ""}, {"docker info", Code, "docker", ""}, {"docker version", Code, "docker", ""}, {"docker events", Code, "docker", ""}, {"docker images", Code, "docker", ""}, {"docker image ls", Code, "docker", ""}, {"docker image list", Code, "docker", ""}, {"docker image inspect", Code, "docker", ""}, {"docker container ls", Code, "docker", ""}, {"docker container list", Code, "docker", ""}, {"docker container inspect", Code, "docker", ""}, {"docker volume inspect", Code, "docker", ""}, {"docker network inspect", Code, "docker", ""}, {"docker compose ls", Code, "docker", ""}, {"docker logs", Code, "docker logs", ""}, {"docker inspect", Code, "docker", ""}, {"docker compose ps", Code, "docker", ""}, {"docker compose logs", Code, "docker logs", ""}, {"docker network ls", Code, "docker", ""}, {"docker volume ls", Code, "docker", ""}, {"docker system df", Code, "docker", ""},
+	{"kubectl get", Code, "kubectl", ""}, {"kubectl describe", Code, "kubectl describe", ""}, {"kubectl logs", Code, "kubectl logs", ""},
 	{"security find-identity", Code, "codesign", ""}, {"codesign", Code, "codesign", ""}, {"spctl", Code, "codesign", ""},
 	{"base64", Code, "inspect", ""},
 }
@@ -428,8 +428,12 @@ func command(cmd string, codexKind string, depth int) Result {
 	}
 	best := -1
 	bestSeg := ""
+	// The highest-priority phase wins; at equal priority the first segment does, except that a
+	// `shell` segment (`cd`, `echo`, `set`) yields to a substantive one: `cd x && rg foo` is
+	// the search, and its exit code is the search's answer (a query miss, not a failed step).
 	consider := func(r Rule, label string, seg string) {
-		if p := Priority[r.Phase]; p > best {
+		p := Priority[r.Phase]
+		if p > best || p == best && res.Kind == "shell" && r.Kind != "shell" {
 			best, res.Phase, res.Kind, res.Rule, bestSeg = p, r.Phase, r.Kind, label, seg
 		}
 	}
@@ -522,6 +526,7 @@ func command(cmd string, codexKind string, depth int) Result {
 	if best < 0 {
 		res.Phase, res.Kind, res.Rule = Unknown, "unknown", ""
 	}
+	res.Lifecycle = LifecyclePins[res.Kind]
 	// A polling loop followed by real work: the work wins, but remember the queue.
 	if loop && res.Phase != WaitWorker {
 		res.Queued = true
@@ -533,10 +538,46 @@ func command(cmd string, codexKind string, depth int) Result {
 			res.Title += "  (+" + strconv.Itoa(len(segments(masked))-1) + " more)"
 		}
 	}
-	if res.Phase == Test || res.Phase == Build || res.Phase == Release {
+	// Attempt phases: a repeated identical command is a rerun or a retry (model.assignGroups).
+	// Infra joins only for kinds whose exit code is a verdict (infraAttemptKinds), so a failed
+	// `docker run …` and its identical retry form a group while a `pkill` that exits 1 because
+	// nothing matched never reads as a failed attempt.
+	if res.Phase == Test || res.Phase == Build || res.Phase == Release || (res.Phase == Infra && infraAttemptKinds[res.Kind]) {
 		res.Identity = Identity(cmd)
 	}
 	return res
+}
+
+// infraAttemptKinds are the infra kinds whose exit code is a verdict on the command, so an
+// identical repeat after a failure is a retry worth grouping. Routine kinds are left out on
+// purpose: kill/pkill exit 1 when nothing matched, chmod/open/osascript/caffeinate/cleanup/
+// diagnostics/media/service commands are repeated as a matter of course, systemctl/launchctl/
+// journalctl are queried, not attempted. Grow the set from cmd/dump evidence.
+var infraAttemptKinds = map[string]bool{"docker": true, "docker compose": true, "kubectl": true, "ssh": true, "scp": true, "rsync": true, "brew": true, "apt": true, "rustup": true, "setup-script": true, "remote vm": true, "devicectl": true}
+
+// queryKinds are the code-phase kinds whose command only reads state, so a non-zero exit is an
+// answer to the agent (no match, not there, not installed, has changes, bad path) rather than a
+// step that failed. Ops of these kinds keep the harness's literal status and exit but are not
+// counted in Totals.Failed (model.Operation.QueryMiss). Edits, patches, scripts, `shell` and
+// everything outside the code phase stay verdicts. Grow the set from cmd/dump evidence.
+var queryKinds = map[string]bool{
+	"read": true, "search": true, "list": true, "list_files": true, "probe": true, "inspect": true, "process": true, "system": true, "version": true,
+	"git": true, "git diff": true, "git show": true, "git status": true, "git log": true, "git blame": true,
+	"docker": true, "docker logs": true, "kubectl": true, "kubectl describe": true, "kubectl logs": true,
+	"gh": true, "glab": true, "glab mr": true, "glab ci": true, "go list": true, "go doc": true, "go env": true, "npm": true, "cargo": true,
+	"devicectl": true, "simulator": true, "xcode": true, "codesign": true, "dns": true, "net": true,
+}
+
+// QueryKind reports whether a non-zero exit of a code-phase op of this kind is an answer rather
+// than a failure (see queryKinds). Kinds carry a "|role" suffix once grouped; only the base counts.
+func QueryKind(phase Phase, kind string) bool {
+	if phase != Code {
+		return false
+	}
+	if i := strings.IndexByte(kind, '|'); i >= 0 {
+		kind = kind[:i]
+	}
+	return queryKinds[kind]
 }
 
 // cosmeticFilters are pipe stages that only shape output; they never change what ran.
@@ -649,7 +690,11 @@ func matchHead(seg string) (Rule, string, bool) {
 		}
 		h := fields[0]
 		if shellKeywords[h] {
-			if len(fields) == 1 {
+			// `for x in …`, `select x in …` and `case $x in` are headers with no command in
+			// them: the words after the keyword are a variable and a word list (`for log in
+			// a.log b.log` must not classify as the macOS `log` tool). The body follows in
+			// later segments (`do …`). `while` / `until` / `if` are followed by a command.
+			if h == "for" || h == "select" || h == "case" || len(fields) == 1 {
 				return Rule{}, "", false
 			}
 			seg = strings.Join(fields[1:], " ")
@@ -658,6 +703,9 @@ func matchHead(seg string) (Rule, string, bool) {
 		switch h {
 		case "sudo", "nohup", "exec", "command", "builtin", "nice", "timeout", "gtimeout", "env", "xargs", "caffeinate", "time":
 			rest := fields[1:]
+			if h == "command" && len(rest) > 0 && (rest[0] == "-v" || rest[0] == "-V") {
+				return wordRules["command -v"], "command -v", true
+			}
 			for len(rest) > 0 && (strings.HasPrefix(rest[0], "-") || (h == "timeout" && isNumberish(rest[0])) || (h == "env" && strings.Contains(rest[0], "="))) {
 				if h == "env" && (rest[0] == "-u" || rest[0] == "--unset") && len(rest) > 1 {
 					rest = rest[2:]
@@ -873,57 +921,6 @@ func dispatcherVerb(sub string) (Rule, bool) {
 	return r, ok
 }
 
-// ReviewSkillPattern matches the NAME of a skill whose run is a code review or code-cleanup
-// pass (code-review-cc, cc-code-review, /codereview, $code-review, simplify, simplify-code).
-// It is applied ONLY to the skill name in the harness's skills.selected_skill_instructions
-// injection — the record of an ACTUAL invocation — never to prose in a user or model message,
-// so the word "codereview" in a chat message can never trigger it. Bare "review" is excluded so
-// unrelated skills (security-review, design-review, pr-review-responder) do not match. Served at
-// /api/rules so this matcher is inspectable alongside the command table.
-var ReviewSkillPattern = regexp.MustCompile(`(?i)(^|[-_/.$@ ])(cc-)?(code[-_]?review|codereview|simplify)([-_/.]|$)`)
-
-// reviewSkillREs is the live set of review-skill matchers: the built-in one plus any the user
-// added through a config (LoadUserConfig). Set once at startup, read-only while serving.
-var reviewSkillREs = []*regexp.Regexp{ReviewSkillPattern}
-
-// ReviewSkill reports whether a selected skill name denotes a code-review / cleanup run.
-func ReviewSkill(name string) bool {
-	if name == "" {
-		return false
-	}
-	for _, re := range reviewSkillREs {
-		if re.MatchString(name) {
-			return true
-		}
-	}
-	return false
-}
-
-// RulesFingerprint hashes the effective classifier — the full rule table (built-in + user overlay)
-// and the review-skill matchers — so a session cache keyed by it is invalidated whenever
-// classification could change. The leading schema tag also invalidates it across model changes.
-func RulesFingerprint() string {
-	h := sha1.New()
-	fmt.Fprint(h, "schema=1;")
-	for _, r := range Rules {
-		fmt.Fprintf(h, "%s|%s|%s\n", r.Match, r.Phase, r.Kind)
-	}
-	for _, re := range reviewSkillREs {
-		fmt.Fprintf(h, "rev:%s\n", re.String())
-	}
-	return hex.EncodeToString(h.Sum(nil))[:16]
-}
-
-// ReviewSkillMatchers returns the source form of every active review-skill pattern (built-in
-// first, then user-added), so /api/rules can show this matcher the way it shows the Rules table.
-func ReviewSkillMatchers() []string {
-	out := make([]string, len(reviewSkillREs))
-	for i, re := range reviewSkillREs {
-		out[i] = re.String()
-	}
-	return out
-}
-
 // matchScript applies head/headpath rules to an executable path.
 func matchScript(path string) (Rule, string, bool) {
 	base := path
@@ -1082,6 +1079,40 @@ func maskHeredocs(cmd string) (string, []heredocSource) {
 	}
 	return strings.Join(out, "\n"), bodies
 }
+
+// Head names the command a rollout line ran, for grouping unmatched commands: the first word
+// of the first top-level segment, env assignments and wrapper words (env, sudo, nohup, timeout,
+// time, exec, command, nice) stripped. A heredoc script is named by its interpreter.
+func Head(cmd string) string {
+	masked, _ := maskHeredocs(cmd)
+	for _, seg := range segments(masked) {
+		fields := shellFields(strings.TrimSpace(seg))
+		for len(fields) > 0 && reAssignment.MatchString(fields[0]) {
+			fields = fields[1:] // env assignments before the command; a bare `x=$(…)` segment has none
+		}
+		for len(fields) > 1 {
+			switch fields[0] {
+			case "env", "sudo", "nohup", "timeout", "gtimeout", "time", "exec", "command", "nice", "caffeinate":
+				rest := fields[1:]
+				for len(rest) > 1 && (strings.HasPrefix(rest[0], "-") || reAssignment.MatchString(rest[0]) || isNumberish(rest[0])) {
+					if rest[0] == "-u" || rest[0] == "--unset" {
+						rest = rest[1:]
+					}
+					rest = rest[1:]
+				}
+				fields = rest
+				continue
+			}
+			break
+		}
+		if len(fields) > 0 {
+			return fields[0]
+		}
+	}
+	return ""
+}
+
+var reAssignment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 
 // shortTitle makes a compact one-line label from a command. Heredoc scripts are labelled
 // by their interpreter and first meaningful body line.

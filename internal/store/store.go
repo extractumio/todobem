@@ -13,13 +13,15 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/extractumio/todobem/internal/model"
 )
 
 // cacheVersion is bumped when the on-disk shape changes or the parser's output for the same
 // input changes (a marker rule, a new injected prefix); an older file is treated as a miss.
-const cacheVersion = 3
+// 4: per-call token accounting (Lane.Tokens), Operation.QueryMiss and Totals.QueryMisses.
+const cacheVersion = 5
 
 // FileFP fingerprints one source file. Append-only rollouts change size on every write and the
 // file set changes when a sub-agent appears, so (path,size,mtime) detects every real change.
@@ -143,6 +145,67 @@ func (s *Store) Save(id string, m *model.Session, fp Fingerprint) error {
 		return err
 	}
 	return os.Rename(tmp, s.path(id))
+}
+
+// Size reports the cache entries on disk and their total bytes (0, 0 when disabled).
+func (s *Store) Size() (files int, bytes int64) {
+	if !s.enabled() {
+		return 0, 0
+	}
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return 0, 0
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json.gz") {
+			continue
+		}
+		if info, err := e.Info(); err == nil {
+			files++
+			bytes += info.Size()
+		}
+	}
+	return files, bytes
+}
+
+// Prune deletes the entries whose session id is not in keep (a session that the current
+// source tree no longer lists: another codex home, a deleted rollout) and any leftover
+// temporary file. Entries are named by id, so no file is opened. The cache is derived data:
+// a wrongly removed entry costs one re-parse, nothing else.
+func (s *Store) Prune(keep []string) (removed int, freed int64, err error) {
+	if !s.enabled() {
+		return 0, 0, nil
+	}
+	known := map[string]bool{}
+	for _, id := range keep {
+		known[safeName(id)] = true
+	}
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		// "<id>.json.gz" and its sidecars "<id>.<kind>.json.gz" (safeName never contains a dot)
+		owner, _, _ := strings.Cut(name, ".")
+		stale := strings.HasSuffix(name, ".json.gz") && !known[owner] || strings.HasSuffix(name, ".tmp")
+		if !stale {
+			continue
+		}
+		info, statErr := e.Info()
+		if rmErr := os.Remove(filepath.Join(s.dir, name)); rmErr != nil {
+			err = rmErr
+			continue
+		}
+		removed++
+		if statErr == nil {
+			freed += info.Size()
+		}
+	}
+	return removed, freed, err
 }
 
 // safeName keeps a plain thread id as the filename and hashes anything with unusual characters,
