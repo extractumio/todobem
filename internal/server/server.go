@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,24 +20,51 @@ import (
 	"github.com/extractumio/todobem/internal/classify"
 	"github.com/extractumio/todobem/internal/codex"
 	"github.com/extractumio/todobem/internal/model"
+	"github.com/extractumio/todobem/internal/store"
 )
 
 type Server struct {
-	ix       *codex.Index
-	home     string
-	mu       sync.Mutex
-	opened   map[string]*codex.Session
-	lastUse  map[string]time.Time
-	lastScan time.Time
-	web      fs.FS
-	maxOpen  int
+	ix        *codex.Index
+	home      string
+	mu        sync.Mutex
+	opened    map[string]*codex.Session // parser-backed sessions (LRU, expensive)
+	lastUse   map[string]time.Time
+	cached    map[string]*cachedEntry // read-only models served from disk (cheap; separate LRU)
+	cache     *store.Store
+	lastScan  time.Time
+	web       fs.FS
+	maxOpen   int
+	maxCached int
 }
 
-func New(codexHome string, web fs.FS) *Server {
+// cachedEntry is a fingerprint-validated model served without a parser. Its model is immutable
+// once loaded, so it can be read without locking the (evicted) session it came from.
+type cachedEntry struct {
+	m    *model.Session
+	fp   store.Fingerprint
+	used time.Time
+}
+
+// view is what handlers need from a loaded session, satisfied by both a parser-backed
+// *codex.Session and a read-only cached model.
+type view interface {
+	View(func(*model.Session))
+	Version() string
+}
+
+type cachedView struct{ m *model.Session }
+
+func (c cachedView) View(fn func(*model.Session)) { fn(c.m) }
+func (c cachedView) Version() string              { return c.m.Version }
+
+func New(codexHome string, web fs.FS) *Server { return NewWithCache(codexHome, web, "") }
+
+// NewWithCache is New plus a directory for the derived-session cache ("" disables it).
+func NewWithCache(codexHome string, web fs.FS, cacheDir string) *Server {
 	if abs, err := filepath.Abs(codexHome); err == nil {
 		codexHome = abs
 	}
-	s := &Server{ix: codex.NewIndex(codexHome), home: codexHome, opened: map[string]*codex.Session{}, lastUse: map[string]time.Time{}, web: web, maxOpen: 6}
+	s := &Server{ix: codex.NewIndex(codexHome), home: codexHome, opened: map[string]*codex.Session{}, lastUse: map[string]time.Time{}, cached: map[string]*cachedEntry{}, cache: store.New(cacheDir), web: web, maxOpen: 6, maxCached: 32}
 	return s
 }
 
@@ -134,6 +162,87 @@ func (s *Server) session(id string, refresh bool) (*codex.Session, error) {
 	return sess, nil
 }
 
+// fingerprint describes a session's current inputs: its rollout files (sizes/mtimes from the
+// index) plus a hash of the effective classifier. A change to any file or rule flips it.
+func (s *Server) fingerprint(id string) store.Fingerprint {
+	fp := store.Fingerprint{Rules: classify.RulesFingerprint()}
+	add := func(fm codex.FileMeta) {
+		fp.Files = append(fp.Files, store.FileFP{Path: fm.Path, Size: fm.Size, Mod: fm.ModTime.UnixNano()})
+	}
+	if fm, ok := s.ix.Get(id); ok {
+		add(fm)
+	}
+	for _, d := range s.ix.Descendants(id) {
+		add(d)
+	}
+	sort.Slice(fp.Files, func(i, j int) bool { return fp.Files[i].Path < fp.Files[j].Path })
+	return fp
+}
+
+func (s *Server) putCached(id string, m *model.Session, fp store.Fingerprint) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for len(s.cached) >= s.maxCached {
+		var oldest string
+		var t time.Time
+		for k, e := range s.cached {
+			if oldest == "" || e.used.Before(t) {
+				oldest, t = k, e.used
+			}
+		}
+		delete(s.cached, oldest)
+	}
+	s.cached[id] = &cachedEntry{m: m, fp: fp, used: time.Now()}
+}
+
+func (s *Server) dropCached(id string) {
+	s.mu.Lock()
+	delete(s.cached, id)
+	s.mu.Unlock()
+}
+
+// loadModel returns a session view for id. With refresh=false it serves the freshest thing that is
+// provably current: an open parser-backed session, or a cache entry whose fingerprint still
+// matches the files and rules; only on a miss or a fingerprint change does it parse. refresh=true
+// always re-parses (incremental for an open session, full otherwise) and refreshes the cache.
+// It never returns a stale model.
+func (s *Server) loadModel(id string, refresh bool) (view, error) {
+	if !refresh {
+		s.mu.Lock()
+		if sess, ok := s.opened[id]; ok {
+			s.lastUse[id] = time.Now()
+			s.mu.Unlock()
+			return sess, nil
+		}
+		entry := s.cached[id]
+		s.mu.Unlock()
+		fp := s.fingerprint(id)
+		if entry != nil && entry.fp.Equal(fp) {
+			s.mu.Lock()
+			entry.used = time.Now()
+			s.mu.Unlock()
+			return cachedView{entry.m}, nil
+		}
+		if m, dfp, ok := s.cache.Load(id); ok && dfp.Equal(fp) {
+			s.putCached(id, m, fp)
+			return cachedView{m}, nil
+		}
+	}
+	// Parse path: open (if needed) + refresh, then refresh the on-disk cache for next time.
+	sess, err := s.session(id, refresh)
+	if err != nil {
+		return nil, err
+	}
+	fp := s.fingerprint(id)
+	sess.View(func(m *model.Session) {
+		if !m.Live { // a live session's files change every poll; caching it would only churn
+			_ = s.cache.Save(id, m, fp)
+		}
+	})
+	s.dropCached(id) // any stale in-memory cache entry is superseded by this fresh parse
+	return sess, nil
+}
+
 func (s *Server) maybeScanLocked() {
 	if time.Since(s.lastScan) > 10*time.Second {
 		s.mu.Unlock()
@@ -166,29 +275,33 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case len(parts) == 1:
-		sess, err := s.session(id, true)
+		// Default load serves the cache when it is provably current; ?refresh=1 (the Refresh
+		// button) forces a re-parse. Either way the model returned is never stale.
+		v, err := s.loadModel(id, r.URL.Query().Get("refresh") == "1")
 		if err != nil {
 			http.Error(w, err.Error(), 404)
 			return
 		}
-		sess.View(func(m *model.Session) { writeJSON(w, m) })
+		v.View(func(m *model.Session) { writeJSON(w, m) })
 	case len(parts) == 2 && parts[1] == "version":
-		sess, err := s.session(id, true)
+		// Follow-mode polling: refresh an open (live) session incrementally so its version can
+		// advance, but never force a full parse just to answer a poll.
+		v, err := s.loadModel(id, true)
 		if err != nil {
 			http.Error(w, err.Error(), 404)
 			return
 		}
-		sess.View(func(m *model.Session) {
+		v.View(func(m *model.Session) {
 			writeJSON(w, map[string]any{"version": m.Version, "live": m.Live, "ended": m.Ended, "now": m.Now, "ops": m.Totals.Ops})
 		})
 	case len(parts) == 3 && parts[1] == "op":
-		sess, err := s.session(id, false)
+		v, err := s.loadModel(id, false)
 		if err != nil {
 			http.Error(w, err.Error(), 404)
 			return
 		}
 		var resp map[string]any
-		sess.View(func(m *model.Session) {
+		v.View(func(m *model.Session) {
 			if op := findOp(m, parts[2]); op != nil {
 				cp := *op
 				resp = map[string]any{"op": &cp, "detail": op.Detail}
@@ -247,9 +360,12 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) recordedSource(src model.Src) bool {
 	s.mu.Lock()
-	sessions := make([]*codex.Session, 0, len(s.opened))
+	sessions := make([]view, 0, len(s.opened)+len(s.cached))
 	for _, sess := range s.opened {
 		sessions = append(sessions, sess)
+	}
+	for _, e := range s.cached {
+		sessions = append(sessions, cachedView{e.m})
 	}
 	s.mu.Unlock()
 	for _, sess := range sessions {
@@ -316,7 +432,12 @@ func validJSON(b []byte) []byte {
 }
 
 func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"rules": classify.Rules, "priority": classify.Priority})
+	writeJSON(w, map[string]any{
+		"rules":         classify.Rules,
+		"priority":      classify.Priority,
+		"builtin_rules": classify.BuiltinRuleCount(), // rules[:n] are built-in; rules[n:] are user-added
+		"review_skills": classify.ReviewSkillMatchers(),
+	})
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

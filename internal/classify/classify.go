@@ -3,6 +3,9 @@
 package classify
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -83,8 +86,10 @@ var Rules = []Rule{
 	{"gh release", Release, "gh release", ""},
 	{"gh run rerun", Release, "ci rerun", ""},
 	{"gh run cancel", Release, "ci cancel", ""},
-	{"glab mr", Release, "glab mr", ""},
+	{"glab mr create", Release, "glab mr", ""}, {"glab mr merge", Release, "glab mr", ""}, {"glab mr approve", Release, "glab mr", ""}, {"glab mr close", Release, "glab mr", ""}, {"glab mr update", Release, "glab mr", ""}, {"glab mr note", Release, "glab mr", ""}, {"glab mr rebase", Release, "glab mr", ""},
+	{"glab mr", Release, "glab mr", "create/merge/… ; reads split off below"},
 	{"glab ci", Release, "glab ci", ""},
+	{"glab release", Release, "glab release", ""},
 	{"docker push", Release, "docker push", ""},
 	{"kubectl apply", Release, "kubectl apply", ""},
 	{"kubectl rollout", Release, "kubectl rollout", ""},
@@ -117,6 +122,7 @@ var Rules = []Rule{
 	{"npm run lint", Test, "lint", ""}, {"npm run typecheck", Test, "typecheck", ""}, {"npm run check", Test, "check", ""}, {"npm run verify", Test, "check", ""},
 	{"pnpm lint", Test, "lint", ""}, {"pnpm typecheck", Test, "typecheck", ""}, {"yarn lint", Test, "lint", ""}, {"yarn typecheck", Test, "typecheck", ""},
 	{"oxlint", Test, "lint", ""}, {"biome check", Test, "lint", ""}, {"biome lint", Test, "lint", ""}, {"stylelint", Test, "lint", ""}, {"mypy", Test, "typecheck", ""}, {"pyright", Test, "typecheck", ""},
+	{"shellcheck", Test, "lint", ""}, {"golangci-lint", Test, "lint", ""}, {"staticcheck", Test, "lint", ""}, {"shfmt", Code, "format", ""},
 	{"pnpm test", Test, "pnpm test", ""}, {"yarn test", Test, "yarn test", ""},
 	{"npx playwright", Test, "playwright", ""}, {"playwright", Test, "playwright", ""},
 	{"playwright-cli", Test, "browser automation", ""},
@@ -138,10 +144,10 @@ var Rules = []Rule{
 	// ---- build
 	{"swift build", Build, "swift build", ""}, {"swift package", Build, "swift package", ""}, {"xcodegen", Build, "xcodegen", ""}, {"swift run", Unknown, "swift run", "runs the built product"},
 	{"xcodebuild", Build, "xcodebuild", "any xcodebuild not matched as test"},
-	{"cargo build", Build, "cargo build", ""}, {"cargo check", Build, "cargo check", ""}, {"cargo clippy", Test, "lint", ""},
+	{"cargo build", Build, "cargo build", ""}, {"cargo check", Build, "cargo check", ""}, {"cargo clippy", Test, "lint", ""}, {"wasm-pack", Build, "wasm-pack", ""}, {"rustup", Infra, "rustup", "toolchain management"},
 	{"go build", Build, "go build", ""}, {"go vet", Test, "lint", ""}, {"go generate", Build, "go generate", ""},
 	{"npm run build", Build, "npm build", ""}, {"pnpm build", Build, "pnpm build", ""}, {"yarn build", Build, "yarn build", ""},
-	{"npm ci", Build, "npm install", ""}, {"npm install", Build, "npm install", ""}, {"npm i", Build, "npm install", ""},
+	{"npm ci", Build, "npm install", ""}, {"npm install", Build, "npm install", ""}, {"npm i", Build, "npm install", ""}, {"npm pack", Build, "npm pack", ""},
 	{"pip install", Build, "pip install", ""}, {"pip3 install", Build, "pip install", ""}, {"uv sync", Build, "uv", ""},
 	{"go mod", Build, "go mod", ""},
 	{"make", Build, "make", "make with no target / build targets"}, {"make build", Build, "make", ""}, {"make all", Build, "make", ""}, {"make compile", Build, "make", ""},
@@ -206,6 +212,9 @@ var Rules = []Rule{
 	{"git status", Code, "git status", ""}, {"git diff", Code, "git diff", ""}, {"git log", Code, "git log", ""}, {"git show", Code, "git show", ""}, {"git blame", Code, "git blame", ""},
 	{"git rev-parse", Code, "git", ""}, {"git branch", Code, "git branch", ""}, {"git remote", Code, "git", ""}, {"git ls-files", Code, "git", ""}, {"git grep", Code, "search", ""}, {"git describe", Code, "git", ""}, {"git config", Code, "git", ""}, {"git rev-list", Code, "git", ""}, {"git shortlog", Code, "git", ""}, {"git cat-file", Code, "git", ""}, {"git ls-remote", Code, "git", ""}, {"git name-rev", Code, "git", ""}, {"git stash list", Code, "git", ""}, {"git worktree list", Code, "git", ""}, {"git -C", Code, "git", "resolved by next word"}, {"git", Code, "git", "any other git subcommand (local)"}, {"git merge-base", Code, "git", ""}, {"git check-ignore", Code, "git", ""},
 	{"gh pr view", Code, "gh", ""}, {"gh pr list", Code, "gh", ""}, {"gh pr diff", Code, "gh", ""}, {"gh pr status", Code, "gh", ""}, {"gh api", Code, "gh api", ""}, {"gh run view", Code, "gh", ""}, {"gh run list", Code, "gh", ""}, {"gh issue", Code, "gh", ""}, {"gh repo view", Code, "gh", ""}, {"gh auth", Code, "gh", ""}, {"gh", Code, "gh", "other gh"},
+	{"glab mr view", Code, "glab mr", ""}, {"glab mr list", Code, "glab mr", ""}, {"glab mr diff", Code, "glab mr", ""}, {"glab mr checkout", Code, "glab mr", ""}, {"glab mr todo", Code, "glab mr", ""},
+	{"glab api", Code, "glab api", "GitLab REST call (read or write); like gh api it stays code — an MR comment/resolve is review work, not release"}, {"glab ci view", Code, "glab ci", ""}, {"glab ci status", Code, "glab ci", ""}, {"glab ci get", Code, "glab ci", ""}, {"glab ci list", Code, "glab ci", ""}, {"glab ci trace", Code, "glab ci", ""}, {"glab auth", Code, "glab", ""}, {"glab config", Code, "glab", ""}, {"glab alias", Code, "glab", ""}, {"glab repo", Code, "glab", ""}, {"glab", Code, "glab", "any other glab subcommand (local/read)"},
+	{"on-cli", Infra, "remote vm", "imunify VM/runner management"}, {"onevm", Infra, "remote vm", ""},
 	{"sqlite3", Code, "sqlite", ""}, {"psql", Code, "sql", ""}, {"mysql", Code, "sql", ""},
 	{"curl", Code, "http", ""}, {"wget", Code, "http", ""}, {"http", Code, "http", ""}, {"dig", Code, "dns", ""}, {"nslookup", Code, "dns", ""}, {"ping", Code, "net", ""}, {"nc", Code, "net", ""},
 	{"node --version", Code, "version", ""}, {"python3 --version", Code, "version", ""}, {"go version", Code, "version", ""}, {"swift --version", Code, "version", ""},
@@ -231,7 +240,25 @@ var (
 	headPathRules []reRule // executable with path
 )
 
+// builtinRuleCount is the number of rules shipped in the binary; everything at or after this
+// index in Rules was appended from a user config. Set once at init, before any user load.
+var builtinRuleCount int
+
+// BuiltinRuleCount lets the API label which served rules are built-in vs user-added.
+func BuiltinRuleCount() int { return builtinRuleCount }
+
 func init() {
+	builtinRuleCount = len(Rules)
+	compileRules()
+}
+
+// compileRules rebuilds the lookup structures from the current Rules slice. It is called once at
+// init and again after user rules are appended (LoadUserConfig). Later entries win: a user rule
+// with the same word key overrides the built-in, and among regex rules the highest-priority phase
+// wins regardless of order, so a user rule can only ever add or raise, never silently mask.
+func compileRules() {
+	wordRules = map[string]Rule{}
+	regexRules, segRules, headRules, headPathRules = nil, nil, nil, nil
 	for _, r := range Rules {
 		switch {
 		case strings.HasPrefix(r.Match, "re:"):
@@ -391,13 +418,14 @@ func Command(cmd string, codexKind string) Result { return command(cmd, codexKin
 // classified one level down, never deeper.
 func command(cmd string, codexKind string, depth int) Result {
 	res := Result{Phase: Unknown, Kind: "unknown", Title: shortTitle(cmd)}
-	res.Remote = reRemote.MatchString(cmd)
+	masked, bodies := maskHeredocs(cmd)
+	// heredoc bodies are data, not commands: a report that mentions ssh is not a remote run
+	res.Remote = reRemote.MatchString(masked)
 	switch codexKind {
 	case "read", "search", "list_files":
 		res.Phase, res.Kind, res.Rule = Code, codexKind, "codex:parsed_cmd"
 		return res
 	}
-	masked, bodies := maskHeredocs(cmd)
 	best := -1
 	bestSeg := ""
 	consider := func(r Rule, label string, seg string) {
@@ -686,6 +714,22 @@ func matchHead(seg string) (Rule, string, bool) {
 	gitDone:
 		fields = append([]string{"git"}, rest...)
 	}
+	// npm/pnpm/yarn [--prefix DIR | -C DIR | -w PKG | --workspace PKG | --filter G] <sub> → <tool> <sub>
+	if base == "npm" || base == "pnpm" || base == "yarn" {
+		rest := fields[1:]
+		for len(rest) > 0 {
+			switch {
+			case (rest[0] == "--prefix" || rest[0] == "-C" || rest[0] == "-w" || rest[0] == "--workspace" || rest[0] == "--filter" || rest[0] == "-F") && len(rest) > 1:
+				rest = rest[2:]
+			case strings.HasPrefix(rest[0], "--prefix=") || strings.HasPrefix(rest[0], "--workspace=") || strings.HasPrefix(rest[0], "--filter=") || rest[0] == "--silent" || rest[0] == "-s" || rest[0] == "--no-audit" || rest[0] == "--no-fund":
+				rest = rest[1:]
+			default:
+				goto npmDone
+			}
+		}
+	npmDone:
+		fields = append([]string{base}, rest...)
+	}
 	// go run <pkg> / cargo run --bin <name>: judge by the package or binary name
 	if (base == "go" || base == "cargo") && len(fields) > 2 && fields[1] == "run" {
 		for _, a := range fields[2:] { // a server flag describes the runtime behaviour best
@@ -767,8 +811,23 @@ func matchHead(seg string) (Rule, string, bool) {
 		}
 		return r, label, true
 	}
-	// unknown executable: literal flags / subcommands say what it does (./run.sh --build-only)
+	// A local dispatcher script (./dev, ./x.sh, docker/run.sh) named by its FIRST positional
+	// subcommand: ./dev ci-build, ./dev ci-e2e, ./dev preflight. Only the first positional word
+	// is read, only for a clearly-local script, only against an unambiguous verb set, and never
+	// when that word is a read-only subcommand (status/list/…) — so a lookup stays code, not work.
+	if isLocalScript(head) && len(fields) > 1 && !strings.HasPrefix(fields[1], "-") && !readOnlySub[fields[1]] {
+		if r, ok := dispatcherVerb(fields[1]); ok {
+			return r, "subcommand:" + fields[1], true
+		}
+	}
+	// unknown executable: literal flags / subcommands say what it does (./run.sh --build-only).
+	// A bare positional word is only trusted for a local script; on a system binary an argument
+	// that merely reads like "test" or "build" is data, not a subcommand, and stays unknown.
+	local := isLocalScript(head)
 	for _, a := range fields[1:] {
+		if !strings.HasPrefix(a, "-") && !local {
+			continue
+		}
 		w := strings.TrimLeft(strings.ToLower(a), "-")
 		if i := strings.IndexByte(w, '='); i >= 0 {
 			w = w[:i]
@@ -785,6 +844,84 @@ func matchHead(seg string) (Rule, string, bool) {
 		}
 	}
 	return Rule{}, "", false
+}
+
+// isLocalScript reports whether an executable is a repo-local script (a path, or a *.sh/*.bash
+// file) rather than a system binary. Positional-subcommand inference is limited to these so an
+// unknown system tool with an argument that happens to read like a verb is never reclassified.
+func isLocalScript(head string) bool {
+	return strings.Contains(head, "/") || strings.HasSuffix(head, ".sh") || strings.HasSuffix(head, ".bash")
+}
+
+// dispatcherVerbs maps the first positional subcommand of a local dispatcher script to a phase.
+// Only unambiguous verbs are listed; read-ish words (check/verify/status/list/integration) are
+// deliberately absent — an honest unknown beats a wrong build/test.
+var dispatcherVerbs = map[string]Rule{
+	"build": {Phase: Build, Kind: "build-flag"}, "compile": {Phase: Build, Kind: "build-flag"}, "bundle": {Phase: Build, Kind: "build-flag"}, "rebuild": {Phase: Build, Kind: "build-flag"}, "package": {Phase: Build, Kind: "build-flag"}, "typecheck": {Phase: Build, Kind: "build-flag"},
+	"test": {Phase: Test, Kind: "test-flag"}, "tests": {Phase: Test, Kind: "test-flag"}, "e2e": {Phase: Test, Kind: "test-flag"}, "smoke": {Phase: Test, Kind: "test-flag"}, "preflight": {Phase: Test, Kind: "test-flag"}, "bench": {Phase: Test, Kind: "test-flag"}, "benchmark": {Phase: Test, Kind: "test-flag"}, "lint": {Phase: Test, Kind: "test-flag"},
+	"deploy": {Phase: Release, Kind: "release-flag"}, "release": {Phase: Release, Kind: "release-flag"}, "publish": {Phase: Release, Kind: "release-flag"}, "ship": {Phase: Release, Kind: "release-flag"}, "push": {Phase: Release, Kind: "release-flag"},
+	"worktree": {Phase: Code, Kind: "vcs-subcommand"}, "checkout": {Phase: Code, Kind: "vcs-subcommand"}, "branch": {Phase: Code, Kind: "vcs-subcommand"},
+}
+
+// dispatcherVerb resolves a first positional subcommand, stripping a leading ci-/ci_ prefix
+// (ci-build → build, ci-e2e → e2e, ci-push → push) so CI wrappers land in the right phase.
+func dispatcherVerb(sub string) (Rule, bool) {
+	w := strings.ToLower(sub)
+	w = strings.TrimPrefix(w, "ci-")
+	w = strings.TrimPrefix(w, "ci_")
+	r, ok := dispatcherVerbs[w]
+	return r, ok
+}
+
+// ReviewSkillPattern matches the NAME of a skill whose run is a code review or code-cleanup
+// pass (code-review-cc, cc-code-review, /codereview, $code-review, simplify, simplify-code).
+// It is applied ONLY to the skill name in the harness's skills.selected_skill_instructions
+// injection — the record of an ACTUAL invocation — never to prose in a user or model message,
+// so the word "codereview" in a chat message can never trigger it. Bare "review" is excluded so
+// unrelated skills (security-review, design-review, pr-review-responder) do not match. Served at
+// /api/rules so this matcher is inspectable alongside the command table.
+var ReviewSkillPattern = regexp.MustCompile(`(?i)(^|[-_/.$@ ])(cc-)?(code[-_]?review|codereview|simplify)([-_/.]|$)`)
+
+// reviewSkillREs is the live set of review-skill matchers: the built-in one plus any the user
+// added through a config (LoadUserConfig). Set once at startup, read-only while serving.
+var reviewSkillREs = []*regexp.Regexp{ReviewSkillPattern}
+
+// ReviewSkill reports whether a selected skill name denotes a code-review / cleanup run.
+func ReviewSkill(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, re := range reviewSkillREs {
+		if re.MatchString(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// RulesFingerprint hashes the effective classifier — the full rule table (built-in + user overlay)
+// and the review-skill matchers — so a session cache keyed by it is invalidated whenever
+// classification could change. The leading schema tag also invalidates it across model changes.
+func RulesFingerprint() string {
+	h := sha1.New()
+	fmt.Fprint(h, "schema=1;")
+	for _, r := range Rules {
+		fmt.Fprintf(h, "%s|%s|%s\n", r.Match, r.Phase, r.Kind)
+	}
+	for _, re := range reviewSkillREs {
+		fmt.Fprintf(h, "rev:%s\n", re.String())
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// ReviewSkillMatchers returns the source form of every active review-skill pattern (built-in
+// first, then user-added), so /api/rules can show this matcher the way it shows the Rules table.
+func ReviewSkillMatchers() []string {
+	out := make([]string, len(reviewSkillREs))
+	for i, re := range reviewSkillREs {
+		out[i] = re.String()
+	}
+	return out
 }
 
 // matchScript applies head/headpath rules to an executable path.

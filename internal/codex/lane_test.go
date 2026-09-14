@@ -180,6 +180,33 @@ func TestConversationPreservesFullTextAndDeduplicatesFinalSources(t *testing.T) 
 	}
 }
 
+// The harness puts its own context into the user role ahead of the human's (or the parent's)
+// first message; every such block is a system_message, so the first user_message is the prompt.
+func TestHarnessContextInUserRoleIsNotUserInput(t *testing.T) {
+	p := testParser(t, "child-id", "parent-id")
+	appendRollout(t, p,
+		rolloutLine(t, 1000, "event_msg", "task_started", map[string]any{"turn_id": "turn"}),
+		rolloutLine(t, 1100, "response_item", "message", map[string]any{"role": "user", "content": textContent("<recommended_plugins>\nHere is a list of plugins…\n</recommended_plugins>")}),
+		rolloutLine(t, 1200, "response_item", "message", map[string]any{"role": "user", "content": textContent("# AGENTS.md instructions for /work\n<INSTRUCTIONS>rules</INSTRUCTIONS>")}),
+		rolloutLine(t, 1300, "response_item", "message", map[string]any{"role": "user", "content": textContent("Review module A in /work")}),
+	)
+	var kinds, users []string
+	for _, marker := range p.lane.Markers {
+		if marker.Kind == "system_message" || marker.Kind == "user_message" {
+			kinds = append(kinds, marker.Kind+":"+marker.Ref)
+		}
+		if marker.Kind == "user_message" {
+			users = append(users, marker.Text)
+		}
+	}
+	if want := "system_message:recommended_plugins system_message:AGENTS.md user_message:"; strings.Join(kinds, " ") != want {
+		t.Fatalf("markers = %q, want %q", strings.Join(kinds, " "), want)
+	}
+	if len(users) != 1 || users[0] != "Review module A in /work" {
+		t.Fatalf("user messages = %q", users)
+	}
+}
+
 func TestFinalAnswerAvailableFromCompletionOrExplicitAssistantPhase(t *testing.T) {
 	for _, source := range []string{"completion", "assistant"} {
 		t.Run(source, func(t *testing.T) {
@@ -267,4 +294,76 @@ func TestGeneratedOperationIDsUseFullLaneNamespace(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSkillSelectionMarker(t *testing.T) {
+	p := testParser(t, "thread-id", "")
+	skillText := "<skill>\n<name>code-review-cc</name>\n<path>/home/u/.claude/skills/code-review-cc/SKILL.md</path>\n---\nname: code-review-cc\n(long body)"
+	appendRollout(t, p,
+		rolloutLine(t, 1000, "event_msg", "task_started", map[string]any{"turn_id": "t1"}),
+		// the human's message: sets sawUserItem so the role=user fast path is engaged
+		rolloutLine(t, 1100, "event_msg", "item_completed", map[string]any{"turn_id": "t1", "item": map[string]any{"type": "UserMessage", "content": textContent("$code-review-cc --fix xhigh")}}),
+		// the harness injection: role=user, content_item_kinds marks it as a selected skill.
+		// Built by hand with literal <>/tags because Codex writes JSON with HTML-escaping off,
+		// unlike Go's json.Marshal (which would emit \u003c).
+		skillSelectionLine(t, 1150, "t1", skillText),
+		rolloutLine(t, 5000, "event_msg", "task_complete", map[string]any{"turn_id": "t1", "last_agent_message": "done"}),
+	)
+	if len(p.lane.Turns) != 1 || p.lane.Turns[0].Skill != "code-review-cc" {
+		t.Fatalf("turn.Skill not set: %+v", p.lane.Turns)
+	}
+	var skills, users int
+	for _, mk := range p.lane.Markers {
+		switch mk.Kind {
+		case "skill":
+			skills++
+			if mk.Ref != "code-review-cc" {
+				t.Errorf("skill marker ref = %q", mk.Ref)
+			}
+		case "user_message":
+			users++
+		}
+	}
+	if skills != 1 {
+		t.Errorf("want 1 skill marker, got %d", skills)
+	}
+	if users != 1 {
+		t.Errorf("skill injection leaked into user messages: %d user markers", users)
+	}
+}
+
+func TestParseSkillSelectionNegatives(t *testing.T) {
+	// A user literally typing "<skill>" without the selected-skill kind marker must not match.
+	line := []byte(`{"timestamp":"x","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"text","text":"<skill> what is this?"}]}}`)
+	if _, _, ok := parseSkillSelection(line); ok {
+		t.Error("plain '<skill>' text should not be a skill selection")
+	}
+	// The genuine shape parses.
+	line = []byte(`{"timestamp":"x","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"text","text":"<skill>\n<name>simplify-code</name>\n<path>/x/SKILL.md</path>\nbody"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["skills.selected_skill_instructions"]}}}`)
+	name, path, ok := parseSkillSelection(line)
+	if !ok || name != "simplify-code" || path != "/x/SKILL.md" {
+		t.Errorf("parseSkillSelection = %q,%q,%v", name, path, ok)
+	}
+}
+
+// skillSelectionLine builds a skills.selected_skill_instructions injection exactly as Codex
+// writes it: role=user, literal <skill>/<name>/<path> tags (HTML-escaping off), and the
+// content_item_kinds marker.
+func skillSelectionLine(t *testing.T, ts int64, turn, body string) []byte {
+	t.Helper()
+	esc := func(s string) string {
+		b, _ := json.Marshal(s)
+		return string(b)
+	}
+	return []byte(fmt.Sprintf(`{"timestamp":%q,"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"text","text":%s}],"internal_chat_message_metadata_passthrough":{"turn_id":%q,"content_item_kinds":["skills.selected_skill_instructions"]}}}`,
+		time.UnixMilli(ts).UTC().Format(time.RFC3339Nano), literalTags(esc(body)), turn))
+}
+
+// literalTags undoes Go's HTML escaping of <, >, & inside an already-JSON-quoted string, matching
+// Codex's encoder which leaves them literal.
+func literalTags(s string) string {
+	s = strings.ReplaceAll(s, `\u003c`, "<")
+	s = strings.ReplaceAll(s, `\u003e`, ">")
+	s = strings.ReplaceAll(s, `\u0026`, "&")
+	return s
 }

@@ -167,3 +167,28 @@ func TestHandlerHostPolicy(t *testing.T) {
 		})
 	}
 }
+
+func TestRulesPayload(t *testing.T) {
+	s := New(t.TempDir(), fstest.MapFS{})
+	r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/rules", nil)
+	r.Host = "127.0.0.1:7788"
+	w := httptest.NewRecorder()
+	s.Handler("").ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	var payload struct {
+		Rules        []map[string]any `json:"rules"`
+		BuiltinRules int              `json:"builtin_rules"`
+		ReviewSkills []string         `json:"review_skills"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.BuiltinRules == 0 || payload.BuiltinRules != len(payload.Rules) {
+		t.Errorf("builtin_rules=%d rules=%d", payload.BuiltinRules, len(payload.Rules))
+	}
+	if len(payload.ReviewSkills) == 0 {
+		t.Error("review_skills should list at least the built-in matcher")
+	}
+}

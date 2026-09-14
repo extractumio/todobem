@@ -28,3 +28,8 @@ coverage.*
 
 # Claude Code local overrides
 .claude/settings.local.json
+
+# deploy.sh runtime artifacts and the derived session cache (safe to delete)
+/todobem.pid
+/todobem.out
+/.todobem

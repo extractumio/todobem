@@ -69,6 +69,42 @@ func TestCommand(t *testing.T) {
 		{"some-unknown-binary --flag", Unknown, "unknown"},
 		{"rm -rf build/", Infra, "cleanup"},
 		{"for f in a b; do echo $f; done", Code, "shell"},
+		// GitLab (glab): reads are code (like gh api); MR lifecycle writes are release.
+		{"glab api 'projects/2151/pipelines/496613/jobs?per_page=100'", Code, "glab api"},
+		{"glab api projects/2151/merge_requests/54 --method PUT --input /tmp/x.json", Code, "glab api"},
+		{"glab api projects/2151/merge_requests/54/discussions/abc --method PUT -F resolved=true", Code, "glab api"},
+		{"glab mr list --output json", Code, "glab mr"},
+		{"glab mr view 58", Code, "glab mr"},
+		{"glab mr create --fill --yes", Release, "glab mr"},
+		{"glab mr merge 58 --squash", Release, "glab mr"},
+		{"glab ci status", Code, "glab ci"},
+		{"glab alias list", Code, "glab"},
+		{"glab api projects/2151/jobs/2777637/trace | rg -n 'FAIL' | tail -130", Code, "glab api"},
+		// GitLab write piped to jq: the write and the jq are both code, so code wins cleanly.
+		{"glab api projects/2151/mr/54 --method PUT --input x.json > out.json && jq . out.json", Code, "glab api"},
+		// Local dispatcher scripts: first positional subcommand (ci- prefix stripped).
+		{"NODES=22 ./dev ci-build > /tmp/build.log 2>&1", Build, "build-flag"},
+		{"NODES=22 ./dev ci-e2e > /tmp/e2e.log 2>&1", Test, "test-flag"},
+		{"./dev preflight > /tmp/pf.log 2>&1", Test, "test-flag"},
+		{"./dev benchmark run --node 22 --agent x.tgz", Test, "test-flag"},
+		{"./dev ci-push origin main", Release, "release-flag"},
+		{"./dev worktree create mysql-fixture-startup origin/main", Code, "vcs-subcommand"},
+		{"./dev build", Build, "build-flag"},
+		// First positional that is a read stays code, not work; unknown-first-word stays unknown.
+		{"./dev status", Unknown, "unknown"}, // read-only first word: not forced to a work phase
+		{"./dev integration pair sqlite/nocodb-sqli", Unknown, "unknown"},
+		// A system binary (not a local script) is NOT reclassified by a verb-like argument.
+		{"someprog test", Unknown, "unknown"},
+		// Lint / toolchain / packaging across stacks.
+		{"shellcheck -x dev docker/*.sh", Test, "lint"},
+		{"golangci-lint run ./...", Test, "lint"},
+		{"wasm-pack build --release", Build, "wasm-pack"},
+		{"rustup toolchain list", Infra, "rustup"},
+		{"npm --prefix plugin ci --ignore-scripts --no-audit --no-fund", Build, "npm install"},
+		{"npm --prefix plugin run build", Build, "npm build"},
+		{"npm pack --offline --pack-destination /tmp x.tgz", Build, "npm pack"},
+		{"on-cli list --details", Infra, "remote vm"},
+		{"onevm show 9313482 --json", Infra, "remote vm"},
 	}
 	for _, c := range cases {
 		got := Command(c.cmd, "")
@@ -90,6 +126,12 @@ func TestCommand(t *testing.T) {
 	}
 	if !Command("APP_REMOTE_HOST=buildhost tests/run.sh", "").Remote {
 		t.Error("remote flag")
+	}
+	if Command("cat > notes.md <<'EOF'\nrun it with ssh buildhost --remote later\nEOF", "").Remote {
+		t.Error("remote flag from a heredoc body")
+	}
+	if !Command("ssh buildhost 'make test' <<'EOF'\nnothing\nEOF", "").Remote {
+		t.Error("remote flag lost when a heredoc follows")
 	}
 }
 

@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -186,7 +187,7 @@ type taskEvent struct {
 }
 
 // injectedPrefixes mark messages that the harness (not the human) put into the user role.
-var injectedPrefixes = []string{"<codex_internal_context", "<subagent_notification", "<environment_context", "# AGENTS.md", "<INSTRUCTIONS>", "<permissions", "<skills_instructions", "<collaboration_mode", "<turn_aborted", "<user_action", "<app_context", "<system_notification"}
+var injectedPrefixes = []string{"<codex_internal_context", "<subagent_notification", "<environment_context", "# AGENTS.md", "<INSTRUCTIONS>", "<permissions", "<skills_instructions", "<collaboration_mode", "<turn_aborted", "<user_action", "<app_context", "<system_notification", "<recommended_plugins"}
 
 func injected(text string) string {
 	t := strings.TrimSpace(text)
@@ -237,6 +238,28 @@ func (p *laneParser) noteUserInput(ts int64, turn, text string, src *model.Src, 
 	p.lane.Markers[len(p.lane.Markers)-1].Fallback = fallback
 }
 
+// noteSkillSelection records that a skill was actually invoked in the current turn: it sets the
+// turn's Skill (so model.Derive can flag review turns) and drops a point marker. Attributed to the
+// open turn — the injection always follows this turn's task_started and user message.
+func (p *laneParser) noteSkillSelection(ts int64, name, path string, src *model.Src) {
+	turn := p.turnID()
+	if turn != "" {
+		for i := len(p.lane.Turns) - 1; i >= 0; i-- {
+			if p.lane.Turns[i].ID == turn {
+				if p.lane.Turns[i].Skill == "" {
+					p.lane.Turns[i].Skill = name
+				}
+				break
+			}
+		}
+	}
+	text := name
+	if path != "" {
+		text = name + "\n" + path
+	}
+	p.addMarker(ts, "skill", turn, text, name, src)
+}
+
 // The same final text can appear in a response message, a timed AgentMessage
 // item, and task_complete. Keep one marker per recorded text and turn, preferring
 // the authoritative item's timestamp and source when it becomes available.
@@ -263,6 +286,41 @@ func (p *laneParser) noteFinalAnswer(ts int64, turn, text string, src *model.Src
 	}
 	p.addMarker(ts, "final_answer", turn, text, "", src)
 	p.lane.Markers[len(p.lane.Markers)-1].Fallback = fallback
+}
+
+var (
+	skillOpenToken  = []byte("<skill>")
+	skillSelKindTok = []byte("skills.selected_skill_instructions")
+	reSkillName     = regexp.MustCompile(`<name>\s*([^<\n]+?)\s*</name>`)
+	reSkillPath     = regexp.MustCompile(`<path>\s*([^<\n]+?)\s*</path>`)
+)
+
+// parseSkillSelection recognises the harness message that injects a selected skill's instructions
+// (content_item_kinds = ["skills.selected_skill_instructions"], content beginning
+// "<skill>\n<name>…"). It reads only a bounded prefix for the name/path — the SKILL.md body that
+// follows can be tens of KB and is not needed. It requires both the opening tag near the start and
+// the kind marker somewhere in the line, so a user literally typing "<skill>" does not match.
+func parseSkillSelection(line []byte) (name, path string, ok bool) {
+	head := line
+	if len(head) > 512 {
+		head = head[:512]
+	}
+	if !bytes.Contains(head, skillOpenToken) || !bytes.Contains(line, skillSelKindTok) {
+		return "", "", false
+	}
+	scan := line
+	if len(scan) > 4096 {
+		scan = scan[:4096]
+	}
+	m := reSkillName.FindSubmatch(scan)
+	if m == nil {
+		return "", "", false
+	}
+	name = strings.TrimSpace(string(m[1]))
+	if pm := reSkillPath.FindSubmatch(scan); pm != nil {
+		path = strings.TrimSpace(string(pm[1]))
+	}
+	return name, path, name != ""
 }
 
 var (
@@ -676,6 +734,14 @@ func (p *laneParser) handleResponseItem(line []byte, start int64, ts int64) {
 		}
 		p.onOutput(fo, ts, start, line)
 	case "message":
+		// A skills.selected_skill_instructions injection is the harness's record that a skill was
+		// actually invoked (not merely named in a prompt). Detect it before the user-message fast
+		// path below drops role=user messages.
+		if name, path, ok := parseSkillSelection(line); ok {
+			p.noteSkillSelection(ts, name, path, p.src(start, line))
+			p.Decoded += int64(len(line))
+			return
+		}
 		if p.sawUserItem {
 			// Preserve the existing fast path for duplicated user/context messages,
 			// while still allowing legacy assistant finals to supply a marker.

@@ -19,7 +19,10 @@ source-agnostic (a Claude Code adapter would not touch the UI), but the server i
 Stack: Go 1.22, standard library only; vanilla JS + SVG embedded into the binary — no build
 step, no npm. Module `github.com/extractumio/todobem`; AGPL-3.0 (`LICENSE`) with a commercial
 option from Extractum (`LICENSING.md`). Run `go run ./cmd/todobem -open=false` →
-`http://127.0.0.1:7788` (flags `-addr`, `-codex`, `-open`).
+`http://127.0.0.1:7788` (flags `-addr`, `-codex`, `-open`, `-rules`, `-cache`). A user rules overlay
+(`-rules`/`$TODOBEM_RULES`/`~/.todobem/rules.json`) adds project-specific commands and
+review-skill names to the built-in classifier; see `docs/SCHEMA.md`. Parsed sessions are cached to
+disk (`-cache`/`$TODOBEM_CACHE`, `off` to disable). `make`/`scripts/deploy.sh` build and run it.
 
 ## Repository map — where to look, where to change
 
@@ -39,8 +42,13 @@ Pipeline: `codex.Index.Scan` → `codex.Open`/`Refresh` → `laneParser` (one fi
   groups. Definitions: `docs/SCHEMA.md`, `docs/DESIGN.md` §2.
 - `internal/model/` — `model.go` is the normalized schema (`docs/SCHEMA.md`); `derive.go`
   builds the exclusive partition, stages, retry groups, background flags and totals.
-- `internal/server/` — JSON API on loopback: `/api/sessions`, `…/{id}`, `…/{id}/version`,
-  `…/{id}/op/{opId}`, `/api/event`, `/api/rules`; host check, gzip, LRU of 6 open sessions.
+- `internal/server/` — JSON API on loopback: `/api/sessions`, `…/{id}` (`?refresh=1` re-parses),
+  `…/{id}/version`, `…/{id}/op/{opId}`, `/api/event`, `/api/rules`; host check, gzip, LRU of 6
+  parser-backed sessions plus a separate pool of cache-served models.
+- `internal/store/` — the derived-session cache (gzipped JSON per session). A default open serves
+  the cache when its fingerprint (source files + a hash of the effective classifier) still matches;
+  a grown file or a rule change auto-invalidates it; the Refresh button forces a full re-parse.
+  Cache is derived, local, gitignored, safe to delete. Design: `docs/DESIGN.md` §4.
 - `docs/` — `DESIGN.md` (format research, design, review outcomes), `SCHEMA.md` (schema, phases,
   kinds), `VALIDATION-PROTOCOL.md` + `VALIDATION.md` (ground-truth checks), `REVIEW*` (history).
 - A new rule: a row in `Rules`, a case in `classify_test.go`, `SCHEMA.md` if a phase or kind

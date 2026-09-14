@@ -29,7 +29,7 @@ Lane {
   depth     int
   file      string   // rollout path
   started, ended int64
-  turns     Turn[]      // {id, start, end, status: completed|aborted|open|orphaned, trigger: user|system}
+  turns     Turn[]      // {id, start, end, status: completed|aborted|open|orphaned, trigger: user|system, skill, review}
   ops       Operation[] // may overlap (parallel commands)
   segments  Segment[]   // exclusive partition of [started, ended]
   stages    Stage[]     // coalesced view of segments (think attributed to next op)
@@ -135,7 +135,7 @@ Marker { t, kind, lane, turn, text, ref }
 kind: user_message | system_message (harness-injected, ref = tag) | question | final_answer |
       agent_started | agent_interacted | agent_completed | agent_interrupted |
       result_returned | message_sent | message_received | plan | turn_start | turn_end |
-      compaction | interrupted | resumed | goal
+      compaction | interrupted | resumed | goal | skill (ref = skill name; a skill was actually invoked)
 ```
 
 ## Group
@@ -150,13 +150,45 @@ kept verbatim when safe normalization is uncertain.
 ```
 Totals { elapsed_ms, in_turn_ms, raw_ops_ms, by_phase: {phase: ms}, raw_by_phase: {phase: ms},
          by_kind: {kind: ms}, ops, turns, user_messages, system_messages, questions,
-         compactions, failed_ops, background_ms, background_ops }
+         compactions, failed_ops, background_ms, background_ops, review_ms, reviews }
 ```
 `sum(by_phase) == elapsed_ms` always (partition property, tested). `raw_ops_ms` is the plain
 sum of op durations and is larger when commands ran in parallel inside one lane.
+
+### Code-review spans (a bucket, never a phase)
+A `skill` marker records that a skill was *actually invoked* — parsed from the harness's
+`skills.selected_skill_instructions` injection (the record of a real invocation), never from the
+words in a user or model message. A turn's `skill` names that skill; `review` is true when the
+name matches the review/cleanup matcher (`classify.ReviewSkill`: `code-review`, `codereview`,
+`simplify`, plus user-added names; bare `review` is excluded so `security-review` etc. do not
+match). `reviews` counts those invocations across all lanes; `review_ms` is the root-lane wall
+clock of the turns they ran in. This is a separate bucket like `background_ms`/`parallel`: it is
+**not** a phase, does **not** enter `by_phase`, and leaves the partition unchanged. A turn that
+reuses a skill later without re-invoking it is not counted, so `review_ms` is a floor, not the
+total time ever spent reviewing.
 
 ## Command classification table (head word → phase)
 Rules are evaluated per top-level shell segment; the operation takes the highest-priority
 phase found. Priority: release > test > build > workers > infra > code > unknown.
 The table lives in `internal/classify/classify.go` and is the single source of truth; the
-`/api/rules` endpoint exposes it so the UI "How to read" page shows the live table.
+`/api/rules` endpoint exposes it (plus the review-skill matchers) so the UI "How to read" page
+shows the live table.
+
+### Two detection sources (built-in + user overlay)
+Detection has two layers. The **built-in** set covers common tools, commands and embedded skills
+(`glab`/`gh`, `make`, build/test/release commands, `simplify`/`code-review`). A **user overlay**
+adds project-specific commands and per-project review-skill names for a custom setup, loaded at
+startup from `--rules <path>`, `$TODOBEM_RULES`, and `~/.todobem/rules.json` (all merged).
+Format (all fields optional):
+```
+{ "rules": [ {"match": "seg:^myci\\b", "phase": "test", "kind": "in-house ci"},
+             {"match": "deploy-thing", "phase": "release"} ],
+  "review_skills": ["audit-.*", "my-review"] }
+```
+`rules` entries use the same match forms as the built-in table (a bare word / `word sub`, or a
+`seg:`/`re:`/`head:`/`headpath:` regex) and are appended after the built-ins, so a word rule
+overrides a built-in with the same key and a regex rule can only raise the matched phase.
+`review_skills` are regexes OR-ed with the built-in review-skill matcher. A malformed overlay
+(bad phase, empty match, uncompilable regex) fails loudly at startup and changes nothing. User
+rules are served at `/api/rules` alongside the built-ins (flagged), keeping one inspectable source
+of truth.

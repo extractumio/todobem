@@ -6,8 +6,10 @@ const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
 const vm = require('node:vm');
 
-const source = readFileSync(join(__dirname, 'web/app.js'), 'utf8');
 const shell = readFileSync(join(__dirname, 'web/index.html'), 'utf8');
+// The SPA is several classic scripts sharing one global scope; run them in page order.
+const scripts = [...shell.matchAll(/<script src="([^"]+)"><\/script>/g)]
+  .map(match => ({ name: match[1], source: readFileSync(join(__dirname, 'web', match[1]), 'utf8') }));
 const flush = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
 
 // Run the complete application, including startup and event registration. DOM nodes
@@ -79,7 +81,7 @@ function harness() {
       requests.push(request);
     }),
   });
-  vm.runInContext(source, context, { filename: 'app.js' });
+  for (const script of scripts) vm.runInContext(script.source, context, { filename: script.name });
   const run = script => vm.runInContext(script, context);
   function take(url) {
     const request = requests.find(r => r.url === url && !r.done);
@@ -132,6 +134,9 @@ function session(id = 'session', lane = 'lane', turn = 'turn', op = 'op-A') {
   };
 }
 
+// the timeline is two SVGs: root rows in #chartSvg, sub-agent rows in #agentSvg
+function timelineHTML(h) { return h.node('chartSvg').innerHTML + (h.node('agentSvg') ? h.node('agentSvg').innerHTML : ''); }
+
 function attributeValues(html, name) {
   return [...html.matchAll(new RegExp(`\\b${name}="([^"]*)"`, 'g'))].map(match => match[1]
     .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
@@ -152,7 +157,7 @@ test('source identifiers remain single attributes throughout the rendered UI and
   assert.equal(h.location.hash, '#session/' + encodeURIComponent(id));
   h.run(`state.expanded.add(${JSON.stringify(lane)}); renderTimeline()`);
   assert.ok(attributeValues(h.node('main').innerHTML, 'value').includes(lane));
-  const chart = h.node('chartSvg').innerHTML;
+  const chart = timelineHTML(h);
   for (const value of [lane, child]) assert.ok(attributeValues(chart, 'data-lane').includes(value));
   for (const value of [op, background]) assert.ok(attributeValues(chart, 'data-op').includes(value));
   assert.ok(attributeValues(chart, 'data-turn').includes(lane + ':' + turn));
@@ -163,7 +168,7 @@ test('source identifiers remain single attributes throughout the rendered UI and
   assert.ok(attributeValues(h.node('inspector').innerHTML, 'data-id').includes(op));
   h.take(`/api/sessions/${encodeURIComponent(id)}/op/${encodeURIComponent(op)}`).resolve({ detail: 'safe detail' });
   await inspecting;
-  for (const node of ['fleetRows', 'main', 'chartSvg', 'operationList', 'agentsTable', 'inspector']) {
+  for (const node of ['fleetRows', 'main', 'chartSvg', 'agentSvg', 'operationList', 'agentsTable', 'inspector']) {
     if (h.node(node)) assert.doesNotMatch(h.node(node).innerHTML, /\sonmouseover="/);
   }
 });
@@ -266,9 +271,9 @@ test('a stale version poll cannot supersede a manual refresh', async () => {
   const h = await harness().ready(); await h.open('session');
   const pending = h.poll(), old = h.take('/api/sessions/session/version');
   h.action('refresh');
-  h.take('/api/sessions/session').resolve({ ...session(), title: 'Manual refresh', version: 'v2' }); await flush();
+  h.take('/api/sessions/session?refresh=1').resolve({ ...session(), title: 'Manual refresh', version: 'v2' }); await flush();
   old.resolve({ version: 'v3' }); await flush();
-  assert.equal(h.requests.filter(r => r.url === '/api/sessions/session').length, 2);
+  assert.equal(h.requests.filter(r => r.url.startsWith('/api/sessions/session') && !r.url.includes('/version')).length, 2);
   await pending;
   assert.equal(h.run('current().title'), 'Manual refresh');
 });
@@ -332,4 +337,269 @@ test('browser Back cancels navigation to a session that has not finished loading
   assert.equal(h.run('state.id'), 'A');
   assert.equal(h.location.hash, '#session/A');
   assert.doesNotMatch(h.node('main').innerHTML, /Parsing session/);
+});
+
+// A session with two sub-agents: "early" lives in the first half, "late" in the second.
+function agentsSession() {
+  const model = session();
+  const lane = model.lanes[0];
+  lane.markers.push({ t: 5000, kind: 'user_message', lane: 'lane', text: 'Build the thing' });
+  lane.markers.push({ t: 10000, kind: 'agent_started', lane: 'lane', ref: 'early', text: '/root/early' });
+  lane.markers.push({ t: 80000, kind: 'agent_started', lane: 'lane', ref: 'late', text: '/root/late' });
+  model.lanes.push({
+    id: 'early', parent: 'lane', path: '/root/early', depth: 1, nickname: 'Galileo', model: 'gpt-test', started: 10500, ended: 30000,
+    turns: [{ id: 'e1', start: 10500, end: 30000, status: 'completed', effort: 'high', final: 'Early is done.' }],
+    markers: [{ t: 10600, kind: 'user_message', lane: 'early', text: 'Review module A', src: { file: '/synthetic/early.jsonl', off: 5, len: 9 } }],
+    active: [{ s: 10500, e: 30000 }], by_phase: { code: 19500 },
+  });
+  model.lanes.push({
+    id: 'late', parent: 'lane', path: '/root/late_verifier_with_long_name', depth: 1, nickname: 'Kepler', model: 'gpt-test', started: 80500, ended: 100000,
+    turns: [{ id: 'l1', start: 80500, end: 100000, status: 'completed' }],
+    markers: [{ t: 80600, kind: 'message_received', lane: 'late', ref: '/root', text: 'Message Type: NEW_TASK\nTask name: /root/late_verifier_with_long_name\nSender: /root\nPayload:\n', src: { file: '/synthetic/late.jsonl', off: 7, len: 11 } }],
+    active: [{ s: 80500, e: 100000 }], by_phase: { code: 19500 },
+  });
+  return model;
+}
+
+test('only sub-agent lanes alive in the visible window are drawn', async () => {
+  const h = await harness().ready();
+  await h.open('session', agentsSession());
+  let lanes = attributeValues(timelineHTML(h), 'data-lane');
+  assert.ok(lanes.includes('early') && lanes.includes('late'));
+  assert.equal(h.node('laneCount').textContent, '2 sub-agent lanes');
+  h.run('setWindow(1000, 61000)');
+  lanes = attributeValues(timelineHTML(h), 'data-lane');
+  assert.ok(lanes.includes('lane') && lanes.includes('early'));
+  assert.ok(!lanes.includes('late'));
+  assert.equal(h.node('laneCount').textContent, '2 sub-agent lanes · 1 in this window');
+  h.run('setWindow(61000, 121000)');
+  lanes = attributeValues(timelineHTML(h), 'data-lane');
+  assert.ok(lanes.includes('lane') && lanes.includes('late'));
+  assert.ok(!lanes.includes('early'));
+});
+
+test('sub-agent labels carry the nickname and model, long names are cut with an ellipsis', async () => {
+  const h = await harness().ready();
+  await h.open('session', agentsSession());
+  const chart = timelineHTML(h);
+  assert.match(chart, />Galileo · gpt-test</);
+  assert.match(chart, />Kepler · gpt-test</);
+  assert.match(chart, />late_verifier_with_…</);
+  assert.ok(attributeValues(chart, 'data-lane').filter((v, i, all) => all.indexOf(v) === i).length >= 3, 'every lane row carries its id');
+  assert.deepEqual(attributeValues(chart, 'data-action').filter(a => a === 'lane-card').length, 3, 'one card glyph per lane row');
+  assert.match(h.node('agentsTable').innerHTML, /sub-agent · Galileo · gpt-test \/ high|root · Galileo · gpt-test \/ high/);
+});
+
+test('the agent card shows a plain-text spawn prompt and the final answer', async () => {
+  const h = await harness().ready();
+  await h.open('session', agentsSession());
+  const opening = h.run("inspectLane('early')");
+  const html = h.node('inspector').innerHTML;
+  assert.match(html, /Galileo/);
+  assert.match(html, /gpt-test · effort high/);
+  assert.match(html, /First message in this thread/);
+  assert.match(html, /Review module A/);
+  assert.match(html, /Early is done\./);
+  assert.match(h.node('lanePromptNote').textContent, /^User-role message · 15 chars\./);
+  h.take('/api/event?file=%2Fsynthetic%2Fearly.jsonl&off=5&len=9').resolve({ payload: { content: [{ type: 'input_text', text: 'Review module A' }] } });
+  await opening;
+  assert.match(h.node('lanePromptNote').textContent, /^User-role message/);
+  assert.match(h.node('laneSource').textContent, /Review module A/);
+});
+
+test('the agent card says so when the spawn prompt is stored encrypted', async () => {
+  const h = await harness().ready();
+  await h.open('session', agentsSession());
+  const opening = h.run("inspectLane('late')");
+  assert.match(h.node('lanePromptNote').textContent, /Only the message header/);
+  h.take('/api/event?file=%2Fsynthetic%2Flate.jsonl&off=7&len=11').resolve({ payload: { content: [{ type: 'input_text', text: 'Message Type: NEW_TASK' }, { type: 'encrypted_content', encrypted_content: 'gAAAAAB' }] } });
+  await opening;
+  assert.match(h.node('lanePromptNote').textContent, /stored encrypted \(encrypted_content, 7 chars\); no plaintext of it is recorded/);
+  assert.match(h.node('inspector').innerHTML, /Prompt from the parent/);
+  assert.match(h.node('inspector').innerHTML, /Message Type: NEW_TASK/);
+  assert.match(h.node('inspector').innerHTML, /no final answer recorded/);
+});
+
+test('the root card shows the first user message; zooming to a lane frames its lifetime', async () => {
+  const h = await harness().ready();
+  await h.open('session', agentsSession());
+  h.run("inspectLane('lane')");
+  assert.match(h.node('inspector').innerHTML, /First user message/);
+  assert.match(h.node('inspector').innerHTML, /Build the thing/);
+  h.action('lane-card', { lane: 'late' });
+  assert.match(h.node('inspector').innerHTML, /Kepler/);
+  h.action('zoom-lane', { lane: 'late' });
+  assert.equal(h.node('inspector').open, false);
+  const a = h.run('state.a'), b = h.run('state.b');
+  assert.ok(a <= 80000 && b >= 100000, 'window covers the lifetime');
+  assert.ok(a >= 40000 && b - a <= 80000, 'window is framed around the lifetime, not the whole session');
+});
+
+test('a lane focused in the operations list stays on the timeline outside its window', async () => {
+  const h = await harness().ready();
+  await h.open('session', agentsSession());
+  h.action('lane-focus', { lane: 'early' });
+  h.run('setWindow(61000, 121000)');
+  const lanes = attributeValues(timelineHTML(h), 'data-lane');
+  assert.ok(lanes.includes('early') && lanes.includes('late'), 'the focused lane is pinned');
+  assert.equal(h.node('laneCount').textContent, '2 sub-agent lanes · 1 in this window');
+  h.action('lane-focus', { lane: 'early' });
+  assert.ok(!attributeValues(timelineHTML(h), 'data-lane').includes('early'), 'unfocused, it leaves again');
+});
+
+test('effort is stated only when every turn agrees', async () => {
+  const h = await harness().ready();
+  const model = agentsSession();
+  model.lanes[1].turns.push({ id: 'e2', start: 30500, end: 31000, status: 'completed', effort: 'low' });
+  await h.open('session', model);
+  h.run("inspectLane('early')");
+  assert.match(h.node('inspector').innerHTML, /gpt-test · effort mixed/);
+  h.run("inspectLane('late')");
+  assert.match(h.node('inspector').innerHTML, /<dd class="mono">gpt-test<\/dd>/);
+});
+
+test('a clipped agent message is completed from its source event', async () => {
+  const h = await harness().ready();
+  const model = agentsSession();
+  const long = 'Message Type: NEW_TASK\nTask name: /root/late_verifier_with_long_name\nSender: /root\nPayload:\n' + 'x'.repeat(3000);
+  model.lanes[2].markers[0].text = long.slice(0, 2999) + '…';
+  await h.open('session', model);
+  const opening = h.run("inspectLane('late')");
+  assert.equal(h.node('lanePromptNote').textContent, '');
+  h.take('/api/event?file=%2Fsynthetic%2Flate.jsonl&off=7&len=11').resolve({ payload: { content: [{ type: 'input_text', text: long }] } });
+  await opening;
+  assert.equal(h.node('lanePromptText').textContent, long);
+});
+
+test('phase and retry-role quick filters are mutually exclusive', async () => {
+  const h = await harness().ready();
+  await h.open('session');
+  h.action('filter', { phase: 'compaction' });
+  assert.equal(h.run('state.phase'), 'compaction');
+  h.action('filter-role', { role: 'retry_after_failure' });
+  assert.equal(h.run('state.role'), 'retry_after_failure');
+  assert.equal(h.run('state.phase'), 'all', 'choosing a role drops the phase');
+  h.action('filter', { phase: 'test' });
+  assert.equal(h.run('state.phase'), 'test');
+  assert.equal(h.run('state.role'), 'all', 'choosing a phase drops the role');
+  h.action('filter', { phase: 'test' });
+  assert.equal(h.run('state.phase'), 'all', 'clicking the active phase again clears it');
+});
+
+// A root lane with two turns and a wait for the user between them.
+function waitingSession() {
+  const model = session();
+  const lane = model.lanes[0];
+  model.ended = model.now = lane.ended = 301000;
+  lane.turns = [{ id: 'turn', start: 1000, end: 50000, status: 'completed', final: 'Done with part one.' }, { id: 'turn2', start: 70000, end: 301000, status: 'completed' }];
+  lane.ops[1].turn = 'turn2';
+  lane.ops[1].start = 80000;
+  lane.ops[1].end = 81000;
+  lane.segments = [{ s: 1000, e: 50000, p: 'code', op: 'op-A' }, { s: 50000, e: 70000, p: 'wait_user' }, { s: 70000, e: 301000, p: 'code', op: 'op-B' }];
+  lane.stages = [{ s: 1000, e: 50000, p: 'code' }, { s: 70000, e: 301000, p: 'code' }];
+  lane.by_phase = { code: 280000, wait_user: 20000 };
+  lane.markers.push({ t: 69000, kind: 'user_message', lane: 'lane', text: 'Now part two' });
+  return model;
+}
+
+test('the breakdown shows a record count per row and hides rows with neither time nor records', async () => {
+  const h = await harness().ready();
+  await h.open('session', waitingSession());
+  const body = h.node('breakdownBody').innerHTML;
+  const row = phase => (body.match(new RegExp(`data-phase="${phase}"[^]*?</button>`)) || [''])[0];
+  assert.match(row('code'), /<span class="count num">2<\/span>/);
+  assert.match(row('wait_user'), /<span class="count num">1<\/span>/);
+  assert.match(row('wait_user'), /1 intervals in the list/);
+  assert.equal(row('test'), '', 'a phase with no time and no operations in the window is hidden');
+  assert.equal(row('no_telemetry'), '');
+  assert.doesNotMatch(body, /Inside testing & release/, 'an all-empty section is hidden too');
+});
+
+test('waiting for the user lists the gaps themselves and opens the waiting inspector', async () => {
+  const h = await harness().ready();
+  await h.open('session', waitingSession());
+  h.action('filter', { phase: 'wait_user' });
+  assert.match(h.node('operationCount').textContent, /^1 intervals/);
+  const list = h.node('operationList').innerHTML;
+  assert.match(list, /data-action="inspect-interval"/);
+  assert.match(list, /data-ta="50000" data-tb="70000"/);
+  h.action('inspect-interval', { lane: 'lane', phase: 'wait_user', ta: '50000', tb: '70000' });
+  assert.equal(h.node('inspector').open, true);
+  assert.match(h.node('inspector').innerHTML, /Waiting for user/);
+  assert.match(h.node('inspector').innerHTML, /Done with part one\./);
+  assert.match(h.node('inspector').innerHTML, /Now part two/);
+  h.run('setWindow(100000, 301000)');
+  assert.match(h.node('operationCount').textContent, /^0 intervals/);
+  assert.doesNotMatch(h.node('breakdownBody').innerHTML, /data-phase="wait_user"/, 'no waiting in this window: the row is hidden');
+});
+
+test('the breakdown carries a share column that sums to 100 % per section, sorted by time', async () => {
+  const h = await harness().ready();
+  await h.open('session', waitingSession());
+  const body = h.node('breakdownBody').innerHTML;
+  const shares = [...body.matchAll(/data-phase="([a-z_]+)"[^]*?<span class="share num">([^<]*)<\/span>/g)].map(m => [m[1], parseFloat(m[2])]);
+  assert.deepEqual(shares.map(s => s[0]), ['code', 'wait_user'], 'rows ordered by time');
+  assert.ok(Math.abs(shares.reduce((n, s) => n + s[1], 0) - 100) < 0.2, `shares sum to 100: ${JSON.stringify(shares)}`);
+  assert.match(body, /<option value="longest" selected>by time \(%\)<\/option>/);
+  h.run("state.breakdownSort = 'records'; renderLower()");
+  const byRecords = [...h.node('breakdownBody').innerHTML.matchAll(/data-phase="([a-z_]+)"/g)].map(m => m[1]);
+  assert.deepEqual(byRecords, ['code', 'wait_user']);
+});
+
+test('the operations list scrolls and grows in chunks instead of paging', async () => {
+  const h = await harness().ready();
+  const model = session();
+  const lane = model.lanes[0];
+  for (let i = 0; i < 150; i++) lane.ops.push({ id: 'bulk-' + i, lane: 'lane', turn: 'turn', title: 'Bulk ' + i, phase: 'code', kind: 'read', status: 'completed', start: 10000 + i * 500, end: 10000 + i * 500 + 100 });
+  await h.open('session', model);
+  assert.match(h.node('operationCount').textContent, /^152 operations/);
+  let list = h.node('operationList').innerHTML;
+  assert.equal((list.match(/class="operation"/g) || []).length, 60);
+  assert.match(list, /60 of 152 · scroll for more/);
+  assert.doesNotMatch(h.node('main').innerHTML, /data-action="list-page"/);
+  const node = h.node('operationList');
+  node.scrollTop = 0; node.clientHeight = 500; node.scrollHeight = 5000;
+  h.run('showMoreOperations()');
+  assert.equal((h.node('operationList').innerHTML.match(/class="operation"/g) || []).length, 60, 'far from the end: nothing added');
+  node.scrollTop = 4400;
+  h.run('showMoreOperations()');
+  list = h.node('operationList').innerHTML;
+  assert.equal((list.match(/class="operation"/g) || []).length, 120);
+  assert.match(list, /120 of 152 · scroll for more/);
+  h.run('setWindow(1000, 61000)');
+  assert.equal(h.run('state.listShown'), 60, 'a new window starts from the first chunk');
+});
+
+test('sub-agent rows render in their own scrolling block under the fixed root rows', async () => {
+  const h = await harness().ready();
+  await h.open('session', agentsSession());
+  const head = attributeValues(h.node('chartSvg').innerHTML, 'data-lane'), sub = attributeValues(h.node('agentSvg').innerHTML, 'data-lane');
+  assert.ok(head.includes('lane') && !head.includes('early') && !head.includes('late'));
+  assert.ok(sub.includes('early') && sub.includes('late') && !sub.includes('lane'));
+  assert.equal(h.node('agentScroll').hidden, false);
+  await h.open('solo', session('solo'));
+  assert.equal(h.node('agentScroll').hidden, true);
+  assert.equal(h.node('agentSvg').innerHTML, '');
+});
+
+test('identical consecutive operations in one lane fold into one row that unfolds on demand', async () => {
+  const h = await harness().ready();
+  const model = session();
+  const lane = model.lanes[0];
+  for (let i = 0; i < 4; i++) lane.ops.push({ id: 'sleep-' + i, lane: 'lane', turn: 'turn', title: 'sleep {"duration_ms":45000}', phase: 'wait_worker', kind: 'sleep', status: 'completed', start: 20000 + i * 10000, end: 25000 + i * 10000 });
+  lane.ops.push({ id: 'between', lane: 'lane', turn: 'turn', title: 'sleep {"duration_ms":45000}', phase: 'wait_worker', kind: 'sleep', status: 'completed', start: 90000, end: 95000 });
+  lane.ops.push({ id: 'other', lane: 'lane', turn: 'turn', title: 'ls', phase: 'code', kind: 'list_files', status: 'completed', start: 70000, end: 71000 });
+  lane.ops.push({ id: 'think', lane: 'lane', turn: 'turn', title: 'reasoning', phase: 'llm', kind: 'reasoning', status: 'completed', start: 36000, end: 39000 });
+  await h.open('session', model);
+  let list = h.node('operationList').innerHTML;
+  assert.match(h.node('operationCount').textContent, /^9 operations · 6 rows, 1 run of identical calls folded/);
+  assert.match(list, /×4/);
+  assert.match(list, /4 identical calls in a row/);
+  assert.ok(!attributeValues(list, 'data-id').includes('sleep-1'), 'members are hidden while folded');
+  assert.ok(attributeValues(list, 'data-id').includes('between'), 'a later identical call after another op is not part of the run');
+  h.action('run-toggle', { run: 'lane:sleep-0' });
+  list = h.node('operationList').innerHTML;
+  assert.ok(attributeValues(list, 'data-id').includes('sleep-1'), 'unfolded members are listed');
+  assert.match(list, /fold run/);
+  assert.match(h.node('operationCount').textContent, /^9 operations · durations/);
 });

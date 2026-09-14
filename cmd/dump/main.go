@@ -3,12 +3,14 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/extractumio/todobem/internal/classify"
 	"github.com/extractumio/todobem/internal/codex"
 	"github.com/extractumio/todobem/internal/model"
 )
@@ -18,16 +20,34 @@ func fmtd(ms int64) string {
 	return d.Round(time.Second).String()
 }
 
+func firstField(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: dump <root-thread-id> [export.json]")
+	opsOnly := flag.Bool("ops", false, "print every operation (all lanes) as TSV: phase, kind, rule, duration, status, lane, command; nothing else")
+	rules := flag.String("rules", "", "path to a user rules overlay (JSON); also loads $TODOBEM_RULES and ~/.todobem/rules.json")
+	flag.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: dump [-ops] <root-thread-id> [export.json]")
+		flag.PrintDefaults()
+	}
+	flag.Parse()
+	if flag.NArg() < 1 {
+		flag.Usage()
 		os.Exit(2)
 	}
-	id := os.Args[1]
+	if _, err := classify.LoadUserConfigDefaults(*rules); err != nil {
+		fmt.Fprintln(os.Stderr, "loading user rules:", err)
+		os.Exit(2)
+	}
+	id := flag.Arg(0)
 	ix := codex.NewIndex(os.Getenv("HOME") + "/.codex")
 	t0 := time.Now()
 	ix.Scan()
-	fmt.Println("scan", time.Since(t0))
+	scanTime := time.Since(t0)
 	s, err := codex.Open(ix, id)
 	if err != nil {
 		panic(err)
@@ -36,10 +56,15 @@ func main() {
 	if _, err := s.Refresh(); err != nil {
 		panic(err)
 	}
+	m := s.Model
+	if *opsOnly {
+		printOps(m)
+		return
+	}
+	fmt.Println("scan", scanTime)
 	fmt.Println("parse", time.Since(t1))
 	rd, dec := s.IOStats()
 	fmt.Printf("bytes read %d MB, JSON-decoded %d MB (%.0f%%)\n", rd/1e6, dec/1e6, float64(dec)*100/float64(rd))
-	m := s.Model
 	for _, l := range m.Lanes {
 		var part int64
 		for _, sg := range l.Segments {
@@ -102,6 +127,14 @@ func main() {
 	fmt.Println("  by_kind:", m.Totals.ByKind)
 	fmt.Println("  parallel:", m.Parallel.Agents, "agents", fmtd(m.Parallel.AgentMs), "agent-time", fmtd(m.Parallel.WallMs), "wall")
 	fmt.Println("  users:", m.Totals.UserMessages, "questions:", m.Totals.Questions, "compactions:", m.Totals.Compactions, "failed:", m.Totals.Failed)
+	fmt.Println("  reviews:", m.Totals.Reviews, "review-span (root):", fmtd(m.Totals.ReviewMs))
+	for _, l := range m.Lanes {
+		for _, mk := range l.Markers {
+			if mk.Kind == "skill" {
+				fmt.Printf("  SKILL %s %-10s %s\n", time.UnixMilli(mk.T).UTC().Format("01-02 15:04"), l.Path, firstField(mk.Text))
+			}
+		}
+	}
 	for _, l := range m.Lanes {
 		fmt.Printf("LANE %-45s depth=%d turns=%d ops=%d segs=%d stages=%d markers=%d live=%v span=%s\n", l.Path, l.Depth, len(l.Turns), len(l.Ops), len(l.Segments), len(l.Stages), len(l.Markers), l.Live, fmtd(l.Ended-l.Started))
 	}
@@ -144,9 +177,26 @@ func main() {
 			fmt.Printf("  %s %-12s %q\n", time.UnixMilli(mk.T).UTC().Format("01-02 15:04"), mk.Kind, t)
 		}
 	}
-	if len(os.Args) > 2 {
+	if flag.NArg() > 1 {
 		b, _ := json.Marshal(m)
 		fmt.Println("json bytes", len(b))
-		os.WriteFile(os.Args[2], b, 0644)
+		os.WriteFile(flag.Arg(1), b, 0644)
+	}
+}
+
+// printOps lists every operation with the command that produced it, one per line, so a
+// classification pass over real sessions can be audited with grep/sort (output stays local).
+func printOps(m *model.Session) {
+	for _, l := range m.Lanes {
+		for _, o := range l.Ops {
+			if o.Phase == model.Phase("llm") {
+				continue
+			}
+			detail := strings.ReplaceAll(strings.ReplaceAll(o.Detail, "\t", " "), "\n", "⏎")
+			if detail == "" {
+				detail = o.Title
+			}
+			fmt.Printf("%s\t%s\t%s\t%d\t%s\t%s\t%s\n", o.Phase, o.Kind, o.Rule, (o.End-o.Start)/1000, o.Status, l.Path, detail)
+		}
 	}
 }

@@ -79,6 +79,8 @@ type Turn struct {
 	Model   string `json:"model,omitempty"`   // model id from turn_context
 	Effort  string `json:"effort,omitempty"`  // reasoning effort from turn_context
 	Final   string `json:"final,omitempty"`
+	Skill   string `json:"skill,omitempty"`  // name of a skill actually invoked in this turn (harness injection)
+	Review  bool   `json:"review,omitempty"` // Skill is a code-review / cleanup skill (classify.ReviewSkill)
 }
 
 type Interval struct {
@@ -161,6 +163,13 @@ type Totals struct {
 	Background   int              `json:"background_ops"`
 	Tokens       TokenUsage       `json:"tokens"`        // sum over all lanes
 	CompactionMs int64            `json:"compaction_ms"` // summed compaction durations, all lanes (may overlap tests)
+	// Code review: turns in which a review/cleanup skill (classify.ReviewSkill) was actually
+	// invoked. ReviewMs is the wall clock of those turns on the root lane; Reviews counts the
+	// invocations across all lanes. A separate bucket (like background/parallel), never a phase —
+	// it does NOT enter by_phase and the partition is unchanged. Turns that reuse the skill later
+	// without a fresh invocation are not counted (see docs/SCHEMA.md).
+	ReviewMs int64 `json:"review_ms"`
+	Reviews  int   `json:"reviews"`
 }
 
 type Parallel struct {

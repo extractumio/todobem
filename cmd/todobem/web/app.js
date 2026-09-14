@@ -1,6 +1,7 @@
 'use strict';
 /* todobem SPA. Data comes from /api/* (see docs/SCHEMA.md). All times are Unix ms.
    Aggregates use the root lane's exclusive partition; sub-agent time is shown separately. */
+const LIST_CHUNK = 60; // operations rendered per scroll step
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -9,7 +10,7 @@ const sum = a => a.reduce((n, x) => n + x, 0);
 const pad = n => String(n).padStart(2, '0');
 const overlap = (s, e, a, b) => Math.max(0, Math.min(e, b) - Math.max(s, a));
 
-const paths = { grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>', timeline: '<path d="M3 6h8M15 6h6M3 12h4M11 12h10M3 18h12M19 18h2"/>', help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 8.5a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1.5-1.5 2.5m0 3h.01"/>', right: '<path d="m9 5 7 7-7 7"/>', left: '<path d="m15 5-7 7 7 7"/>', loop: '<path d="M19 7h-8a6 6 0 1 0 0 12h2M16 3l4 4-4 4M5 17h8a6 6 0 1 0 0-12h-2M8 21l-4-4 4-4"/>', repo: '<path d="M5 3h14v18H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2M4 17h15M8 7h6"/>', target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="m15 9 6-6m-4 0h4v4"/>', clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>', code: '<path d="m8 6-6 6 6 6m8-12 6 6-6 6m-3-15-2 18"/>', wait: '<path d="M7 3h10M7 21h10M8 3v5l8 8v5M16 3v5l-8 8v5"/>', gap: '<path d="M4 5v14m16-14v14M8 12h2m4 0h2"/>', expand: '<path d="M8 3H3v5m18 0V3h-5M3 16v5h5m8 0h5v-5"/>', latest: '<path d="M3 12h14m-5-5 5 5-5 5m9-13v16"/>', close: '<path d="m6 6 12 12M6 18 18 6"/>', info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h.01"/>', shield: '<path d="m12 2 9 4v6c0 5-9 10-9 10S3 17 3 12V6z"/><path d="m8 11 3 3 5-6"/>', search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>', check: '<path d="m5 12 4 4L19 6"/>', brain: '<path d="M12 4a3 3 0 0 0-3 3v10a3 3 0 0 0 6 0V7a3 3 0 0 0-3-3zM6 9a3 3 0 0 0 0 6M18 9a3 3 0 0 1 0 6"/>', refresh: '<path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/>', agents: '<circle cx="7" cy="7" r="3"/><circle cx="17" cy="7" r="3"/><circle cx="12" cy="17" r="3"/><path d="M9 9l2 5M15 9l-2 5"/>' };
+const paths = { grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>', timeline: '<path d="M3 6h8M15 6h6M3 12h4M11 12h10M3 18h12M19 18h2"/>', help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 8.5a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1.5-1.5 2.5m0 3h.01"/>', right: '<path d="m9 5 7 7-7 7"/>', left: '<path d="m15 5-7 7 7 7"/>', loop: '<path d="M19 7h-8a6 6 0 1 0 0 12h2M16 3l4 4-4 4M5 17h8a6 6 0 1 0 0-12h-2M8 21l-4-4 4-4"/>', repo: '<path d="M5 3h14v18H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2M4 17h15M8 7h6"/>', target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="m15 9 6-6m-4 0h4v4"/>', clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>', code: '<path d="m8 6-6 6 6 6m8-12 6 6-6 6m-3-15-2 18"/>', wait: '<path d="M7 3h10M7 21h10M8 3v5l8 8v5M16 3v5l-8 8v5"/>', gap: '<path d="M4 5v14m16-14v14M8 12h2m4 0h2"/>', expand: '<path d="M8 3H3v5m18 0V3h-5M3 16v5h5m8 0h5v-5"/>', latest: '<path d="M3 12h14m-5-5 5 5-5 5m9-13v16"/>', close: '<path d="m6 6 12 12M6 18 18 6"/>', info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h.01"/>', shield: '<path d="m12 2 9 4v6c0 5-9 10-9 10S3 17 3 12V6z"/><path d="m8 11 3 3 5-6"/>', search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>', check: '<path d="m5 12 4 4L19 6"/>', brain: '<path d="M12 4a3 3 0 0 0-3 3v10a3 3 0 0 0 6 0V7a3 3 0 0 0-3-3zM6 9a3 3 0 0 0 0 6M18 9a3 3 0 0 1 0 6"/>', refresh: '<path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/>', agents: '<circle cx="7" cy="7" r="3"/><circle cx="17" cy="7" r="3"/><circle cx="12" cy="17" r="3"/><path d="M9 9l2 5M15 9l-2 5"/>', copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/>' };
 const icon = (name, small = false) => `<svg class="ico ${small ? 'small-ico' : ''}" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.info}</svg>`;
 
 const PHASES = {
@@ -31,10 +32,10 @@ const alphaOf = p => 1;
 const swatch = p => p === 'no_telemetry' ? `<i class="color-square hatch" style="background:#22313d"></i>` : `<i class="color-square" style="background:${PHASES[p].color}"></i>`;
 const ROLES = { background: { name: 'Background process', color: '#8a6d3b' }, parallel: { name: 'Parallel runs (same command)', color: '#7fa6c9' }, first: { name: 'First runs', color: '#d9bc3d' }, retry_after_failure: { name: 'Retry after failure', color: '#d77729' }, rerun: { name: 'Reruns (after pass)', color: '#e2cf6a' }, fix: { name: 'Fix between attempts', color: '#b22998' }, infra_recovery: { name: 'Infra recovery', color: '#d76368' }, worker_queue: { name: 'Worker queue', color: '#48aa8c' }, single: { name: 'Single runs', color: '#b3a04a' }, remote: { name: 'On remote runner', color: '#8fb8d8' } };
 const ROLE_ORDER = ['first', 'retry_after_failure', 'rerun', 'parallel', 'fix', 'infra_recovery', 'worker_queue', 'single', 'remote'];
-const MARKS = { llm_error: { glyph: 'x', color: '#f0a742', name: 'LLM failure (invalid tool call)' }, system_message: { glyph: 'sys', color: '#7d8fa1', name: 'Harness message' }, user_message: { glyph: 'user', color: '#ec838d', name: 'User message' }, question: { glyph: 'q', color: '#f2a7b2', name: 'Question to user' }, final_answer: { glyph: 'check', color: '#4aa65f', name: 'Final answer' }, interrupted: { glyph: 'x', color: '#d76368', name: 'Interrupted' }, compaction: { glyph: 'diamond', color: '#c08a45', name: 'Context compaction' }, plan: { glyph: 'plan', color: '#c9b2ff', name: 'Plan update' }, result_returned: { glyph: 'result', color: '#48aa8c', name: 'Sub-agent result' }, agent_started: { glyph: 'spawn', color: '#86d0b9', name: 'Sub-agent spawned' }, agent_interacted: { glyph: 'tick', color: '#86d0b9', name: 'Message to sub-agent' }, agent_completed: { glyph: 'done', color: '#86d0b9', name: 'Sub-agent turn completed' }, agent_interrupted: { glyph: 'x', color: '#d76368', name: 'Sub-agent interrupted' } };
+const MARKS = { llm_error: { glyph: 'x', color: '#f0a742', name: 'LLM failure (invalid tool call)' }, system_message: { glyph: 'sys', color: '#7d8fa1', name: 'Harness message' }, user_message: { glyph: 'user', color: '#ec838d', name: 'User message' }, question: { glyph: 'q', color: '#f2a7b2', name: 'Question to user' }, final_answer: { glyph: 'check', color: '#4aa65f', name: 'Final answer' }, interrupted: { glyph: 'x', color: '#d76368', name: 'Interrupted' }, compaction: { glyph: 'diamond', color: '#c08a45', name: 'Context compaction' }, plan: { glyph: 'plan', color: '#c9b2ff', name: 'Plan update' }, skill: { glyph: 'skill', color: '#8f7bd8', name: 'Skill invoked' }, result_returned: { glyph: 'result', color: '#48aa8c', name: 'Sub-agent result' }, agent_started: { glyph: 'spawn', color: '#86d0b9', name: 'Sub-agent spawned' }, agent_interacted: { glyph: 'tick', color: '#86d0b9', name: 'Message to sub-agent' }, agent_completed: { glyph: 'done', color: '#86d0b9', name: 'Sub-agent turn completed' }, agent_interrupted: { glyph: 'x', color: '#d76368', name: 'Sub-agent interrupted' } };
 
-const state = { page: 'sessions', id: null, model: null, sessions: [], a: 0, b: 0, follow: false, interval: 60, expanded: new Set(), hiddenLanes: new Set(), phase: 'all', role: 'all', lane: 'all', sort: 'longest', listPage: 0, search: '', fleetSort: 'updated', selected: null, groups: true, inTurn: false, allLanes: false, failedOnly: false, breakdownSort: 'longest', convOpen: new Set(), version: null, lastRefresh: 0, pollTimer: null, tick: null };
-let geometry = null, overviewDrag = null, plotDrag = null, lastDragTime = 0, toastTimer, resizeTimer, tipTimer;
+const state = { page: 'sessions', id: null, model: null, sessions: [], a: 0, b: 0, follow: false, interval: 60, expanded: new Set(), hiddenLanes: new Set(), phase: 'all', role: 'all', lane: 'all', sort: 'longest', listShown: 60, metricsOpen: false, openRuns: new Set(), search: '', fleetSort: 'updated', selected: null, groups: true, inTurn: false, allLanes: false, failedOnly: false, breakdownSort: 'longest', convOpen: new Set(), version: null, lastRefresh: 0, pollTimer: null, tick: null, focus: null };
+let geometry = null, overviewDrag = null, plotDrag = null, lastDragTime = 0, toastTimer, resizeTimer, tipTimer, focusTimer;
 // Async work may finish after navigation, another selection, or a newer refresh.
 let navigationRequest = 0, sessionRequest = 0, sessionsRequest = 0, inspectorRequest = 0, pollSchedule = 0, pollBusy = false;
 let requestedSessionID = null; // The loaded model may still belong to the previous navigation.
@@ -50,6 +51,34 @@ function ago(ms) { const s = Math.round((Date.now() - ms) / 1000); return s < 60
 function shortPath(p) { if (!p) return ''; const parts = p.split('/'); return parts.length > 2 ? '…/' + parts.slice(-2).join('/') : p; }
 function modelOf(o) { const m = current(); const l = m.laneById.get(o.lane); const t = l && l.turns.find(t => t.id === o.turn); return (t && t.model) || (l && l.model) || ''; }
 function effortOf(o) { const m = current(); const l = m.laneById.get(o.lane); const t = l && l.turns.find(t => t.id === o.turn); return (t && t.effort) || ''; }
+// laneEffort is the reasoning effort of a lane's turns: one value when they all agree, 'mixed'
+// when they do not, '' when none is recorded.
+function laneEffort(l) {
+  const efforts = new Set(l.turns.map(t => t.effort).filter(Boolean));
+  return efforts.size > 1 ? 'mixed' : efforts.size === 1 ? [...efforts][0] : '';
+}
+// agentCaption is a lane's second label line: who the thread is (nickname) and what runs it (model).
+function agentCaption(l, withEffort = false) {
+  const model = l.model ? l.model + (withEffort && laneEffort(l) ? ' / ' + laneEffort(l) : '') : '';
+  return [l.nickname, model].filter(Boolean).join(' · ');
+}
+// laneSpan is a lane's lifetime on the timeline: a sub-agent runs from the parent's spawn marker
+// (▶) to its last turn end, or to now while live.
+function laneSpan(l) {
+  const m = current();
+  const spawn = (m.agentMarks.get(l.id) || []).find(k => k.kind === 'agent_started');
+  return { t0: spawn ? spawn.t : l.started, t1: l.live ? m.now : l.ended };
+}
+// laneInWindow: the root lane is always drawn; a sub-agent row only while its lifetime overlaps
+// the visible window, so a session with a hundred short-lived workers stays readable.
+function laneInWindow(l) {
+  if (l.depth === 0) return true;
+  const { t0, t1 } = laneSpan(l);
+  return t1 >= state.a && t0 <= state.b;
+}
+function trunc(s, n) {
+  return s.length > n ? s.slice(0, Math.max(1, n - 1)) + '…' : s;
+}
 function roleOf(kind) { const i = (kind || '').indexOf('|'); return i >= 0 ? kind.slice(i + 1) : ''; }
 function baseKind(kind) { const i = (kind || '').indexOf('|'); return i >= 0 ? kind.slice(0, i) : (kind || ''); }
 
@@ -66,6 +95,22 @@ function prepare(m) {
   m.laneById = new Map();
   for (const l of m.lanes) { m.laneById.set(l.id, l); l.ops.sort((a, b) => a.start - b.start); for (const o of l.ops) m.opById.set(o.id, o); l.opsByEnd = [...l.ops].sort((a, b) => b.end - a.end); }
   m.groupById = new Map(m.groups.map(g => [g.id, g]));
+  // runs: identical tool calls (same kind and title) that follow each other in one lane with no
+  // other tool call between them — a polling loop of sleeps, say; the model's reasoning between
+  // two calls does not break a run. The list shows a run as one row.
+  for (const l of m.lanes) {
+    let run = null;
+    for (const o of l.ops) {
+      if (o.phase === 'llm') continue;
+      if (o.background) { run = null; continue; }
+      if (run && run.kind === o.kind && run.title === o.title) { o.run = run.id; continue; }
+      run = { id: `${l.id}:${o.id}`, kind: o.kind, title: o.title };
+      o.run = run.id;
+    }
+  }
+  const runSize = new Map();
+  for (const l of m.lanes) for (const o of l.ops) runSize.set(o.run, (runSize.get(o.run) || 0) + 1);
+  for (const l of m.lanes) for (const o of l.ops) if (runSize.get(o.run) < 2) delete o.run;
   // sub-agent spawn/complete markers live on the parent lane; index them by child lane id
   m.agentMarks = new Map();
   for (const l of m.lanes) for (const mk of l.markers) if (mk.kind.startsWith('agent_') && mk.ref) { if (!m.agentMarks.has(mk.ref)) m.agentMarks.set(mk.ref, []); m.agentMarks.get(mk.ref).push(mk); }
@@ -81,18 +126,19 @@ async function loadSessions() {
     return true;
   } catch (e) { if (ownsRequest()) throw e; return false; }
 }
-async function loadSession(id, { keepWindow = false, isCurrent = () => true } = {}) {
+async function loadSession(id, { keepWindow = false, isCurrent = () => true, refresh = false } = {}) {
   if (state.page !== 'session' || id !== requestedSessionID) return false;
   const request = ++sessionRequest, navigation = navigationRequest;
   const ownsRequest = () => request === sessionRequest && navigation === navigationRequest && state.page === 'session' && id === requestedSessionID && isCurrent();
   let m;
-  try { m = await api('/api/sessions/' + encodeURIComponent(id)); }
+  // Default loads take the cached model when it is current; the Refresh button forces a re-parse.
+  try { m = await api('/api/sessions/' + encodeURIComponent(id) + (refresh ? '?refresh=1' : '')); }
   catch (e) { if (ownsRequest()) throw e; return false; }
   if (!ownsRequest()) return false;
   m = prepare(m);
   const prev = state.model;
   state.model = m; state.id = id; state.version = m.version; state.lastRefresh = Date.now();
-  if (!keepWindow || !prev || prev.id !== id) { state.a = m.started; state.b = m.ended; state.expanded = new Set(); state.hiddenLanes = new Set(); state.phase = 'all'; state.role = 'all'; state.lane = 'all'; state.listPage = 0; state.selected = null; state.follow = m.live; }
+  if (!keepWindow || !prev || prev.id !== id) { state.a = m.started; state.b = m.ended; state.expanded = new Set(); state.hiddenLanes = new Set(); state.phase = 'all'; state.role = 'all'; state.lane = 'all'; state.listShown = LIST_CHUNK; state.openRuns = new Set(); state.selected = null; state.follow = m.live; }
   else if (state.follow) { const span = state.b - state.a; state.b = m.ended; state.a = Math.max(m.started, m.ended - span); }
   else if (Math.abs(prev.ended - state.b) < 1000) state.b = m.ended; // window was pinned to the end
   state.a = clamp(state.a, m.started, m.ended); state.b = clamp(state.b, state.a + 1000, m.ended);
@@ -235,7 +281,10 @@ function metricsHTML() {
     ['No telemetry / unattributed', fmt(A.no_telemetry + A.unknown), `no events ${fmt(A.no_telemetry)} · unmatched events ${fmt(A.unknown)} · all lanes`, 'gap'],
     ['Sub-agent time', fmt(t.agentMs), `${t.agentLanes} lanes · ${fmt(t.agentWall)} wall · runs in parallel with the root`, 'agents'],
   ];
-  return `<section class="metrics" aria-label="Whole-session accounting">${cells.map(([label, v, note, ic]) => `<div class="metric"><div class="metric-label">${icon(ic, true)}${label}</div><strong class="metric-value num">${v}</strong><span class="metric-note">${esc(note)}</span></div>`).join('')}</section><p class="metrics-note">LLM, Tools, waiting, compaction and telemetry sum agent time over all lanes (sub-agents run in parallel, so they can exceed the wall clock). Elapsed and Working time are wall clock of the root.</p>`;
+  if (m.totals.reviews) cells.push(['Code review', fmt(m.totals.review_ms), `${m.totals.reviews}× a review/cleanup skill was invoked · wall clock of those root turns (turns reusing the skill without re-invoking it are not counted)`, 'loop']);
+  // collapsed (default): label + value per tile, four per row; expanded: the notes and the caveat
+  const open = state.metricsOpen;
+  return `<section class="metrics ${open ? 'open' : ''}" aria-label="Whole-session accounting"><div class="metrics-head"><span class="eyebrow">Whole-session totals</span><button class="text-btn small" data-action="metrics-toggle" aria-expanded="${open}">${open ? 'Hide details' : 'Details'}</button></div><div class="metrics-grid">${cells.map(([label, v, note, ic]) => `<div class="metric" title="${esc(note)}"><span class="metric-label">${icon(ic, true)}${label}</span><strong class="metric-value num">${v}</strong>${open ? `<span class="metric-note">${esc(note)}</span>` : ''}</div>`).join('')}</div>${open ? `<p class="metrics-note">LLM, Tools, waiting, compaction and telemetry sum agent time over all lanes (sub-agents run in parallel, so they can exceed the wall clock). Elapsed and Working time are wall clock of the root.</p>` : ''}</section>`;
 }
 function sessionSummary() {
   const m = current(), r = root(), last = r.turns[r.turns.length - 1];
@@ -245,31 +294,49 @@ function sessionSummary() {
   return `<dl class="session-summary">${cells.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}</dl>`;
 }
 function stripMd(t) { return (t || '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[*_`#>]+/g, '').replace(/\s+/g, ' ').trim(); }
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); return true; }
+  catch (e) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      const ok = document.execCommand('copy'); ta.remove();
+      return ok;
+    } catch (_) { return false; }
+  }
+}
 function lastState() {
-  const m = current(), r = root(); const st = r.stages[r.stages.length - 1]; if (!st) return '<p>No activity recorded</p>';
-  const op = r.opsByEnd.find(o => o.phase !== 'llm') || r.opsByEnd[0];
+  const m = current(), r = root();
+  if (!r.stages.length) return '<p class="muted-note">No activity recorded.</p>';
   const fin = [...r.markers].reverse().find(k => k.kind === 'final_answer');
-  const rows = [];
-  rows.push(['Status', m.live ? `<span class="chip live" style="padding:2px 7px"><i class="dot"></i>live</span> ${PHASES[st.p].name} since ${stamp(st.s, false)}` : `Closed ${stamp(m.ended)} · ${r.turns.length} turns`]);
-  if (op) rows.push(['Last operation', `<button class="text-btn" data-action="inspect" data-id="${esc(op.id)}" style="text-align:left;font-weight:500"><i class="color-square" style="background:${PHASES[op.phase].color}"></i>${esc(op.title.slice(0, 90))}</button><small style="color:var(--subtle);display:block">${stampS(op.start)} · ${fmt(op.end - op.start, true)} · ${esc(op.status)}</small>`]);
-  if (fin) rows.push(['Last answer', `<button class="text-btn" data-action="jump" data-t="${fin.t}" style="text-align:left;font-weight:500;white-space:normal">${esc(stripMd(fin.text).slice(0, 160))}${fin.text.length > 160 ? '…' : ''}</button><small style="color:var(--subtle);display:block">${stampS(fin.t)} · full text in Conversation</small>`]);
-  return `<dl class="state-list">${rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}</dl>`;
+  let html = '';
+  // The agent's final answer, verbatim and scrollable, with a one-click copy.
+  if (fin) {
+    html += `<div class="answer-head"><span class="eyebrow">Last answer · ${stamp(fin.t)}</span><div class="answer-actions"><button class="btn tiny" data-action="copy-answer">${icon('copy', true)}Copy</button><button class="btn tiny ghost" data-action="focus-at" data-t="${fin.t}">${icon('expand', true)}In timeline</button></div></div><div class="answer-block scroll-block" tabindex="0">${esc(fin.text)}</div>`;
+  } else {
+    html += `<span class="eyebrow">Last answer</span><p class="muted-note">No final answer recorded${m.live ? ' yet — the session is still in progress.' : ' (the last turn produced no final message).'}</p>`;
+  }
+  // For a live session, the stage in progress (unique to this panel); nothing extra for a closed
+  // one — the end time and turn count already live in the summary on the left.
+  if (m.live) { const st = r.stages[r.stages.length - 1]; if (st) html += `<div class="last-op-row"><div><span class="chip live" style="padding:1px 7px"><i class="dot"></i>live</span> <span class="mono note">${PHASES[st.p].name} since ${stamp(st.s, false)}</span></div></div>`; }
+  return html;
 }
 function sessionPage() {
   const m = current(), r = root(), firstUser = r.markers.find(k => k.kind === 'user_message');
   const status = m.live ? `<span class="chip live"><i class="dot"></i>Live · turn in progress</span>` : `<span class="chip">${icon('check', true)}Completed · ${r.turns.length} turns</span>`;
   return `<section class="page-heading"><div><div class="eyebrow">Session ${esc(m.id.slice(0, 8))} · ${esc(m.model || 'codex')} · cli ${esc(m.cli || '?')}</div><h1>${esc(m.title)}</h1><p class="subtitle">${icon('repo', true)}${esc(m.cwd)}${m.branch ? `<span>·</span>${esc(m.branch)}` : ''}<span>·</span>${stamp(m.started)} — ${stamp(m.ended)} ${esc(TZ)}</p></div><div class="heading-actions">${status}<label class="chip">Refresh <select class="select" id="intervalSelect" style="min-height:26px;padding:2px 6px">${[[30, '30s'], [60, '1 min'], [120, '2 min'], [300, '5 min']].map(([v, l]) => `<option value="${v}" ${state.interval === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label><button class="btn" data-action="refresh">${icon('refresh', true)}Refresh now</button></div></section>
-<section class="request-card" aria-label="Recorded user request"><div class="request-icon">${icon('target')}</div><div class="request-copy"><span class="eyebrow">First user message · ${firstUser ? stamp(firstUser.t) : 'not recorded'}</span><p>${esc(firstUser?.text || '—')}</p>${sessionSummary()}</div><div class="recorded-state"><span class="eyebrow">Last recorded state</span><div id="lastRecorded">${lastState()}</div></div></section>
+<section class="request-card" aria-label="Recorded user request"><div class="request-icon">${icon('target')}</div><div class="request-copy"><span class="eyebrow">First user message · ${firstUser ? stamp(firstUser.t) : 'not recorded'}</span><p>${esc(firstUser?.text || '—')}</p>${sessionSummary()}</div><div class="recorded-state"><div id="lastRecorded">${lastState()}</div></div></section>
 <div id="sessionMetrics">${metricsHTML()}</div>
-<section class="card timeline-card" aria-labelledby="timelineTitle"><div class="card-head"><div><h2 id="timelineTitle">Session timeline</h2><p><span id="totalOps">${m.totals.ops}</span> operations · ${m.groups.length} retry groups · ${m.lanes.length - 1} sub-agent lanes · ${m.totals.user_messages} user messages</p></div><div class="actions"><button class="btn ghost" data-action="fit" title="Show the entire session">${icon('expand', true)}Fit all</button><button class="btn ghost ${state.follow ? 'active' : ''}" data-action="follow" id="followBtn" aria-pressed="${state.follow}">${icon('latest', true)}Follow latest</button></div></div>
+<section class="card timeline-card" aria-labelledby="timelineTitle"><div class="card-head"><div><h2 id="timelineTitle">Session timeline</h2><p><span id="totalOps">${m.totals.ops}</span> operations · ${m.groups.length} retry groups · <span id="laneCount">${m.lanes.length - 1} sub-agent lanes</span> · ${m.totals.user_messages} user messages</p></div><div class="actions"><button class="btn ghost" data-action="fit" title="Show the entire session">${icon('expand', true)}Fit all</button><button class="btn ghost ${state.follow ? 'active' : ''}" data-action="follow" id="followBtn" aria-pressed="${state.follow}">${icon('latest', true)}Follow latest</button></div></div>
 <div class="overview-section"><div class="overview-heading"><strong id="overviewDuration">${fmt(m.ended - m.started)} overview · root lane${m.lanes.length > 1 ? ' · sub-agent activity' : ''} · errors (red = tools, orange = LLM) below</strong><span>Drag to select a window · handles resize it</span><span class="mono" id="overviewRange"></span></div><div id="overview" class="overview" aria-label="Session overview. Drag to select a time window."><svg id="overviewSvg" aria-hidden="true"></svg><div class="brush-shade" id="shadeLeft"></div><div class="brush-shade" id="shadeRight"></div><div class="brush" id="brush"><div class="brush-handle left" data-handle="start" tabindex="0" role="slider" aria-label="Visible window start"></div><div class="brush-handle right" data-handle="end" tabindex="0" role="slider" aria-label="Visible window end"></div></div></div><div class="overview-axis" id="overviewAxis"></div><div class="legend" id="legend">${PHASE_ORDER.filter(k => k !== 'idle').map(k => `<span class="row">${swatch(k)}${PHASES[k].name}</span>`).join('')}</div></div>
 <div class="timeline-toolbar"><div class="zoom-group"><div class="zoom-presets" aria-label="Visible time window">${[[0, 'All'], [86400000, '24h'], [21600000, '6h'], [3600000, '1h'], [900000, '15m'], [300000, '5m']].map(([n, l]) => `<button data-action="preset" data-span="${n}">${l}</button>`).join('')}</div><div class="zoom-step" aria-label="Zoom controls"><button data-action="zoom" data-dir="-1" aria-label="Zoom out">−</button><span class="zoom-caption" id="zoomCaption"></span><button data-action="zoom" data-dir="1" aria-label="Zoom in">+</button></div></div><div class="toolbar-right"><label><input id="showGroups" type="checkbox" ${state.groups ? 'checked' : ''}>Retry groups</label><button class="btn small ghost" data-action="expand-all">Expand all lanes</button><button class="btn small ghost" data-action="collapse-all">Collapse</button></div></div>
 <div class="range-bar"><span class="range-label" id="rangeLabel"></span><div class="nav-arrows"><button class="btn icon-only" data-action="pan" data-dir="-1" aria-label="Move to earlier time">${icon('left', true)}</button><button class="btn icon-only" data-action="pan" data-dir="1" aria-label="Move to later time">${icon('right', true)}</button></div></div>
-<div class="timeline-plot" id="plot" tabindex="0" role="group" aria-label="Interactive session timeline"><svg id="chartSvg" aria-hidden="true"></svg></div>
+<div class="timeline-plot" id="plot" tabindex="0" role="group" aria-label="Interactive session timeline"><svg id="chartSvg" aria-hidden="true"></svg><div class="agent-scroll" id="agentScroll" hidden><svg id="agentSvg" aria-hidden="true"></svg></div></div>
 
-<div class="chart-footer"><span class="chart-note" id="chartNote"></span><span class="chart-shortcuts"><kbd>+</kbd> <kbd>−</kbd> zoom · <kbd>←</kbd> <kbd>→</kbd> pan · <kbd>Home</kbd> fit · drag to pan</span></div><div class="legend legend-marks" id="legendMarks"><span class="row"><svg width="12" height="12"><path d="M6 1l5 10H1z" fill="#ec838d"/></svg>User message</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="#4aa65f"/></svg>Final answer</span><span class="row"><svg width="14" height="12"><rect x="0" y="5" width="14" height="3" rx="1.5" fill="#c9a15c"/></svg>Background process</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5.5" fill="#4aa65f"/><path d="M3 6l2 2 4-4" stroke="#0f1b23" stroke-width="1.6" fill="none"/></svg>Turn completed</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5.5" fill="#d76368"/><path d="M3.5 3.5l5 5m0-5l-5 5" stroke="#0f1b23" stroke-width="1.6"/></svg>Interrupted</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="#22313d" stroke="#7d8fa1" stroke-width="1.5"/><path d="M2.5 9.5l7-7" stroke="#7d8fa1" stroke-width="1.5"/></svg>Never closed</span><span class="row"><svg width="14" height="12"><path d="M1 8v-3h12v3" fill="none" stroke="#4690ce" stroke-width="1.5"/></svg>Stage bracket (tool calls + LLM time before them)</span><span class="row"><svg width="12" height="12"><path d="M6 2l4.5 8h-9z" fill="#e05252"/></svg>Tool failure (non-zero exit)</span><span class="row"><svg width="12" height="12"><path d="M6 2l4.5 8h-9z" fill="#f0a742"/></svg>LLM failure: invalid tool call / broken exec script</span></div></section>
-<div class="analysis-grid"><section class="card" aria-labelledby="breakdownTitle"><div class="card-head"><div><h2 id="breakdownTitle">Time in this window</h2><p id="breakdownScope"></p></div><span class="scope" id="breakdownScopeChip">Root lane · exclusive</span></div><div id="breakdownBody" class="breakdown-body"></div><div class="panel-foot">${icon('info', true)}Sub-agent time runs in parallel and is listed separately. Gaps are unknown, not idle.</div></section>
-<section class="card" aria-labelledby="operationsTitle"><div class="card-head"><div><h2 id="operationsTitle">Operations in view</h2><p id="operationCount"></p></div><span class="scope">All lanes</span></div><div class="operation-tools"><select class="select" id="phaseSelect" aria-label="Filter by phase"><option value="all">All phases</option>${PHASE_ORDER.map(k => `<option value="${k}">${PHASES[k].name}</option>`).join('')}</select><select class="select" id="laneSelect" aria-label="Filter by lane"><option value="all">All lanes</option>${m.lanes.map(l => `<option value="${esc(l.id)}">${esc(l.path)}</option>`).join('')}</select><select class="select" id="sortSelect" aria-label="Sort operations"><option value="longest">Longest in window</option><option value="latest">Latest first</option><option value="earliest">Earliest first</option><option value="failed">Failed first</option></select><label class="row chip" style="cursor:pointer"><input type="checkbox" id="failedOnly" ${state.failedOnly ? 'checked' : ''}>Failures only</label></div><div id="roleFilter"></div><div class="operation-list" id="operationList"></div><div class="list-footer" id="listFooter"></div></section></div>
+<div class="chart-footer"><span class="chart-note" id="chartNote"></span><span class="chart-shortcuts"><kbd>+</kbd> <kbd>−</kbd> zoom · <kbd>←</kbd> <kbd>→</kbd> pan · <kbd>Home</kbd> fit · drag to pan</span></div><div class="legend legend-marks" id="legendMarks"><span class="row"><svg width="12" height="12"><path d="M6 1l5 10H1z" fill="#ec838d"/></svg>User message</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="#4aa65f"/></svg>Final answer</span><span class="row"><svg width="14" height="12"><rect x="0" y="5" width="14" height="3" rx="1.5" fill="#c9a15c"/></svg>Background process</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5.5" fill="#4aa65f"/><path d="M3 6l2 2 4-4" stroke="#0f1b23" stroke-width="1.6" fill="none"/></svg>Turn completed</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5.5" fill="#d76368"/><path d="M3.5 3.5l5 5m0-5l-5 5" stroke="#0f1b23" stroke-width="1.6"/></svg>Interrupted</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="#22313d" stroke="#7d8fa1" stroke-width="1.5"/><path d="M2.5 9.5l7-7" stroke="#7d8fa1" stroke-width="1.5"/></svg>Never closed</span><span class="row"><svg width="14" height="12"><path d="M1 8v-3h12v3" fill="none" stroke="#4690ce" stroke-width="1.5"/></svg>Stage bracket (tool calls + LLM time before them)</span><span class="row"><svg width="12" height="12"><path d="M2 2l8 8m0-8l-8 8" stroke="#e5484d" stroke-width="2.4" stroke-linecap="round"/></svg>Tool failure (non-zero exit)</span><span class="row"><svg width="12" height="12"><path d="M2 2l8 8m0-8l-8 8" stroke="#f0a742" stroke-width="2.4" stroke-linecap="round"/></svg>LLM failure: invalid tool call / broken exec script</span></div></section>
+<div class="analysis-grid"><section class="card" id="breakdownCard" aria-labelledby="breakdownTitle"><div class="card-head"><div><h2 id="breakdownTitle">Time in this window</h2><p id="breakdownScope"></p></div><span class="scope" id="breakdownScopeChip">Root lane · exclusive</span></div><div id="breakdownBody" class="breakdown-body"></div><div class="panel-foot">${icon('info', true)}Sub-agent time runs in parallel and is listed separately. Gaps are unknown, not idle.</div></section>
+<section class="card fill" id="operationsCard" aria-labelledby="operationsTitle"><div class="card-head"><div><h2 id="operationsTitle">Operations in view</h2><p id="operationCount"></p></div><span class="scope">All lanes</span></div><div class="operation-tools"><select class="select" id="phaseSelect" aria-label="Filter by phase"><option value="all">All phases</option>${PHASE_ORDER.map(k => `<option value="${k}">${PHASES[k].name}</option>`).join('')}</select><select class="select" id="laneSelect" aria-label="Filter by lane"><option value="all">All lanes</option>${m.lanes.map(l => `<option value="${esc(l.id)}">${esc(l.path)}</option>`).join('')}</select><select class="select" id="sortSelect" aria-label="Sort operations"><option value="longest">Longest in window</option><option value="latest">Latest first</option><option value="earliest">Earliest first</option><option value="failed">Failed first</option></select><label class="row chip" style="cursor:pointer"><input type="checkbox" id="failedOnly" ${state.failedOnly ? 'checked' : ''}>Failures only</label></div><div id="roleFilter"></div><div class="operation-list" id="operationList"></div></section></div>
 <div class="analysis-grid"><section class="card" aria-labelledby="convTitle"><div class="card-head"><div><h2 id="convTitle">Conversation</h2><p>User messages, questions and final answers, verbatim. Select one to jump there.</p></div><span class="scope">${m.totals.user_messages} inputs</span></div><div class="conv" id="conversation"></div></section>
 <section class="card" aria-labelledby="agentsTitle"><div class="card-head"><div><h2 id="agentsTitle">Agents</h2><p>One lane per thread. Active time = the thread's own turns.</p></div><span class="scope">${m.lanes.length} lanes</span></div><div class="agents-wrap"><table class="agents-table" id="agentsTable"></table></div></section></div>
 ${footer()}`;
@@ -316,7 +383,7 @@ function niceTick(spanMs, width) { const target = spanMs / Math.max(2, Math.floo
 function laneRows() {
   const m = current(); const rows = [];
   for (const l of m.lanes) {
-    if (state.hiddenLanes.has(l.id)) continue;
+    if (state.hiddenLanes.has(l.id) || (!laneInWindow(l) && state.lane !== l.id)) continue;
     rows.push({ kind: 'lane', lane: l, h: l.depth === 0 ? 54 : 44 });
     if (l.depth === 0) { rows.push({ kind: 'markers', lane: l, h: 22 }); if (state.groups && m.groups.length) rows.push({ kind: 'groups', h: 26 }); }
     if (state.expanded.has(l.id)) { const present = PHASE_ORDER.filter(p => l.by_phase[p] > 0 && p !== 'idle' && p !== 'wait_user'); for (const p of present) rows.push({ kind: 'phase', lane: l, phase: p, h: 22 }); }
@@ -338,29 +405,59 @@ function bucketRuns(items, a, b, P, bw, pick) {
 }
 function renderTimeline() {
   const m = current(); if (state.page !== 'session' || !$('#chartSvg')) return;
-  const host = $('#plot'), W = Math.max(280, host.clientWidth), mobile = W < 560, L = mobile ? 88 : 168, R = mobile ? 10 : 20, P = W - L - R, span = state.b - state.a, x = t => L + (t - state.a) / span * P, top = 30;
-  const rows = laneRows(); let H = top + sum(rows.map(r => r.h)) + 8;
+  const host = $('#plot'), W = Math.max(280, host.clientWidth), mobile = W < 560, L = mobile ? 88 : 210, R = mobile ? 10 : 20, P = W - L - R, span = state.b - state.a, x = t => L + (t - state.a) / span * P, top = 30;
+  const rows = laneRows();
+  // the root block (lane, markers, groups, its phase rows) is one fixed SVG; sub-agent rows are a
+  // second SVG in a scrolling box capped at ten lanes, so a hundred workers do not push the page
+  const split = rows.findIndex(r => r.lane && r.lane.depth > 0);
+  const head = split < 0 ? rows : rows.slice(0, split), agents = split < 0 ? [] : rows.slice(split);
+  let H = top + sum(head.map(r => r.h)) + 8;
+  const HA = agents.length ? sum(agents.map(r => r.h)) + 4 : 0;
   geometry = { W, L, R, P, span, x, rows, top, H, mobile };
   const bw = 3; // px per bucket
-  let html = `<defs><clipPath id="plotClip"><rect x="${L}" y="0" width="${P}" height="${H}"/></clipPath><pattern id="gapHatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(35)"><rect width="6" height="6" fill="#22313d"/><path d="M0 0v6" stroke="#7d8fa1" stroke-width="1.3"/></pattern><pattern id="waitHatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(35)"><rect width="5" height="5" fill="#48aa8c"/><path d="M0 0v5" stroke="#236854" stroke-width="1"/></pattern></defs>`;
+  // defs are shared by both SVGs (url(#id) resolves document-wide); the clip is tall enough for either
+  let html = `<defs><clipPath id="plotClip"><rect x="${L}" y="0" width="${P}" height="${Math.max(H, HA)}"/></clipPath><pattern id="gapHatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(35)"><rect width="6" height="6" fill="#22313d"/><path d="M0 0v6" stroke="#7d8fa1" stroke-width="1.3"/></pattern><pattern id="waitHatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(35)"><rect width="5" height="5" fill="#48aa8c"/><path d="M0 0v5" stroke="#236854" stroke-width="1"/></pattern></defs>`;
   const ticks = niceTick(span, P);
-  for (let t = Math.ceil(state.a / ticks) * ticks; t <= state.b; t += ticks) { const xx = x(t); html += `<line x1="${xx}" y1="26" x2="${xx}" y2="${H - 4}" stroke="#2b3c48" stroke-width=".65"/>`; if (xx < L + 12 || xx > W - R - 14) continue; const d = new Date(t), midnight = d.getHours() === 0 && d.getMinutes() === 0; const lbl = span > 86400e3 * 2 || midnight ? stamp(t) : ticks < 60e3 ? stampS(t).slice(-8) : stamp(t, false); html += `<text class="axis-label" x="${xx}" y="17" text-anchor="middle" ${midnight ? 'font-weight="700"' : ''}>${lbl}</text>`; }
-  for (const tn of root().turns) { if (tn.start >= state.a && tn.start <= state.b) { const xx = x(tn.start); html += `<line x1="${xx}" y1="${top}" x2="${xx}" y2="${H - 4}" stroke="#ec838d" stroke-width="1" stroke-dasharray="2 4" opacity=".55"/>`; } }
-  let y = top;
+  const guides = (y1, y2) => {
+    let g = '';
+    for (let t = Math.ceil(state.a / ticks) * ticks; t <= state.b; t += ticks) g += `<line x1="${x(t)}" y1="${y1}" x2="${x(t)}" y2="${y2}" stroke="#2b3c48" stroke-width=".65"/>`;
+    for (const tn of root().turns) if (tn.start >= state.a && tn.start <= state.b) g += `<line x1="${x(tn.start)}" y1="${y1}" x2="${x(tn.start)}" y2="${y2}" stroke="#ec838d" stroke-width="1" stroke-dasharray="2 4" opacity=".55"/>`;
+    if (m.live && m.now >= state.a && m.now <= state.b) g += `<line x1="${x(m.now)}" x2="${x(m.now)}" y1="${y1}" y2="${y2}" stroke="#5fe0a0" stroke-width="1.2" opacity=".8"/>`;
+    else if (state.b >= m.ended - 1 && !m.live) g += `<line x1="${x(m.ended) - 1}" x2="${x(m.ended) - 1}" y1="${y1}" y2="${y2}" stroke="#a5c5df" stroke-width="1.2"/>`;
+    return g;
+  };
+  html += guides(26, H - 4);
+  for (let t = Math.ceil(state.a / ticks) * ticks; t <= state.b; t += ticks) { const xx = x(t); if (xx < L + 12 || xx > W - R - 14) continue; const d = new Date(t), midnight = d.getHours() === 0 && d.getMinutes() === 0; const lbl = span > 86400e3 * 2 || midnight ? stamp(t) : ticks < 60e3 ? stampS(t).slice(-8) : stamp(t, false); html += `<text class="axis-label" x="${xx}" y="17" text-anchor="middle" ${midnight ? 'font-weight="700"' : ''}>${lbl}</text>`; }
+  const drawRows = (list, y0) => {
+  let html = '';
+  let y = y0;
   const fillFor = p => p === 'no_telemetry' ? 'url(#gapHatch)' : p === 'wait_worker' ? 'url(#waitHatch)' : PHASES[p]?.color || '#888';
   const opacityFor = alphaOf;
-  rows.forEach((row, ri) => {
+  list.forEach((row, ri) => {
     const rh = row.h, bg = ri % 2 ? '#1c2a35' : '#20303c';
     html += `<rect x="0" y="${y}" width="${W}" height="${rh}" fill="${bg}" opacity=".75"/>`;
     if (row.kind === 'lane') {
       const l = row.lane, sel = state.lane === l.id, indent = Math.min(l.depth, 3) * (mobile ? 6 : 10), name = l.depth === 0 ? 'root' : l.path.split('/').pop();
       const exp = state.expanded.has(l.id);
-      html += `<g data-lane="${esc(l.id)}" class="lane-head"><rect x="0" y="${y}" width="${L - 4}" height="${rh}" fill="transparent"/><path d="${exp ? `m${8 + indent} ${y + rh / 2 - 3} 3.5 4 3.5-4` : `m${9 + indent} ${y + rh / 2 - 4} 4 4-4 4`}" fill="none" stroke="#c7d5de" stroke-width="1.6"/><text class="lane-label ${sel ? 'selected' : ''}" x="${20 + indent}" y="${y + (l.depth === 0 ? rh / 2 - 2 : rh / 2 + 4)}">${esc(name.slice(0, mobile ? 9 : 17))}</text>${l.depth === 0 ? `<text class="lane-sub" x="${20 + indent}" y="${y + rh / 2 + 11}">${mobile ? `${l.turns.length}t · ${l.ops.length}` : `${l.turns.length} turns · ${l.ops.length} ops · ${esc(l.model || '')}`}</text>` : ''}</g>`;
+      // text budget: the label column minus the chevron gutter and, on desktop, the card glyph
+      const textW = L - 24 - indent - (mobile ? 0 : 22);
+      const nameChars = Math.floor(textW / 7.5), subChars = Math.floor(textW / 6.2);
+      const caption = l.depth === 0
+        ? (mobile ? `${l.turns.length}t · ${l.ops.length}` : trunc(`${l.turns.length} turns · ${l.model || ''}`, subChars))
+        : mobile ? trunc(l.nickname || l.model || '', subChars) : trunc(agentCaption(l), subChars);
+      const chevron = exp ? `m${8 + indent} ${y + rh / 2 - 3} 3.5 4 3.5-4` : `m${9 + indent} ${y + rh / 2 - 4} 4 4-4 4`;
+      html += `<g data-lane="${esc(l.id)}" class="lane-head"><rect x="0" y="${y}" width="${L - 4}" height="${rh}" fill="transparent"/><path d="${chevron}" fill="none" stroke="#c7d5de" stroke-width="1.6"/>`;
+      html += `<text class="lane-label ${sel ? 'selected' : ''}" x="${20 + indent}" y="${y + rh / 2 - 2}">${esc(trunc(name, nameChars))}</text>`;
+      html += `<text class="lane-sub" x="${20 + indent}" y="${y + rh / 2 + 11}">${esc(caption)}</text>`;
+      // the agent card (prompt, model, final answer) has its own glyph; on a phone the Agents table opens it
+      if (!mobile) {
+        const cx = L - 15, cy = y + rh / 2;
+        html += `<g class="lane-card-btn" data-action="lane-card" data-lane="${esc(l.id)}"><rect x="${L - 26}" y="${y}" width="22" height="${rh}" fill="transparent"/><circle cx="${cx}" cy="${cy}" r="7" fill="none" stroke="#7d8fa1" stroke-width="1.3"/><text x="${cx}" y="${cy + 3.5}" text-anchor="middle" font-size="10" font-weight="700" fill="#c7d5de">i</text></g>`;
+      }
+      html += `</g>`;
       html += `<g clip-path="url(#plotClip)">`;
       if (l.depth > 0) { // lifetime box: from spawn (▶) to the last turn end / now
-        const marks = m.agentMarks.get(l.id) || [];
-        const spawn = marks.find(k => k.kind === 'agent_started');
-        const t0 = spawn ? spawn.t : l.started, t1 = l.live ? m.now : l.ended;
+        const { t0, t1 } = laneSpan(l);
         if (t1 > state.a && t0 < state.b) {
           const xa = x(Math.max(t0, state.a)), xb = x(Math.min(t1, state.b));
           html += `<rect x="${xa.toFixed(1)}" y="${y + 15}" width="${Math.max(2, xb - xa).toFixed(1)}" height="${rh - 18}" rx="4" fill="#233443" stroke="#4f6d80" stroke-width="1"/>`;
@@ -382,6 +479,13 @@ function renderTimeline() {
         if (ww > 52 && p !== 'wait_user' && p !== 'idle' && p !== 'llm') { const label = `${PHASES[p].short} ${fmt(tb - ta)}`; html += `<text class="op-label ${p === 'code' || p === 'infra' || p === 'compaction' ? 'light' : ''}" x="${xa + 5}" y="${top0 + fh / 2 + 3.5}">${esc(label.slice(0, Math.floor((ww - 8) / 5.8)))}</text>`; }
         html += `</g>`;
       }
+      // code-review band: a thin strip under the fill over turns where a review/cleanup skill was
+      // actually invoked (not a phase — the fill below still shows the real llm/code/wait split)
+      for (const tn of l.turns) {
+        if (!tn.review || tn.end < state.a || tn.start > state.b) continue;
+        const xa = x(Math.max(tn.start, state.a)), xb = x(Math.min(tn.end, state.b)), ww = xb - xa; if (ww < 2) continue;
+        html += `<rect x="${xa.toFixed(1)}" y="${top0 + fh - 3}" width="${ww.toFixed(1)}" height="3" fill="#8f7bd8"><title>code review${tn.skill ? ' · ' + tn.skill : ''} · ${fmt(tn.end - tn.start)}</title></rect>`;
+      }
       // stage brackets (tool-call runs of one phase, thinking before each call included)
       const stageVis = l.stages.filter(st => st.e > state.a && st.s < state.b && PHASES[st.p] && PHASES[st.p].kind === 'work');
       let lastLabelEnd = -1;
@@ -390,7 +494,7 @@ function renderTimeline() {
         const c = PHASES[st.p].color, ly = y + 15;
         html += `<g class="mark" data-stage="1" data-lane="${esc(l.id)}" data-ta="${st.s}" data-tb="${st.e}" data-phase="${st.p}" data-bracket="1"><rect x="${xa.toFixed(1)}" y="${y + 2}" width="${ww.toFixed(1)}" height="12" rx="2" fill="${c}" opacity=".16"/><path d="M${xa.toFixed(1)} ${ly}v-3h${ww.toFixed(1)}v3" fill="none" stroke="${c}" stroke-width="2"/><rect x="${xa.toFixed(1)}" y="${y}" width="${ww.toFixed(1)}" height="16" fill="transparent"/>`;
         const label = `${PHASES[st.p].short} ${fmt(st.e - st.s)}`; const lw = label.length * 6 + 8;
-        if (ww >= lw && xa >= lastLabelEnd) { html += `<text x="${xa + 4}" y="${y + 11.5}" font-size="10" font-weight="700" fill="${c}">${esc(label)}</text>`; lastLabelEnd = xa + lw; }
+        if (ww >= lw && xa >= lastLabelEnd) { html += `<text x="${xa + 4}" y="${y + 11.5}" font-size="11" font-weight="700" fill="${c}">${esc(label)}</text>`; lastLabelEnd = xa + lw; }
         html += `</g>`;
       }
       // turn ends: ✓ completed · ✕ interrupted · ⊘ never closed
@@ -404,9 +508,24 @@ function renderTimeline() {
       // sub-agent spawn / complete ticks from the parent's markers
       if (l.depth > 0) for (const mk of m.agentMarks.get(l.id) || []) { if (mk.t < state.a || mk.t > state.b) continue; const xx = x(mk.t); if (mk.kind === 'agent_started') html += `<g class="marker" data-mk="${esc(`${mk.lane}:${mk.t}:${mk.kind}`)}"><path d="M${xx - 5} ${y + 16}l10 ${(rh - 20) / 2}-10 ${(rh - 20) / 2}z" fill="#86d0b9" stroke="#0f1b23" stroke-width="1"/></g>`; else if (mk.kind === 'agent_completed') html += `<rect class="marker" data-mk="${esc(`${mk.lane}:${mk.t}:${mk.kind}`)}" x="${xx - 1}" y="${y + 16}" width="2" height="${rh - 20}" fill="#86d0b9" opacity=".5"/>`; else if (mk.kind === 'agent_interacted') html += `<rect class="marker" data-mk="${esc(`${mk.lane}:${mk.t}:${mk.kind}`)}" x="${xx - 1}" y="${y + rh - 9}" width="2" height="6" fill="#c7d5de" opacity=".8"/>`; else if (mk.kind === 'agent_interrupted') html += `<path class="marker" data-mk="${esc(`${mk.lane}:${mk.t}:${mk.kind}`)}" d="M${xx - 4} ${y + 6}l8 8m0-8l-8 8" stroke="#d76368" stroke-width="2"/>`; }
       for (const o of l.ops) { if (!o.background || o.end <= state.a || o.start >= state.b) continue; const xa = x(Math.max(o.start, state.a)), ww = Math.max(2, x(Math.min(o.end, state.b)) - xa); html += `<g class="mark" data-op="${esc(o.id)}" data-lane="${esc(l.id)}" data-ta="${o.start}" data-tb="${o.end}" data-phase="${o.phase}"><rect x="${xa.toFixed(1)}" y="${y + rh - 5}" width="${ww.toFixed(1)}" height="3" rx="1.5" fill="#c9a15c" opacity=".9"/><rect x="${xa.toFixed(1)}" y="${y + rh - 8}" width="${ww.toFixed(1)}" height="8" fill="transparent"/></g>`; }
-      // failures: red = tool (non-zero exit / failed status), orange = LLM (invalid tool call / broken exec script)
-      { let lastX = -99; const fy = y + rh - 4;
-        for (const o of l.ops) { if (o.status !== 'failed' || o.background || o.start < state.a || o.start > state.b) continue; const xx = x(o.start); const isLlm = o.kind === 'exec-script-error' || baseKind(o.kind) === 'llm-invalid-args'; const c = isLlm ? '#f0a742' : '#e05252'; if (xx - lastX < 4) { html += `<rect class="mark" data-op="${esc(o.id)}" data-lane="${esc(l.id)}" data-ta="${o.start}" data-tb="${o.end}" data-phase="${o.phase}" x="${(xx - 1).toFixed(1)}" y="${fy - 7}" width="2" height="7" fill="${c}"/>`; continue; } lastX = xx; html += `<g class="mark" data-op="${esc(o.id)}" data-lane="${esc(l.id)}" data-ta="${o.start}" data-tb="${o.end}" data-phase="${o.phase}"><path d="M${xx.toFixed(1)} ${fy - 8}l4.5 8h-9z" fill="${c}" stroke="#0f1b23" stroke-width=".8"/><rect x="${xx - 5}" y="${fy - 10}" width="10" height="11" fill="transparent"/></g>`; }
+      // Tool failures (non-zero exit) render as a bold red ×. LLM failures (invalid tool call /
+      // broken exec script) are shown separately as the orange × llm_error marker in the row above,
+      // so they are skipped here to avoid a duplicate glyph.
+      { let lastX = -99;
+        const fy = y + rh - 4;
+        for (const o of l.ops) {
+          if (o.status !== 'failed' || o.background || o.start < state.a || o.start > state.b) continue;
+          if (o.kind === 'exec-script-error' || baseKind(o.kind) === 'llm-invalid-args') continue;
+          const xx = x(o.start);
+          const cy = fy - 4;
+          const hit = `<rect x="${(xx - 6).toFixed(1)}" y="${fy - 11}" width="12" height="13" fill="transparent"/>`;
+          if (xx - lastX < 4) {
+            html += `<rect class="mark" data-op="${esc(o.id)}" data-lane="${esc(l.id)}" data-ta="${o.start}" data-tb="${o.end}" data-phase="${o.phase}" x="${(xx - 1).toFixed(1)}" y="${fy - 8}" width="2" height="8" fill="#e5484d"/>`;
+            continue;
+          }
+          lastX = xx;
+          html += `<g class="mark" data-op="${esc(o.id)}" data-lane="${esc(l.id)}" data-ta="${o.start}" data-tb="${o.end}" data-phase="${o.phase}"><path d="M${(xx - 4).toFixed(1)} ${cy - 4}l8 8m0-8l-8 8" stroke="#0f1b23" stroke-width="3.6" stroke-linecap="round"/><path d="M${(xx - 4).toFixed(1)} ${cy - 4}l8 8m0-8l-8 8" stroke="#e5484d" stroke-width="2.2" stroke-linecap="round"/>${hit}</g>`;
+        }
       }
       if (l.live) { const xx = x(Math.min(m.now, state.b)); if (m.now >= state.a) html += `<g class="marker" data-turn="${esc(l.id + ':' + (l.turns[l.turns.length - 1] || {}).id)}"><circle cx="${xx}" cy="${y + 17 + (rh - 22) / 2}" r="4" fill="#5fe0a0"><animate attributeName="r" values="3.5;6;3.5" dur="1.6s" repeatCount="indefinite"/></circle></g>`; }
       html += `</g>`;
@@ -414,12 +533,12 @@ function renderTimeline() {
       html += `<text class="lane-sub" x="${mobile ? 14 : 20}" y="${y + 15}">markers</text><g clip-path="url(#plotClip)">`;
       const mks = row.lane.markers.filter(k => MARKS[k.kind] && !k.kind.startsWith('agent_') && k.t >= state.a && k.t <= state.b).sort((p, q) => p.t - q.t);
       const clusters = []; for (const mk of mks) { const xx = x(mk.t); const c = clusters[clusters.length - 1]; if (c && xx - c.x1 < 16 && xx - c.x0 < 48) { c.items.push(mk); c.x1 = xx; } else clusters.push({ x0: xx, x1: xx, items: [mk] }); }
-      const glyph = (mk, xx) => { const c = MARKS[mk.kind].color; switch (MARKS[mk.kind].glyph) { case 'user': return `<path d="M${xx} ${y + 4}l6 13h-12z" fill="${c}"/>`; case 'q': return `<circle cx="${xx}" cy="${y + 11}" r="6" fill="none" stroke="${c}" stroke-width="2"/><text x="${xx}" y="${y + 14.5}" text-anchor="middle" font-size="9" font-weight="700" fill="${c}">?</text>`; case 'check': return `<circle cx="${xx}" cy="${y + 11}" r="5.5" fill="${c}"/><path d="M${xx - 2.8} ${y + 11}l2 2 3.6-4" stroke="#0f1b23" stroke-width="1.6" fill="none"/>`; case 'x': return `<path d="M${xx - 4} ${y + 7}l8 8m0-8l-8 8" stroke="${c}" stroke-width="2"/>`; case 'diamond': return `<path d="M${xx} ${y + 6}l5 5-5 5-5-5z" fill="${c}" opacity=".9"/>`; case 'plan': return `<rect x="${xx - 4}" y="${y + 7}" width="8" height="8" rx="1.5" fill="${c}"/>`; case 'sys': return `<path d="M${xx} ${y + 5}l5 6-5 6-5-6z" fill="none" stroke="${c}" stroke-width="1.5"/>`; case 'result': return `<path d="M${xx + 4} ${y + 5}l-8 6 8 6z" fill="${c}"/>`; default: return `<rect x="${xx - 1}" y="${y + 6}" width="2" height="10" fill="${c}"/>`; } };
+      const glyph = (mk, xx) => { const c = MARKS[mk.kind].color; switch (MARKS[mk.kind].glyph) { case 'user': return `<path d="M${xx} ${y + 4}l6 13h-12z" fill="${c}"/>`; case 'q': return `<circle cx="${xx}" cy="${y + 11}" r="6" fill="none" stroke="${c}" stroke-width="2"/><text x="${xx}" y="${y + 14.5}" text-anchor="middle" font-size="10" font-weight="700" fill="${c}">?</text>`; case 'check': return `<circle cx="${xx}" cy="${y + 11}" r="5.5" fill="${c}"/><path d="M${xx - 2.8} ${y + 11}l2 2 3.6-4" stroke="#0f1b23" stroke-width="1.6" fill="none"/>`; case 'x': return `<path d="M${xx - 4} ${y + 7}l8 8m0-8l-8 8" stroke="${c}" stroke-width="2"/>`; case 'diamond': return `<path d="M${xx} ${y + 6}l5 5-5 5-5-5z" fill="${c}" opacity=".9"/>`; case 'plan': return `<rect x="${xx - 4}" y="${y + 7}" width="8" height="8" rx="1.5" fill="${c}"/>`; case 'skill': return `<path d="M${xx - 4} ${y + 6}h8v11l-4 -3-4 3z" fill="${c}"/>`; case 'sys': return `<path d="M${xx} ${y + 5}l5 6-5 6-5-6z" fill="none" stroke="${c}" stroke-width="1.5"/>`; case 'result': return `<path d="M${xx + 4} ${y + 5}l-8 6 8 6z" fill="${c}"/>`; default: return `<rect x="${xx - 1}" y="${y + 6}" width="2" height="10" fill="${c}"/>`; } };
       for (const cl of clusters) {
         if (cl.items.length === 1) { const mk = cl.items[0]; html += `<g class="marker" data-mk="${esc(`${mk.lane}:${mk.t}:${mk.kind}`)}">${glyph(mk, cl.x0)}<rect x="${cl.x0 - 7}" y="${y}" width="14" height="${rh}" fill="transparent"/></g>`; continue; }
         // cluster pill: colour of the most important kind (user > question > final > other)
         const pri = ['user_message', 'question', 'final_answer', 'interrupted']; const lead = cl.items.slice().sort((p, q) => (pri.indexOf(p.kind) + 1 || 9) - (pri.indexOf(q.kind) + 1 || 9))[0]; const users = cl.items.filter(k => k.kind === 'user_message').length; const xm = (cl.x0 + cl.x1) / 2, wpill = Math.max(22, cl.x1 - cl.x0 + 14);
-        html += `<g class="mark marker-cluster" data-stage="1" data-lane="${esc(row.lane.id)}" data-ta="${cl.items[0].t}" data-tb="${cl.items[cl.items.length - 1].t + 1}" data-phase="cluster"><rect x="${xm - wpill / 2}" y="${y + 4}" width="${wpill}" height="14" rx="7" fill="${MARKS[lead.kind].color}" opacity=".85"/><text x="${xm}" y="${y + 14.5}" text-anchor="middle" font-size="9.5" font-weight="700" fill="#0f1b23">${users ? '▲' + users + (cl.items.length > users ? '+' + (cl.items.length - users) : '') : cl.items.length}</text></g>`;
+        html += `<g class="mark marker-cluster" data-stage="1" data-lane="${esc(row.lane.id)}" data-ta="${cl.items[0].t}" data-tb="${cl.items[cl.items.length - 1].t + 1}" data-phase="cluster"><rect x="${xm - wpill / 2}" y="${y + 4}" width="${wpill}" height="14" rx="7" fill="${MARKS[lead.kind].color}" opacity=".85"/><text x="${xm}" y="${y + 14.5}" text-anchor="middle" font-size="10.5" font-weight="700" fill="#0f1b23">${users ? '▲' + users + (cl.items.length > users ? '+' + (cl.items.length - users) : '') : cl.items.length}</text></g>`;
       }
       html += `</g>`;
     } else if (row.kind === 'groups') {
@@ -431,7 +550,7 @@ function renderTimeline() {
       html += `</g>`;
     } else if (row.kind === 'phase') {
       const l = row.lane, p = row.phase, sel = state.phase === p; const indent = (mobile ? 8 : 14) + Math.min(l.depth, 3) * (mobile ? 6 : 10);
-      html += `<g data-phase-row="${p}" data-lane="${esc(l.id)}"><rect x="0" y="${y}" width="${L - 4}" height="${rh}" fill="transparent"/><rect x="${indent}" y="${y + rh / 2 - 4}" width="8" height="8" rx="2.5" fill="${PHASES[p].color}"/><text class="lane-label ${sel ? 'selected' : ''}" x="${indent + 14}" y="${y + rh / 2 + 4}" style="font-size:11.5px">${esc(mobile ? PHASES[p].short : PHASES[p].name)}</text></g><g clip-path="url(#plotClip)">`;
+      html += `<g data-phase-row="${p}" data-lane="${esc(l.id)}"><rect x="0" y="${y}" width="${L - 4}" height="${rh}" fill="transparent"/><rect x="${indent}" y="${y + rh / 2 - 4}" width="8" height="8" rx="2.5" fill="${PHASES[p].color}"/><text class="lane-label ${sel ? 'selected' : ''}" x="${indent + 14}" y="${y + rh / 2 + 4}" style="font-size:12.5px">${esc(mobile ? PHASES[p].short : PHASES[p].name)}</text></g><g clip-path="url(#plotClip)">`;
       const segs = l.segments.filter(sg => sg.p === p && sg.e > state.a && sg.s < state.b);
       if (span / P < 800) { // fine zoom: draw each segment (≈ op) individually
         for (const sg of segs) { const xa = x(Math.max(sg.s, state.a)), ww = Math.max(1.2, x(Math.min(sg.e, state.b)) - xa); const o = sg.op ? m.opById.get(sg.op) : null; html += `<g class="mark" data-op="${esc(sg.op || '')}" data-lane="${esc(l.id)}" data-ta="${sg.s}" data-tb="${sg.e}" data-phase="${p}"><rect x="${xa.toFixed(1)}" y="${y + 4}" width="${ww.toFixed(1)}" height="${rh - 8}" rx="${ww > 4 ? 2 : 0}" fill="${fillFor(p)}" ${o && o.status === 'failed' ? 'stroke="#ff8a8a" stroke-width="1.2"' : ''} ${sg.op && sg.op === state.selected ? 'stroke="#eef6fa" stroke-width="2"' : ''}/>${ww > 40 && o ? `<text class="op-label ${p === 'llm' || p === 'code' || p === 'infra' || p === 'compaction' ? 'light' : ''}" x="${xa + 4}" y="${y + rh / 2 + 3.5}">${esc(o.title.slice(0, Math.floor((ww - 8) / 5.6)))}</text>` : ''}</g>`; }
@@ -443,12 +562,42 @@ function renderTimeline() {
     }
     y += rh;
   });
-  // connectors: spawn time from root row to the child row
-  if (!mobile) { let yr = top; const rowY = new Map(); for (const row of rows) { if (row.kind === 'lane') rowY.set(row.lane.id, { y: yr, h: row.h }); yr += row.h; } for (const l of m.lanes.slice(1)) { const mk = (m.agentMarks.get(l.id) || []).find(k => k.kind === 'agent_started'); const c = rowY.get(l.id), pr = rowY.get(l.parent); if (!mk || !c || !pr || mk.t < state.a || mk.t > state.b) continue; const xx = x(mk.t); html += `<line x1="${xx}" y1="${pr.y + pr.h - 6}" x2="${xx}" y2="${c.y + 6}" stroke="#86d0b9" stroke-width="1" stroke-dasharray="2 3" opacity=".7"/>`; } }
-  if (m.live && m.now >= state.a && m.now <= state.b) { const xx = x(m.now); html += `<line x1="${xx}" x2="${xx}" y1="26" y2="${H - 4}" stroke="#5fe0a0" stroke-width="1.2" opacity=".8"/>`; }
-  else if (state.b >= m.ended - 1 && !m.live) { const xx = x(m.ended); html += `<line x1="${xx - 1}" x2="${xx - 1}" y1="26" y2="${H - 4}" stroke="#a5c5df" stroke-width="1.2"/>`; }
+  return html;
+  };
+  html += drawRows(head, top);
+  let htmlA = agents.length ? guides(0, HA) + drawRows(agents, 0) : '';
+  // connectors: spawn time from the parent row to the child row; a child in the scrolling block
+  // whose parent is the root gets the line split at the boundary between the two SVGs
+  if (!mobile) {
+    const laneY = (list, y0) => { let yr = y0; const out = new Map(); for (const row of list) { if (row.kind === 'lane') out.set(row.lane.id, { y: yr, h: row.h }); yr += row.h; } return out; };
+    const headY = laneY(head, top), agentY = laneY(agents, 0);
+    for (const l of m.lanes.slice(1)) {
+      const mk = (m.agentMarks.get(l.id) || []).find(k => k.kind === 'agent_started');
+      const c = agentY.get(l.id);
+      if (!mk || !c || mk.t < state.a || mk.t > state.b) continue;
+      const xx = x(mk.t), line = (y1, y2) => `<line x1="${xx}" y1="${y1}" x2="${xx}" y2="${y2}" stroke="#86d0b9" stroke-width="1" stroke-dasharray="2 3" opacity=".7"/>`;
+      const pa = agentY.get(l.parent), ph = headY.get(l.parent);
+      if (pa) htmlA += line(pa.y + pa.h - 6, c.y + 6);
+      else if (ph) { html += line(ph.y + ph.h - 6, H - 4); htmlA += line(0, c.y + 6); }
+    }
+  }
+  // focus band: a bright, briefly-pulsing column marking where the object a "Show in timeline"
+  // click located sits within the full range, so it is obvious what was selected.
+  if (state.focus && state.focus.b > state.a && state.focus.a < state.b) {
+    const xa = x(Math.max(state.focus.a, state.a)), xb = x(Math.min(state.focus.b, state.b)), ww = Math.max(3, xb - xa);
+    const dur = state.focus.b - state.focus.a, label = dur > 0 ? 'focused · ' + fmt(dur, true) : 'here', tab = Math.min(140, Math.max(ww, label.length * 6 + 12));
+    const band = (y0, y1) => `<g pointer-events="none"><rect class="focus-band" x="${xa.toFixed(1)}" y="${y0}" width="${ww.toFixed(1)}" height="${(y1 - y0).toFixed(1)}" rx="2"/><line class="focus-edge" x1="${xa.toFixed(1)}" y1="${y0}" x2="${xa.toFixed(1)}" y2="${y1}"/><line class="focus-edge" x1="${(xa + ww).toFixed(1)}" y1="${y0}" x2="${(xa + ww).toFixed(1)}" y2="${y1}"/></g>`;
+    html += band(top, H - 4).replace('</g>', `<rect class="focus-tab" x="${xa.toFixed(1)}" y="${top}" width="${tab.toFixed(1)}" height="14" rx="2"/><text class="focus-tab-text" x="${(xa + 5).toFixed(1)}" y="${top + 10.5}">${esc(label)}</text></g>`);
+    if (agents.length) htmlA += band(0, HA);
+  }
   const svg = $('#chartSvg'); svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.style.height = H + 'px'; svg.innerHTML = html;
+  const box = $('#agentScroll'), svgA = $('#agentSvg');
+  box.hidden = !agents.length;
+  svgA.setAttribute('viewBox', `0 0 ${W} ${Math.max(HA, 1)}`); svgA.style.height = HA + 'px'; svgA.innerHTML = htmlA;
   $('#rangeLabel').textContent = spanLabel(state.a, state.b) + ' ' + TZ; $('#zoomCaption').textContent = fmt(span);
+  const agentsTotal = m.lanes.length - 1;
+  const agentsShown = rows.filter(r => r.kind === 'lane' && r.lane.depth > 0 && laneInWindow(r.lane)).length;
+  if ($('#laneCount')) $('#laneCount').textContent = `${agentsTotal} sub-agent lanes` + (agentsShown < agentsTotal ? ` · ${agentsShown} in this window` : '');
   $('#chartNote').innerHTML = icon('info', true) + (span / P >= 800 ? `${fmt(bucketRuns([], state.a, state.b, P, bw, () => 0).per)} per column: fill = dominant phase (teal is LLM time), brackets above = stages; in expanded rows bar height = coverage. Select a block to zoom.` : `Fine zoom: expanded rows show individual operations. Select one to inspect the source event.`);
   $$('[data-action="preset"]').forEach(el => { const v = Number(el.dataset.span) || (m.ended - m.started); el.classList.toggle('active', Math.abs(span - v) < 1000); el.disabled = Number(el.dataset.span) > m.ended - m.started; });
   $('[data-action="zoom"][data-dir="-1"]').disabled = span >= m.ended - m.started - 500; $('[data-action="zoom"][data-dir="1"]').disabled = span <= 60500;
@@ -456,41 +605,166 @@ function renderTimeline() {
   $('#followBtn').classList.toggle('active', state.follow); $('#followBtn').setAttribute('aria-pressed', state.follow);
   updateBrush();
 }
-function setWindow(a, b, { manual = true, lower = true } = {}) { const m = current(); const span = clamp(b - a, 60000, m.ended - m.started); a = clamp(a, m.started, m.ended - span); state.a = a; state.b = a + span; state.listPage = 0; if (manual && state.b < m.ended - 1000) state.follow = false; hideTooltip(); renderTimeline(); if (lower) renderLower(); }
+function setWindow(a, b, { manual = true, lower = true } = {}) { const m = current(); const span = clamp(b - a, 60000, m.ended - m.started); a = clamp(a, m.started, m.ended - span); state.a = a; state.b = a + span; state.listShown = LIST_CHUNK; if (manual) state.focus = null; if (manual && state.b < m.ended - 1000) state.follow = false; hideTooltip(); renderTimeline(); if (lower) renderLower(); }
 function chooseSpan(span, center = (state.a + state.b) / 2) { const m = current(); span = Math.min(span, m.ended - m.started); setWindow(center - span / 2, center + span / 2); }
 function zoom(dir, anchor = .5) { const m = current(), cur = state.b - state.a, total = m.ended - m.started, levels = [60e3, 300e3, 900e3, 3600e3, 10800e3, 21600e3, 43200e3, 86400e3, 172800e3, total].filter(n => n <= total).sort((a, b) => a - b), next = dir > 0 ? [...levels].reverse().find(n => n < cur - 1) : levels.find(n => n > cur + 1); if (!next) return; const t = state.a + cur * anchor; setWindow(t - next * anchor, t + next * (1 - anchor)); }
 function pan(dir) { const span = state.b - state.a; setWindow(state.a + dir * span * .6, state.b + dir * span * .6); }
-function focusInterval(a, b) { if ($('#inspector').open) $('#inspector').close(); const span = Math.max(120e3, (b - a) * 1.6); chooseSpan(span, (a + b) / 2); $('#plot').scrollIntoView({ block: 'center', behavior: 'instant' }); }
+// revealPlot brings the timeline into view only when it is entirely off-screen. If any part is
+// already visible it does nothing, so focusing an interval while looking at the timeline never
+// scrolls the page out from under the user (the zoom + highlight band already show the result).
+function revealPlot() {
+  const el = $('#plot'); if (!el) return;
+  const r = el.getBoundingClientRect();
+  if (r.bottom <= 0 || r.top >= window.innerHeight) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
+function scrollToTimeline() {
+  const el = $('.timeline-card') || $('#plot');
+  if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
+// Show an object in the timeline: select the WHOLE range (brush handles to both ends of the
+// session), scroll the range bar fully into view, and highlight where the object sits in it.
+function focusInterval(a, b) {
+  if ($('#inspector').open) $('#inspector').close();
+  const m = current();
+  state.focus = null; // setWindow(manual) clears focus; set it after so the band survives
+  setWindow(m.started, m.ended, { manual: false });
+  state.focus = { a, b };
+  renderTimeline();
+  scrollToTimeline();
+  clearTimeout(focusTimer);
+  focusTimer = setTimeout(() => { if (state.focus) { state.focus = null; renderTimeline(); } }, 6000);
+}
 
 /* ---------- lower panels ---------- */
 function renderLower() {
   if (state.page !== 'session' || !$('#breakdownBody')) return;
   const t = windowStats(state.a, state.b);
-  const rows = (entries, total) => entries.map(([k, n, def, sel, data]) => { const stg = PHASES[k]?.kind === 'work' ? t.stageBy[k] || 0 : 0; return `<button class="breakdown-item ${sel ? 'active' : ''}" ${data} title="${esc(def.name)}: ${fmt(n, true)} of tool time${stg ? ` · stage ${fmt(stg, true)} including LLM time before each call` : ''}"><span class="name"><i class="color-square" style="background:${def.color}"></i>${def.name}</span><span class="bar-track"><span class="bar-fill" style="width:${total ? clamp(n / total * 100, 0, 100) : 0}%;background:${def.color}"></span>${stg ? `<span class="bar-stage" style="width:${total ? clamp(stg / total * 100, 0, 100) : 0}%;border-color:${def.color}"></span>` : ''}</span><span class="time num">${fmt(n)}${stg ? `<small>stage ${fmt(stg)}</small>` : ''}</span></button>`; }).join('');
+  // count = the records a click on the row lists (operations, or gaps for interval phases);
+  // a row with neither time nor records in the window is not shown
+  // share = the row's part of its section's total (the same denominator as the bar), so the
+  // rows of a section add up to 100 %; the two sub-agent rows are not a partition and show none
+  const pct = (n, total) => (total ? n / total * 100 : 0).toFixed(1) + '%';
+  const stageOf = k => PHASES[k]?.kind === 'work' ? t.stageBy[k] || 0 : 0;
+  const rows = (entries, total) => entries.filter(([, n, , , , count]) => n > 0 || count == null || count > 0).map(([k, n, def, sel, data, count]) => { const stg = stageOf(k); return `<button class="breakdown-item ${sel ? 'active' : ''}" ${data} title="${esc(def.name)}: ${fmt(n, true)} of tool time${stg ? ` · stage ${fmt(stg, true)} including LLM time before each call` : ''}${count == null ? '' : ` · ${count} ${INTERVAL_PHASES.has(k) ? 'intervals' : 'operations'} in the list · ${pct(n, total)} of this section`}"><span class="name"><i class="color-square" style="background:${def.color}"></i>${def.name}</span><span class="bar-track"><span class="bar-fill" style="width:${total ? clamp(n / total * 100, 0, 100) : 0}%;background:${def.color}"></span>${stg ? `<span class="bar-stage" style="width:${total ? clamp(stg / total * 100, 0, 100) : 0}%;border-color:${def.color}"></span>` : ''}</span><span class="count num">${count == null ? '' : count}</span><span class="share num">${count == null ? '' : pct(n, total)}</span><span class="time num">${fmt(n)}${stg ? `<small>stage ${fmt(stg)}</small>` : ''}</span></button>`; }).join('');
+  const inWindow = opsInWindow(state.a, state.b);
+  const countOf = (phase, role) => INTERVAL_PHASES.has(phase) ? intervalRecords(phase).length : inWindow.filter(o => opMatches(o, phase, role)).length;
   if ($('#breakdownScopeChip')) $('#breakdownScopeChip').textContent = state.allLanes ? 'All lanes · agent time' : 'Root lane · exclusive';
   $('#breakdownScope').textContent = `${fmt(t.duration)} selected · ${fmt(t.inTurn)} inside turns · sub-agents ${fmt(t.agentMs)} in parallel · "stage" = tool calls + LLM time before them`;
   const testTotal = Math.max(1, ROLE_ORDER.filter(k => k !== 'remote').reduce((n, k) => n + t.roles[k], 0));
   const src = state.allLanes ? t.allBy : t.by;
   const denom = state.allLanes ? Math.max(1, PHASE_ORDER.reduce((n, k) => n + (k === 'idle' ? 0 : src[k]), 0)) : state.inTurn ? Math.max(1, t.inTurn) : t.duration;
-  const byLongest = (a, b) => b[1] - a[1];
-  const order = arr => state.breakdownSort === 'longest' ? arr.slice().sort(byLongest) : arr;
+  const byTime = (a, b) => b[1] - a[1] || (b[5] || 0) - (a[5] || 0);
+  const sorters = { longest: byTime, stage: (a, b) => stageOf(b[0]) - stageOf(a[0]) || byTime(a, b), records: (a, b) => (b[5] || 0) - (a[5] || 0) || byTime(a, b) };
+  const order = arr => arr.slice().sort(sorters[state.breakdownSort] || byTime);
   const phaseRows = PHASE_ORDER.filter(k => k !== 'idle' && !(state.inTurn && k === 'wait_user'));
-  $('#breakdownBody').innerHTML = `<div class="mini-heading" style="padding-top:0;flex-wrap:wrap;gap:8px"><label class="row" style="font-size:12.5px"><input type="checkbox" id="inTurnToggle" ${state.inTurn ? 'checked' : ''}>Inside turns only</label><label class="row" style="font-size:12.5px"><input type="checkbox" id="allLanesToggle" ${state.allLanes ? 'checked' : ''}>Include sub-agents</label><span class="row" style="font-size:12px;color:var(--subtle)">sort <select class="select" id="breakdownSort" style="min-height:26px;padding:2px 6px;font-size:12px"><option value="longest" ${state.breakdownSort === 'longest' ? 'selected' : ''}>longest first</option><option value="stage" ${state.breakdownSort === 'stage' ? 'selected' : ''}>by stage</option></select></span><span class="mono" style="color:var(--subtle)">${fmt(t.raw)} op time in ${fmt(t.inTurn)}</span></div>` + rows(order(phaseRows.map(k => [k, src[k], PHASES[k], state.phase === k, `data-action="filter" data-phase="${k}"`])), denom) + `<div class="mini-heading"><h3>Inside testing & release</h3><span class="mono" style="color:var(--subtle)">op time, root lane</span></div>` + rows(order(ROLE_ORDER.map(k => [k, t.roles[k], ROLES[k], state.role === k, `data-action="filter-role" data-role="${k}"`])), testTotal) + (t.bg ? `<div class="mini-heading"><h3>Background processes</h3><span class="mono" style="color:var(--subtle)">${t.bgOps} · not in totals</span></div>${rows([['bg', t.bg, { name: 'Outlived their turn (servers, watchers)', color: '#8a6d3b' }, state.role === 'background', 'data-action="filter-role" data-role="background"']], Math.max(t.bg, t.duration))}` : '') + (t.agentMs ? `<div class="mini-heading"><h3>Sub-agents in window</h3><span class="mono" style="color:var(--subtle)">${t.agentLanes} lanes</span></div>${rows([['agents', t.agentMs, { name: 'Agent time (sum)', color: '#86d0b9' }, false, 'data-action="noop"'], ['wall', t.agentWall, { name: 'Wall clock (union)', color: '#5f8f86' }, false, 'data-action="noop"']], Math.max(t.agentMs, 1))}` : '');
+  const roleRows = rows(order(ROLE_ORDER.map(k => [k, t.roles[k], ROLES[k], state.role === k, `data-action="filter-role" data-role="${k}"`, countOf('all', k)])), testTotal);
+  const roleSection = roleRows ? `<div class="mini-heading"><h3>Inside testing & release</h3><span class="mono" style="color:var(--subtle)">op time, root lane</span></div>` + roleRows : '';
+  $('#breakdownBody').innerHTML = `<div class="mini-heading" style="padding-top:0;flex-wrap:wrap;gap:8px"><label class="row" style="font-size:13.5px"><input type="checkbox" id="inTurnToggle" ${state.inTurn ? 'checked' : ''}>Inside turns only</label><label class="row" style="font-size:13.5px"><input type="checkbox" id="allLanesToggle" ${state.allLanes ? 'checked' : ''}>Include sub-agents</label><span class="row" style="font-size:13px;color:var(--subtle)">sort <select class="select" id="breakdownSort" style="min-height:26px;padding:2px 6px;font-size:13px"><option value="longest" ${state.breakdownSort === 'longest' ? 'selected' : ''}>by time (%)</option><option value="stage" ${state.breakdownSort === 'stage' ? 'selected' : ''}>by stage</option><option value="records" ${state.breakdownSort === 'records' ? 'selected' : ''}>by records</option></select></span><span class="mono" style="color:var(--subtle)">${fmt(t.raw)} op time in ${fmt(t.inTurn)}</span></div>` + rows(order(phaseRows.map(k => [k, src[k], PHASES[k], state.phase === k, `data-action="filter" data-phase="${k}"`, countOf(k, 'all')])), denom) + roleSection + (t.bg ? `<div class="mini-heading"><h3>Background processes</h3><span class="mono" style="color:var(--subtle)">${t.bgOps} · not in totals</span></div>${rows([['bg', t.bg, { name: 'Outlived their turn (servers, watchers)', color: '#8a6d3b' }, state.role === 'background', 'data-action="filter-role" data-role="background"', countOf('all', 'background')]], Math.max(t.bg, t.duration))}` : '') + (t.agentMs ? `<div class="mini-heading"><h3>Sub-agents in window</h3><span class="mono" style="color:var(--subtle)">${t.agentLanes} lanes</span></div>${rows([['agents', t.agentMs, { name: 'Agent time (sum)', color: '#86d0b9' }, false, 'data-action="noop"', null], ['wall', t.agentWall, { name: 'Wall clock (union)', color: '#5f8f86' }, false, 'data-action="noop"', null]], Math.max(t.agentMs, 1))}` : '');
   renderOperations(); renderConversation(); renderAgents();
 }
+// Interval phases have no operations behind them: waiting for the user (root) or the parent
+// (sub-agent) and missing telemetry are gaps in the partition. Their records are the gaps.
+const INTERVAL_PHASES = new Set(['wait_user', 'idle', 'no_telemetry']);
+// opMatches is the operations-list predicate for one phase / role choice; the failures-only
+// filter applies with it, so the breakdown counts match what a click on that row lists.
+function opMatches(o, phase, role) {
+  if (state.failedOnly && o.status !== 'failed') return false;
+  if (phase !== 'all' && o.phase !== phase) return false;
+  if (role === 'all') return true;
+  if (role === 'single') return o.phase === 'test' && !roleOf(o.kind);
+  if (role === 'remote') return !!o.remote;
+  if (role === 'background') return !!o.background;
+  return roleOf(o.kind) === role;
+}
+// intervalRecords lists the gaps of one interval phase inside the window (lane filter applied),
+// one record per gap: contiguous segments of the phase are one gap.
+function intervalRecords(phase) {
+  const m = current();
+  const out = [];
+  for (const l of m.lanes) {
+    if (state.lane !== 'all' && state.lane !== l.id) continue;
+    let last = null;
+    for (const sg of l.segments) {
+      if (sg.s >= state.b) break;
+      if (sg.p !== phase || sg.e <= state.a) continue;
+      if (last && sg.s <= last.end) {
+        last.end = Math.max(last.end, sg.e);
+        continue;
+      }
+      last = { id: `${l.id}:${phase}:${sg.s}`, interval: true, lane: l.id, phase, start: sg.s, end: sg.e };
+      out.push(last);
+    }
+  }
+  return out;
+}
+// recordsFor is what the operations list shows for a phase / role choice, unsorted.
+function recordsFor(phase, role) {
+  if (INTERVAL_PHASES.has(phase)) return intervalRecords(phase);
+  return opsInWindow(state.a, state.b).filter(o => opMatches(o, phase, role));
+}
 function filteredOps() {
-  const a = state.a, b = state.b; let ops = opsInWindow(a, b).filter(o => (!state.failedOnly || o.status === 'failed') && (state.phase === 'all' || o.phase === state.phase) && (state.role === 'all' || roleOf(o.kind) === state.role || (state.role === 'single' && o.phase === 'test' && !roleOf(o.kind)) || (state.role === 'remote' && o.remote) || (state.role === 'background' && o.background)));
+  const a = state.a, b = state.b;
   const dur = o => overlap(o.start, o.end, a, b);
+  const ops = recordsFor(state.phase, state.role);
   ops.sort((p, q) => state.sort === 'latest' ? q.start - p.start : state.sort === 'earliest' ? p.start - q.start : state.sort === 'failed' ? ((q.status === 'failed') - (p.status === 'failed')) || dur(q) - dur(p) : dur(q) - dur(p) || p.start - q.start);
   return ops;
 }
+// listRows folds the members of a collapsed run (identical consecutive operations in one lane)
+// into one row carrying their count and summed time; the rows keep the list's sort order.
+function listRows(ops) {
+  const a = state.a, b = state.b;
+  const rows = [], runs = new Map();
+  for (const o of ops) {
+    if (!o.run || state.openRuns.has(o.run)) { rows.push(o); continue; }
+    let r = runs.get(o.run);
+    if (!r) { r = { run: o.run, lane: o.lane, phase: o.phase, kind: o.kind, title: o.title, status: 'completed', start: o.start, end: o.end, members: [], ms: 0 }; runs.set(o.run, r); rows.push(r); }
+    r.members.push(o);
+    r.ms += overlap(o.start, o.end, a, b);
+    r.start = Math.min(r.start, o.start);
+    r.end = Math.max(r.end, o.end);
+    if (o.status === 'failed') r.status = 'failed';
+  }
+  const dur = o => o.members ? o.ms : overlap(o.start, o.end, a, b);
+  rows.sort((p, q) => state.sort === 'latest' ? q.start - p.start : state.sort === 'earliest' ? p.start - q.start : state.sort === 'failed' ? ((q.status === 'failed') - (p.status === 'failed')) || dur(q) - dur(p) : dur(q) - dur(p) || p.start - q.start);
+  return rows;
+}
 function renderOperations() {
-  const m = current(), ops = filteredOps(), pageSize = 8, pageCount = Math.max(1, Math.ceil(ops.length / pageSize)); state.listPage = clamp(state.listPage, 0, pageCount - 1); const start = state.listPage * pageSize, items = ops.slice(start, start + pageSize);
+  const m = current(), ops = filteredOps(), rows = listRows(ops);
+  const list = $('#operationList');
+  const items = rows.slice(0, state.listShown);
+  const noun = INTERVAL_PHASES.has(state.phase) ? 'intervals' : 'operations';
+  const folded = rows.filter(r => r.members).length;
   $('#phaseSelect').value = state.phase; $('#sortSelect').value = state.sort; $('#laneSelect').value = state.lane;
-  $('#operationCount').textContent = `${ops.length} operations${state.failedOnly ? ' · failures only' : ''} · durations clipped to the window`;
+  $('#operationCount').textContent = `${ops.length} ${noun}${state.failedOnly ? ' · failures only' : ''}${folded ? ` · ${rows.length} rows, ${folded} run${folded > 1 ? 's' : ''} of identical calls folded` : ''} · durations clipped to the window`;
   $('#roleFilter').innerHTML = state.role === 'all' ? '' : `<div style="padding:0 22px 10px"><button class="chip" data-action="clear-role">${ROLES[state.role].name} ${icon('close', true)}</button></div>`;
-  $('#operationList').innerHTML = items.length ? items.map((o, i) => { const l = m.laneById.get(o.lane); const role = roleOf(o.kind); return `<button class="operation" data-action="inspect" data-id="${esc(o.id)}"><span class="op-number">${pad(start + i + 1)}</span><i class="color-square" style="background:${PHASES[o.phase].color}"></i><span class="operation-copy"><strong>${esc(o.title)}</strong><small>${stampS(o.start)} · ${esc(baseKind(o.kind))}${o.phase === 'llm' ? ' · ' + esc(modelOf(o)) + (effortOf(o) ? ' / ' + esc(effortOf(o)) : '') : ''}${role ? ' · ' + esc(ROLES[role]?.name || role) : ''}${o.group ? ' · ' + esc(o.group) + (o.attempt ? ' #' + o.attempt : '') : ''} · ${esc(o.status)}${o.exit != null && o.exit !== 0 ? ' exit ' + o.exit : ''}${o.status === 'failed' && (o.kind === 'exec-script-error' || baseKind(o.kind) === 'llm-invalid-args') ? ' · LLM failure' : ''}${o.remote ? ' · remote' : ''}${o.queued ? ' · after poll loop' : ''}${o.background ? ' · background (outlived its turn)' : ''}${l && l.depth > 0 ? ' · ' + esc(l.path.split('/').pop()) : ''}</small></span><span class="op-time">${fmt(overlap(o.start, o.end, state.a, state.b), true)}</span>${icon('right', true)}</button>`; }).join('') : `<div class="empty"><h3>No matching operations in this window.</h3><p>Change the filters or move the window.</p><button class="text-btn" data-action="clear-filters">Show everything</button></div>`;
-  $('#listFooter').innerHTML = `<span>${items.length ? `${start + 1}–${start + items.length} of ${ops.length}` : '0 operations'}</span><div class="row"><button class="btn ghost small" data-action="list-page" data-dir="-1" aria-label="Previous" ${state.listPage === 0 ? 'disabled' : ''}>${icon('left', true)}</button><span class="mono">${state.listPage + 1} / ${pageCount}</span><button class="btn ghost small" data-action="list-page" data-dir="1" aria-label="Next" ${state.listPage >= pageCount - 1 ? 'disabled' : ''}>${icon('right', true)}</button></div>`;
+  const intervalItem = (o, i) => {
+    const l = m.laneById.get(o.lane);
+    const who = l && l.depth > 0 ? ' · ' + esc(l.path.split('/').pop()) : '';
+    return `<button class="operation" data-action="inspect-interval" data-lane="${esc(o.lane)}" data-phase="${o.phase}" data-ta="${o.start}" data-tb="${o.end}"><span class="op-number">${pad(i + 1)}</span><i class="color-square" style="background:${PHASES[o.phase].color}"></i><span class="operation-copy"><strong>${PHASES[o.phase].name}</strong><small>${stampS(o.start)} → ${stampS(o.end)} · ${fmt(o.end - o.start, true)}${who}</small></span><span class="op-time">${fmt(overlap(o.start, o.end, state.a, state.b), true)}</span>${icon('right', true)}</button>`;
+  };
+  const runItem = (r, i) => {
+    const l = m.laneById.get(r.lane);
+    const who = l && l.depth > 0 ? ' · ' + esc(l.path.split('/').pop()) : '';
+    const failed = r.members.filter(o => o.status === 'failed').length;
+    return `<button class="operation run" data-action="run-toggle" data-run="${esc(r.run)}"><span class="op-number">${pad(i + 1)}</span><i class="color-square" style="background:${PHASES[r.phase].color}"></i><span class="operation-copy"><strong>${esc(r.title)} <span class="run-count">×${r.members.length}</span></strong><small>${stampS(r.start)} → ${stampS(r.end)} · ${r.members.length} identical calls in a row · ${esc(baseKind(r.kind))}${failed ? ` · ${failed} failed` : ''}${who} · select to unfold</small></span><span class="op-time">${fmt(r.ms, true)}</span>${icon('right', true)}</button>`;
+  };
+  const opItem = (o, i) => { const l = m.laneById.get(o.lane); const role = roleOf(o.kind); return `<button class="operation" data-action="inspect" data-id="${esc(o.id)}"><span class="op-number">${pad(i + 1)}</span><i class="color-square" style="background:${PHASES[o.phase].color}"></i><span class="operation-copy"><strong>${esc(o.title)}</strong><small>${stampS(o.start)} · ${esc(baseKind(o.kind))}${o.phase === 'llm' ? ' · ' + esc(modelOf(o)) + (effortOf(o) ? ' / ' + esc(effortOf(o)) : '') : ''}${role ? ' · ' + esc(ROLES[role]?.name || role) : ''}${o.group ? ' · ' + esc(o.group) + (o.attempt ? ' #' + o.attempt : '') : ''} · ${esc(o.status)}${o.exit != null && o.exit !== 0 ? ' exit ' + o.exit : ''}${o.status === 'failed' && (o.kind === 'exec-script-error' || baseKind(o.kind) === 'llm-invalid-args') ? ' · LLM failure' : ''}${o.remote ? ' · remote' : ''}${o.queued ? ' · after poll loop' : ''}${o.background ? ' · background (outlived its turn)' : ''}${l && l.depth > 0 ? ' · ' + esc(l.path.split('/').pop()) : ''}${o.run ? ` · <a class="run-fold" data-action="run-toggle" data-run="${esc(o.run)}">fold run</a>` : ''}</small></span><span class="op-time">${fmt(overlap(o.start, o.end, state.a, state.b), true)}</span>${icon('right', true)}</button>`; };
+  const tail = rows.length > items.length ? `<div class="list-more" id="listMore">${items.length} of ${rows.length} · scroll for more</div>` : '';
+  const top = list.scrollTop;
+  list.innerHTML = items.length ? items.map((o, i) => o.interval ? intervalItem(o, i) : o.members ? runItem(o, i) : opItem(o, i)).join('') + tail : `<div class="empty"><h3>No matching ${noun} in this window.</h3><p>Change the filters or move the window.</p><button class="text-btn" data-action="clear-filters">Show everything</button></div>`;
+  list.scrollTop = top;
+  // a list that does not overflow cannot be scrolled for more: fill it until it does
+  if (rows.length > items.length && list.scrollHeight <= list.clientHeight) {
+    state.listShown += LIST_CHUNK;
+    renderOperations();
+  }
+}
+// showMoreOperations renders the next chunk when the list is scrolled near its end.
+function showMoreOperations() {
+  const list = $('#operationList');
+  if (!list || !$('#listMore') || list.scrollTop + list.clientHeight < list.scrollHeight - 240) return;
+  state.listShown += LIST_CHUNK;
+  renderOperations();
 }
 function renderConversation() {
   const r = root(); const items = r.markers.filter(k => ['user_message', 'question', 'final_answer', 'system_message'].includes(k.kind));
@@ -500,58 +774,55 @@ function renderConversation() {
 }
 function renderAgents() {
   const m = current();
-  const row = l => { const active = sum((l.active || []).map(iv => iv.e - iv.s)); const by = l.by_phase || {}; const work = ['code', 'build', 'test', 'release', 'infra'].reduce((n, k) => n + (by[k] || 0), 0); const total = Math.max(1, l.ended - l.started); const marks = m.agentMarks.get(l.id) || []; const started = marks.find(k => k.kind === 'agent_started'); const st = [[PHASES.code.color, work], [PHASES.llm.color, by.llm || 0], [PHASES.wait_worker.color, by.wait_worker || 0], [PHASES.wait_user.color, (by.wait_user || 0) + (by.idle || 0)]]; return `<tr class="lane-row" data-action="lane-focus" data-lane="${esc(l.id)}"><td><div style="padding-left:${Math.min(l.depth, 3) * 14}px"><strong>${esc(l.depth === 0 ? 'root' : l.path.split('/').pop())}</strong><div style="font-size:11.5px;color:var(--subtle)">${esc(l.role || 'root')}${l.nickname ? ' · ' + esc(l.nickname) : ''}${l.model ? ' · ' + esc(l.model) : ''}${(l.turns.find(t => t.effort) || {}).effort ? ' / ' + esc(l.turns.find(t => t.effort).effort) : ''}</div><div class="stack" aria-hidden="true">${st.map(([c, n]) => `<span style="width:${n / total * 100}%;background:${c}"></span>`).join('')}</div></div></td><td class="mono">${stamp(started ? started.t : l.started, false)}<br><span style="color:var(--subtle)">${stamp(l.ended, false)}</span></td><td class="mono">${l.depth === 0 ? fmt(l.ended - l.started) : fmt(active)}</td><td class="mono">${l.turns.length}</td><td class="mono">${l.ops.length}</td><td class="mono">${fmt(work)}</td><td class="mono">${l.tokens ? fmtTok(l.tokens.total) : '—'}</td><td class="mono">${l.live ? '<span class="chip live" style="padding:2px 6px">live</span>' : ''}</td></tr>`; };
+  const row = l => { const active = sum((l.active || []).map(iv => iv.e - iv.s)); const by = l.by_phase || {}; const work = ['code', 'build', 'test', 'release', 'infra'].reduce((n, k) => n + (by[k] || 0), 0); const total = Math.max(1, l.ended - l.started); const { t0 } = laneSpan(l); const st = [[PHASES.code.color, work], [PHASES.llm.color, by.llm || 0], [PHASES.wait_worker.color, by.wait_worker || 0], [PHASES.wait_user.color, (by.wait_user || 0) + (by.idle || 0)]]; return `<tr class="lane-row" data-action="lane-focus" data-lane="${esc(l.id)}"><td><div style="padding-left:${Math.min(l.depth, 3) * 14}px"><button class="text-btn lane-name" data-action="lane-card" data-lane="${esc(l.id)}" title="Open the agent card">${esc(l.depth === 0 ? 'root' : l.path.split('/').pop())}</button><div style="font-size:12.5px;color:var(--subtle)">${esc([l.role || 'root', agentCaption(l, true)].filter(Boolean).join(' · '))}</div><div class="stack" aria-hidden="true">${st.map(([c, n]) => `<span style="width:${n / total * 100}%;background:${c}"></span>`).join('')}</div></div></td><td class="mono">${stamp(t0, false)}<br><span style="color:var(--subtle)">${stamp(l.ended, false)}</span></td><td class="mono">${l.depth === 0 ? fmt(l.ended - l.started) : fmt(active)}</td><td class="mono">${l.turns.length}</td><td class="mono">${l.ops.length}</td><td class="mono">${fmt(work)}</td><td class="mono">${l.tokens ? fmtTok(l.tokens.total) : '—'}</td><td class="mono">${l.live ? '<span class="chip live" style="padding:2px 6px">live</span>' : ''}</td></tr>`; };
   $('#agentsTable').innerHTML = `<thead><tr><th>Lane</th><th>Start / end</th><th>Active</th><th>Turns</th><th>Ops</th><th>Tool work</th><th>Tokens</th><th></th></tr></thead><tbody>${m.lanes.map(row).join('')}</tbody>`;
 }
-function filterPhase(phase) { state.phase = phase; state.listPage = 0; renderTimeline(); renderLower(); }
-
-/* ---------- inspector ---------- */
-async function inspect(id) {
-  const m = current(), o = m.opById.get(id); if (!o) return; state.selected = id; hideTooltip();
-  const request = ++inspectorRequest;
-  const l = m.laneById.get(o.lane), g = o.group ? m.groupById.get(o.group) : null, role = roleOf(o.kind);
-  const dlg = $('#inspector');
-  const facts = [['Duration', fmt(o.end - o.start, true) + (o.open ? ' · still open' : '')], ['Started', stampS(o.start)], [o.open ? 'Observed until' : 'Ended', stampS(o.end)], ['Lane', l ? l.path : o.lane], ['Phase · kind', `${PHASES[o.phase].name} · ${baseKind(o.kind)}`], ['Model', modelOf(o) ? `${modelOf(o)}${effortOf(o) ? ' · effort ' + effortOf(o) : ''}` : '—'], ['Status', `${o.status}${o.exit != null ? ' · exit ' + o.exit : ''}`], ['Rule', o.rule || '—'], ['Retry group', g ? `${g.id} · attempt ${o.attempt || '—'} of ${g.attempts}` : 'none (no repeated identity)'], ['Flags', [o.background ? 'background process: outlived its turn, excluded from totals' : '', o.remote ? 'remote runner' : '', o.queued ? 'poll loop before work' : '', role ? ROLES[role]?.name || role : '', o.parallel ? `${o.parallel} parallel commands` : ''].filter(Boolean).join(', ') || '—']];
-  dlg.innerHTML = `<div class="dialog-head"><span class="eyebrow">Operation</span><button class="btn icon-only ghost" data-action="close-inspector" aria-label="Close" autofocus>${icon('close')}</button></div><div class="dialog-body"><span class="chip ${o.status === 'failed' ? 'failed' : o.status === 'completed' ? 'passed' : o.status === 'running' ? 'running' : ''}"><i class="color-square" style="background:${PHASES[o.phase].color}"></i>${PHASES[o.phase].name} · ${esc(o.status)}</span><h2 id="inspectorTitle">${esc(o.title)}</h2><p class="desc">Timing and labels come from the source event and the rule table. They do not say why the step was slow.</p><dl class="facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd class="mono">${esc(v)}</dd></div>`).join('')}</dl><div class="dialog-actions"><button class="btn primary" data-action="focus-op" data-id="${esc(o.id)}">${icon('expand', true)}Focus this interval</button>${g ? `<button class="btn" data-action="focus-group" data-group="${esc(g.id)}">${icon('loop', true)}See full group</button>` : ''}</div><h3>Command / detail</h3><pre class="event-log" id="opDetail">loading…</pre>${g ? `<h3>${esc(g.id)} · ${g.attempts} attempts · ${g.failed} failed</h3><p class="dialog-note desc">Grouped by identical normalized command (redirections stripped). Not inferred from similar text.</p><div class="group-sequence">${g.members.map(id => m.opById.get(id)).filter(Boolean).sort((a, b) => a.start - b.start).map(it => `<button class="group-op ${it.id === id ? 'active' : ''}" data-action="inspect" data-id="${esc(it.id)}"><i class="color-square" style="background:${ROLES[roleOf(it.kind)]?.color || PHASES[it.phase].color}"></i>${it.attempt ? '#' + it.attempt : esc(ROLES[roleOf(it.kind)]?.name || it.phase)}<span class="subtle">${it.status === 'failed' ? 'failed' : it.status === 'completed' ? 'ok' : esc(it.status)}</span><span class="mono">${fmt(it.end - it.start)}</span></button>`).join('')}</div>` : ''}<details class="json-details"><summary>Source event (raw)</summary><pre class="event-log" id="opSource">loading…</pre></details><details class="json-details"><summary>Normalized operation</summary><pre class="event-log">${esc(JSON.stringify(o, null, 2))}</pre></details></div>`;
-  if (!dlg.open) dlg.showModal();
+// filterPhase / filterRole are the breakdown's quick filters. Only one is active at a time: a
+// role already implies its phase (retries ⊂ test/build/release, fix ⊂ coding, …), so combining
+// them is either redundant or empty.
+function filterPhase(phase) {
+  state.phase = phase;
+  if (phase !== 'all') state.role = 'all';
+  state.listShown = LIST_CHUNK;
   renderTimeline();
-  const detail = $('#opDetail'), source = $('#opSource');
-  const ownsRequest = () => request === inspectorRequest && dlg.open && state.page === 'session' && current()?.id === m.id;
-  try {
-    const d = await api(`/api/sessions/${encodeURIComponent(m.id)}/op/${encodeURIComponent(id)}`);
-    if (!ownsRequest()) return;
-    detail.textContent = d.detail || '(no detail)'; source.textContent = JSON.stringify(d.source, null, 1)?.slice(0, 60000) || '(unavailable)';
-  } catch (e) { if (ownsRequest()) detail.textContent = 'unavailable: ' + e.message; }
+  renderLower();
 }
-async function inspectMarker(key) {
-  const m = current(); const [lane, t, kind] = key.split(':'); const l = m.laneById.get(lane); const mk = l?.markers.find(k => String(k.t) === t && k.kind === kind); if (!mk) return;
-  const request = ++inspectorRequest;
-  const dlg = $('#inspector'); const def = MARKS[kind] || { name: kind, color: '#aaa' };
-  dlg.innerHTML = `<div class="dialog-head"><span class="eyebrow">Marker</span><button class="btn icon-only ghost" data-action="close-inspector" aria-label="Close" autofocus>${icon('close')}</button></div><div class="dialog-body"><span class="chip"><i class="color-square" style="background:${def.color}"></i>${esc(def.name)}</span><h2 id="inspectorTitle">${stampS(mk.t)} · ${esc(l.path)}</h2>${mk.ref && m.laneById.get(mk.ref) ? `<p class="desc">Sub-agent: ${esc(m.laneById.get(mk.ref).path)}</p>` : ''}<pre class="event-log" style="margin-top:12px">${esc(mk.text || '(no text)')}</pre><div class="dialog-actions"><button class="btn primary" data-action="jump" data-t="${mk.t}">${icon('expand', true)}Zoom around this moment</button></div><details class="json-details"><summary>Source event (raw)</summary><pre class="event-log" id="mkSource">loading…</pre></details></div>`;
-  if (!dlg.open) dlg.showModal();
-  const source = $('#mkSource');
-  const ownsRequest = () => request === inspectorRequest && dlg.open && state.page === 'session' && current()?.id === m.id;
-  if (mk.src) {
-    try {
-      const d = await api(`/api/event?file=${encodeURIComponent(mk.src.file)}&off=${mk.src.off}&len=${mk.src.len}`);
-      if (ownsRequest()) source.textContent = JSON.stringify(d, null, 1).slice(0, 60000);
-    } catch (e) { if (ownsRequest()) source.textContent = 'unavailable'; }
-  } else source.textContent = '(no source pointer)';
+function filterRole(role) {
+  state.role = role;
+  if (role !== 'all') state.phase = 'all';
+  state.listShown = LIST_CHUNK;
+  renderTimeline();
+  renderLower();
 }
+
 async function guide() {
   const dlg = $('#guide');
-  dlg.innerHTML = `<div class="dialog-head"><h2 id="guideTitle">Reading the timeline</h2><button class="btn icon-only ghost" data-action="close-guide" aria-label="Close" autofocus>${icon('close')}</button></div><div class="dialog-body"><section class="guide-section"><h3>One row per agent</h3><p>The root thread is the first lane; every sub-agent thread is its own lane, indented by depth, with a ▶ at spawn, ticks at each message from the parent, and a bar at each completed turn. A dashed line connects spawn time to the parent. Expand a lane (click its name) to see phase rows and, at fine zoom, individual operations.</p></section><section class="guide-section"><h3>Stages, not tool calls</h3><p>A lane's fill is the real exclusive time split: teal is LLM time (the model generating — reasoning, answers and the code of every patch), colours are tool phases, pink is waiting for the user, hatched is missing telemetry. Coding covers everything about writing code: reading and searching sources, edits, local git, formatting. Above the fill, thin <em>stage brackets</em> name runs of tool calls of one phase (Code, Test, Release …) — a grouping that includes the LLM time before each call, so a bracket can be long while its coloured fill is thin. Turn ends carry ✓ (completed), ✕ (interrupted) or ⊘ (never closed); a pulsing dot means the turn is still open. Dashed pink verticals are turn starts.</p></section><section class="guide-section"><h3>What is inferred and what is not</h3><p>Phases come from a rule table over the command text (below). Turn boundaries give waiting-for-user time; a turn that never closed becomes "No telemetry". Retry groups only join operations with an identical normalized command. Nothing is derived from how long something took, and no "goal reached" score exists — read the conversation panel.</p></section><section class="guide-section"><h3>Parallel time</h3><p>Session totals are the root lane's exclusive wall clock. Sub-agent time is summed separately and its union shown as "wall".</p></section><section class="guide-section"><h3>Keyboard</h3><p><kbd>+</kbd>/<kbd>−</kbd> zoom, <kbd>←</kbd>/<kbd>→</kbd> pan, <kbd>Home</kbd> fit, <kbd>Esc</kbd> close. Drag the plot to pan; drag on the overview to select.</p></section><section class="guide-section"><h3>Classification rules</h3><p id="rulesNote">loading…</p><div style="overflow:auto;max-height:340px"><table class="rules-table" id="rulesTable"></table></div></section></div>`;
+  dlg.innerHTML = `<div class="dialog-head"><h2 id="guideTitle">Reading the timeline</h2><button class="btn icon-only ghost" data-action="close-guide" aria-label="Close" autofocus>${icon('close')}</button></div><div class="dialog-body"><section class="guide-section"><h3>One row per agent</h3><p>The root thread is the first lane; every sub-agent thread is its own lane, indented by depth, with a ▶ at spawn, ticks at each message from the parent, and a bar at each completed turn. A dashed line connects spawn time to the parent. Only lanes alive inside the visible window are drawn. Click a lane to expand it into phase rows (and, at fine zoom, individual operations); the ⓘ at the right of its name opens the agent card: nickname, model, the prompt it was spawned with and its final answer.</p></section><section class="guide-section"><h3>Stages, not tool calls</h3><p>A lane's fill is the real exclusive time split: teal is LLM time (the model generating — reasoning, answers and the code of every patch), colours are tool phases, pink is waiting for the user, hatched is missing telemetry. Coding covers everything about writing code: reading and searching sources, edits, local git, formatting. Above the fill, thin <em>stage brackets</em> name runs of tool calls of one phase (Code, Test, Release …) — a grouping that includes the LLM time before each call, so a bracket can be long while its coloured fill is thin. Turn ends carry ✓ (completed), ✕ (interrupted) or ⊘ (never closed); a pulsing dot means the turn is still open. Dashed pink verticals are turn starts.</p></section><section class="guide-section"><h3>What is inferred and what is not</h3><p>Phases come from a rule table over the command text (below). Turn boundaries give waiting-for-user time; a turn that never closed becomes "No telemetry". Retry groups only join operations with an identical normalized command. Nothing is derived from how long something took, and no "goal reached" score exists — read the conversation panel.</p></section><section class="guide-section"><h3>Parallel time</h3><p>Session totals are the root lane's exclusive wall clock. Sub-agent time is summed separately and its union shown as "wall".</p></section><section class="guide-section"><h3>Code review</h3><p>A bookmark glyph marks where a review or cleanup skill (for example <code>code-review-cc</code> or <code>simplify</code>) was <em>actually invoked</em> — detected from the harness's skill-instruction injection, not from the words in a prompt. A thin purple strip under the fill spans each turn a review skill ran in, and the whole-session card totals that wall clock; it is a span, not a phase, so the fill still shows the real LLM/code/wait split underneath. Turns that reuse the skill later without re-invoking it are not counted. Detection has two sources: a built-in set of tools and skills, and an optional user overlay (project commands and review-skill names); both are listed below.</p></section><section class="guide-section"><h3>Keyboard</h3><p><kbd>+</kbd>/<kbd>−</kbd> zoom, <kbd>←</kbd>/<kbd>→</kbd> pan, <kbd>Home</kbd> fit, <kbd>Esc</kbd> close. Drag the plot to pan; drag on the overview to select.</p></section><section class="guide-section"><h3>Classification rules</h3><p id="rulesNote">loading…</p><div style="overflow:auto;max-height:340px"><table class="rules-table" id="rulesTable"></table></div></section></div>`;
   dlg.showModal();
-  try { const d = await api('/api/rules'); $('#rulesNote').textContent = `${d.rules.length} rules. A command takes the highest-priority phase among its segments (release > test > build > workers > infra > develop > explore). Unmatched commands stay Unknown.`; $('#rulesTable').innerHTML = `<thead><tr><th>Match</th><th>Phase</th><th>Kind</th><th>Note</th></tr></thead><tbody>${d.rules.map(r => `<tr><td><code>${esc(r.match)}</code></td><td><span class="row"><i class="color-square" style="background:${PHASES[r.phase]?.color}"></i>${esc(r.phase)}</span></td><td>${esc(r.kind)}</td><td style="color:var(--subtle)">${esc(r.note || '')}</td></tr>`).join('')}</tbody>`; } catch (e) { $('#rulesNote').textContent = 'rules unavailable'; }
+  try {
+    const d = await api('/api/rules');
+    const nUser = d.rules.length - (d.builtin_rules ?? d.rules.length);
+    const reviewNote = (d.review_skills && d.review_skills.length) ? ` Review skills (name matches, one per invocation): ${d.review_skills.map(esc).join(', ')}.` : '';
+    $('#rulesNote').innerHTML = `${d.rules.length} rules (${d.builtin_rules ?? d.rules.length} built-in${nUser > 0 ? `, ${nUser} from your overlay` : ''}). A command takes the highest-priority phase among its segments (release &gt; test &gt; build &gt; workers &gt; infra &gt; develop &gt; explore). Unmatched commands stay Unknown. Add project-specific commands and review-skill names in a user rules file (<code>--rules</code>, <code>$TODOBEM_RULES</code>, or <code>~/.todobem/rules.json</code>).${reviewNote}`;
+    const builtin = d.builtin_rules ?? d.rules.length;
+    $('#rulesTable').innerHTML = `<thead><tr><th>Match</th><th>Phase</th><th>Kind</th><th>Note</th></tr></thead><tbody>${d.rules.map((r, i) => `<tr><td><code>${esc(r.match)}</code>${i >= builtin ? ' <span class="chip" style="padding:1px 5px">user</span>' : ''}</td><td><span class="row"><i class="color-square" style="background:${PHASES[r.phase]?.color}"></i>${esc(r.phase)}</span></td><td>${esc(r.kind)}</td><td style="color:var(--subtle)">${esc(r.note || '')}</td></tr>`).join('')}</tbody>`;
+  } catch (e) { $('#rulesNote').textContent = 'rules unavailable'; }
 }
 
 /* ---------- tooltip ---------- */
 function hideTooltip() { $('#tooltip').style.display = 'none'; }
 function tooltip(event) {
   if (event.pointerType === 'touch' || plotDrag || overviewDrag || $('#inspector').open || $('#guide').open) return;
-  const target = event.target.closest('[data-turn],[data-stage],[data-op],[data-group],[data-mk]'); if (!target) { hideTooltip(); return; }
+  const target = event.target.closest('[data-turn],[data-stage],[data-op],[data-group],[data-mk],.lane-head'); if (!target) { hideTooltip(); return; }
   const m = current(), tip = $('#tooltip'); let body = '';
-  if (target.dataset.turn) { const [lane, tid] = target.dataset.turn.split(':'); const l = m.laneById.get(lane); const tn = l?.turns.find(t => t.id === tid); if (!tn) return; const n = l.ops.filter(o => o.turn === tid).length; const names = { completed: 'Turn completed', aborted: 'Turn interrupted', orphaned: 'Turn never closed (process ended?)', open: 'Turn in progress' }; body = `<strong>${names[tn.status] || tn.status} · ${stamp(tn.end, false)}</strong><span>${spanLabel(tn.start, tn.end)} · ${fmt(tn.end - tn.start, true)} · ${n} operations${tn.model ? ' · ' + esc(tn.model) + (tn.effort ? ' / ' + esc(tn.effort) : '') : ''}</span>${tn.final ? `<span>${esc(stripMd(tn.final).slice(0, 200))}</span>` : ''}`; }
+  if (target.classList.contains('lane-head')) {
+    const l = m.laneById.get(target.dataset.lane);
+    if (!l) return;
+    const { t0, t1 } = laneSpan(l);
+    const active = sum((l.active || []).map(iv => iv.e - iv.s));
+    body = `<strong>${esc(l.path)}</strong><span>${esc(agentCaption(l, true) || 'root thread')}</span><span>${spanLabel(t0, t1)} · ${l.depth ? 'active ' + fmt(active, true) : fmt(t1 - t0, true)} · ${l.turns.length} turns · ${l.ops.length} ops</span><span>Select the row to expand phase rows; the ⓘ opens the agent card (prompt, final answer).</span>`;
+  }
+  else  if (target.dataset.turn) { const [lane, tid] = target.dataset.turn.split(':'); const l = m.laneById.get(lane); const tn = l?.turns.find(t => t.id === tid); if (!tn) return; const n = l.ops.filter(o => o.turn === tid).length; const names = { completed: 'Turn completed', aborted: 'Turn interrupted', orphaned: 'Turn never closed (process ended?)', open: 'Turn in progress' }; body = `<strong>${names[tn.status] || tn.status} · ${stamp(tn.end, false)}</strong><span>${spanLabel(tn.start, tn.end)} · ${fmt(tn.end - tn.start, true)} · ${n} operations${tn.model ? ' · ' + esc(tn.model) + (tn.effort ? ' / ' + esc(tn.effort) : '') : ''}</span>${tn.final ? `<span>${esc(stripMd(tn.final).slice(0, 200))}</span>` : ''}`; }
   else if (target.dataset.mk) { const [lane, t, kind] = target.dataset.mk.split(':'); const l = m.laneById.get(lane); const mk = l?.markers.find(k => String(k.t) === t && k.kind === kind); if (!mk) return; body = `<strong>${esc(MARKS[kind]?.name || kind)}</strong><span>${stampS(mk.t)}</span><span>${esc((mk.text || '').slice(0, 220))}</span>`; }
   else if (target.dataset.group) { const g = m.groupById.get(target.dataset.group); body = `<strong>${esc(g.id)} · ${g.attempts} attempts · ${g.failed} failed</strong><span>${spanLabel(g.start, g.end)}</span><span>${esc(g.title.slice(0, 160))}</span><span>Same normalized command. Select to focus.</span>`; }
   else if (target.dataset.op) { const o = m.opById.get(target.dataset.op); if (!o) return; body = `<strong>${esc(o.title.slice(0, 160))}</strong><span>${spanLabel(o.start, o.end)} · ${fmt(o.end - o.start, true)}</span><span>${PHASES[o.phase].name} · ${esc(baseKind(o.kind))}${o.phase === 'llm' ? ' · ' + esc(modelOf(o)) : ''} · ${esc(o.status)}${o.group ? ' · ' + esc(o.group) : ''}${o.background ? ' · background process (outlived its turn; not in totals)' : ''}</span><span>Select to inspect the source event.</span>`; }
@@ -568,9 +839,15 @@ document.addEventListener('click', e => {
   if (a === 'guide') return guide(); if (a === 'close-guide') return $('#guide').close(); if (a === 'close-inspector') return $('#inspector').close();
   if (a === 'refresh') {
     const navigation = navigationRequest;
-    loadSession(state.id, { keepWindow: true }).then(applied => { if (applied) { render(); toast('Refreshed.'); } }).catch(e => {
+    loadSession(state.id, { keepWindow: true, refresh: true }).then(applied => { if (applied) { render(); toast('Re-parsed from the rollout files.'); } }).catch(e => {
       if (navigation === navigationRequest) toast('Could not refresh session: ' + e.message);
     });
+    return;
+  }
+  if (a === 'copy-answer') {
+    const fin = [...root().markers].reverse().find(k => k.kind === 'final_answer');
+    if (!fin) return toast('No final answer to copy.');
+    copyText(fin.text).then(ok => toast(ok ? 'Answer copied to clipboard.' : 'Copy failed — select the text manually.'));
     return;
   }
   if (a === 'fit') return setWindow(m.started, m.ended);
@@ -580,18 +857,36 @@ document.addEventListener('click', e => {
   if (a === 'expand-all') { m.lanes.forEach(l => state.expanded.add(l.id)); renderTimeline(); return; }
   if (a === 'collapse-all') { state.expanded.clear(); renderTimeline(); return; }
   if (a === 'filter') { filterPhase(state.phase === el.dataset.phase ? 'all' : el.dataset.phase); return; }
-  if (a === 'filter-role') { state.role = state.role === el.dataset.role ? 'all' : el.dataset.role; state.listPage = 0; renderLower(); return; }
-  if (a === 'clear-role') { state.role = 'all'; renderLower(); return; }
+  if (a === 'filter-role') { filterRole(state.role === el.dataset.role ? 'all' : el.dataset.role); return; }
+  if (a === 'clear-role') { filterRole('all'); return; }
   if (a === 'clear-filters') { state.phase = 'all'; state.role = 'all'; state.lane = 'all'; renderTimeline(); renderLower(); return; }
-  if (a === 'list-page') { state.listPage += Number(el.dataset.dir); renderOperations(); return; }
   if (a === 'inspect') return inspect(el.dataset.id);
+  if (a === 'run-toggle') { const id = el.dataset.run; state.openRuns.has(id) ? state.openRuns.delete(id) : state.openRuns.add(id); renderOperations(); return; }
+  if (a === 'inspect-interval') {
+    const ta = Number(el.dataset.ta), tb = Number(el.dataset.tb);
+    if (el.dataset.phase === 'no_telemetry') return focusInterval(ta, tb);
+    return inspectWait(el.dataset.lane, ta, tb);
+  }
   if (a === 'focus-op') { const o = m.opById.get(el.dataset.id); if (o) focusInterval(o.start, o.end); return; }
+  if (a === 'focus-at') { const t = Number(el.dataset.t); focusInterval(t, t); return; }
   if (a === 'focus-group') { const g = m.groupById.get(el.dataset.group); if (g) focusInterval(g.start, g.end); return; }
-  if (a === 'jump') { const t = Number(el.dataset.t); if ($('#inspector').open) $('#inspector').close(); chooseSpan(Math.min(state.b - state.a, 3600e3), t); $('#plot').scrollIntoView({ block: 'center', behavior: 'smooth' }); return; }
+  if (a === 'jump') { const t = Number(el.dataset.t); if ($('#inspector').open) $('#inspector').close(); chooseSpan(Math.min(state.b - state.a, 3600e3), t); revealPlot(); return; }
   if (a === 'conv-toggle') { const k = el.dataset.key; state.convOpen.has(k) ? state.convOpen.delete(k) : state.convOpen.add(k); renderConversation(); return; }
-  if (a === 'lane-focus') { state.lane = state.lane === el.dataset.lane ? 'all' : el.dataset.lane; state.listPage = 0; renderTimeline(); renderOperations(); renderAgents(); return; }
+  if (a === 'lane-focus') { state.lane = state.lane === el.dataset.lane ? 'all' : el.dataset.lane; state.listShown = LIST_CHUNK; renderTimeline(); renderOperations(); renderAgents(); return; }
+  if (a === 'lane-card') return inspectLane(el.dataset.lane);
+  if (a === 'metrics-toggle') { state.metricsOpen = !state.metricsOpen; $('#sessionMetrics').innerHTML = metricsHTML(); return; }
+  if (a === 'zoom-lane') {
+    const l = m.laneById.get(el.dataset.lane);
+    if (!l) return;
+    if ($('#inspector').open) $('#inspector').close();
+    const { t0, t1 } = laneSpan(l);
+    const pad = Math.max(30e3, (t1 - t0) * .1);
+    setWindow(t0 - pad, t1 + pad);
+    revealPlot();
+    return;
+  }
 });
-document.addEventListener('change', e => { const id = e.target.id, v = e.target.value; if (id === 'showGroups') { state.groups = e.target.checked; renderTimeline(); } else if (id === 'inTurnToggle') { state.inTurn = e.target.checked; renderLower(); } else if (id === 'allLanesToggle') { state.allLanes = e.target.checked; renderLower(); } else if (id === 'failedOnly') { state.failedOnly = e.target.checked; state.listPage = 0; renderOperations(); } else if (id === 'breakdownSort') { state.breakdownSort = v; renderLower(); } else if (id === 'phaseSelect') filterPhase(v); else if (id === 'laneSelect') { state.lane = v; state.listPage = 0; renderTimeline(); renderOperations(); renderAgents(); } else if (id === 'sortSelect') { state.sort = v; state.listPage = 0; renderOperations(); } else if (id === 'fleetSort') { state.fleetSort = v; renderFleetRows(); } else if (id === 'intervalSelect') { state.interval = Number(v); schedulePoll(); toast(`Refreshing every ${v}s.`); } });
+document.addEventListener('change', e => { const id = e.target.id, v = e.target.value; if (id === 'showGroups') { state.groups = e.target.checked; renderTimeline(); } else if (id === 'inTurnToggle') { state.inTurn = e.target.checked; renderLower(); } else if (id === 'allLanesToggle') { state.allLanes = e.target.checked; renderLower(); } else if (id === 'failedOnly') { state.failedOnly = e.target.checked; state.listShown = LIST_CHUNK; renderOperations(); } else if (id === 'breakdownSort') { state.breakdownSort = v; renderLower(); } else if (id === 'phaseSelect') filterPhase(v); else if (id === 'laneSelect') { state.lane = v; state.listShown = LIST_CHUNK; renderTimeline(); renderOperations(); renderAgents(); } else if (id === 'sortSelect') { state.sort = v; state.listShown = LIST_CHUNK; renderOperations(); } else if (id === 'fleetSort') { state.fleetSort = v; renderFleetRows(); } else if (id === 'intervalSelect') { state.interval = Number(v); schedulePoll(); toast(`Refreshing every ${v}s.`); } });
 document.addEventListener('input', e => { if (e.target.id === 'sessionSearch') { state.search = e.target.value; renderFleetRows(); } });
 // overview brush
 document.addEventListener('pointerdown', e => { const ov = e.target.closest('#overview'); if (!ov || e.button !== 0) return; const m = current(), rect = ov.getBoundingClientRect(), total = m.ended - m.started, xx = clamp(e.clientX - rect.left, 0, rect.width), time = m.started + xx / rect.width * total, handle = e.target.closest('[data-handle]'); const mode = handle ? handle.dataset.handle : e.target.closest('#brush') && state.b - state.a < total - 1000 ? 'move' : 'draw'; overviewDrag = { id: e.pointerId, x: e.clientX, a: state.a, b: state.b, time, rect, mode, moved: false, total }; ov.setPointerCapture(e.pointerId); hideTooltip(); });
@@ -604,7 +899,7 @@ function finishPointer(e, cancelled = false) { if (overviewDrag && e.pointerId =
 document.addEventListener('pointerup', e => finishPointer(e)); document.addEventListener('pointercancel', e => finishPointer(e, true));
 document.addEventListener('pointerdown', e => { const plot = e.target.closest('#plot'); if (!plot || e.button !== 0 || e.target.closest('.lane-head,[data-phase-row]') || !geometry) return; plotDrag = { id: e.pointerId, x: e.clientX, a: state.a, b: state.b, P: geometry.P, moved: false }; });
 document.addEventListener('click', e => {
-  if (Date.now() - lastDragTime < 180) return; const plot = e.target.closest('#plot'); if (!plot) return;
+  if (Date.now() - lastDragTime < 180) return; const plot = e.target.closest('#plot'); if (!plot || e.target.closest('[data-action]')) return;
   const head = e.target.closest('.lane-head'), prow = e.target.closest('[data-phase-row]'), op = e.target.closest('[data-op]'), stage = e.target.closest('[data-stage]'), group = e.target.closest('[data-group]'), mk = e.target.closest('[data-mk]');
   if (head) { const id = head.dataset.lane; state.expanded.has(id) ? state.expanded.delete(id) : state.expanded.add(id); renderTimeline(); }
   else if (prow) { filterPhase(state.phase === prow.dataset.phaseRow ? 'all' : prow.dataset.phaseRow); }
@@ -612,6 +907,7 @@ document.addEventListener('click', e => {
   else if (mk) inspectMarker(mk.dataset.mk);
   else if (op && op.dataset.op) inspect(op.dataset.op);
   else if (group) { const g = current().groupById.get(group.dataset.group); if (g) focusInterval(g.start, g.end); }
+  else if (stage && (stage.dataset.phase === 'wait_user' || stage.dataset.phase === 'idle') && stage.dataset.lane) { inspectWait(stage.dataset.lane, Number(stage.dataset.ta), Number(stage.dataset.tb)); }
   else if (stage) { const ta = Number(stage.dataset.ta), tb = Number(stage.dataset.tb); const span = Math.max(120e3, Math.min((tb - ta) * 3, (state.b - state.a) / 3)); chooseSpan(span, (ta + tb) / 2); }
 });
 document.addEventListener('keydown', e => {
@@ -622,6 +918,7 @@ document.addEventListener('wheel', e => { if (!e.target.closest('#plot') || e.ct
 ['inspector', 'guide'].forEach(id => { const d = $('#' + id); d.addEventListener('click', e => { if (e.target === d) d.close(); }); });
 $('#inspector').addEventListener('close', () => { if (!$('#inspector').open) ++inspectorRequest; });
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (state.page === 'session') renderTimeline(); }, 80); });
+document.addEventListener('scroll', e => { if (e.target && e.target.id === 'operationList') showMoreOperations(); }, true);
 window.addEventListener('popstate', route);
 window.addEventListener('hashchange', route);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && state.page === 'session') schedulePoll(); });

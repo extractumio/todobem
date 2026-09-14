@@ -53,6 +53,9 @@ func Derive(s *Session, now int64) {
 		}
 	}
 	for _, l := range s.Lanes {
+		for _, t := range l.Turns {
+			t.Review = classify.ReviewSkill(t.Skill)
+		}
 		extendPendingOperations(l, now)
 		markBackground(l, now)
 	}
@@ -545,6 +548,25 @@ func buildTotals(s *Session) {
 			if o.Background {
 				t.Background++
 				t.BackgroundMs += o.End - o.Start
+			}
+		}
+	}
+	// Code-review spans: turns where a review/cleanup skill was actually invoked. Root turns
+	// contribute wall clock (ReviewMs); every lane's review turns are counted (Reviews).
+	for _, l := range s.Lanes {
+		for _, tn := range l.Turns {
+			if !tn.Review {
+				continue
+			}
+			t.Reviews++
+			if l == root {
+				end := tn.End
+				if tn.Status == "open" {
+					end = s.Now
+				}
+				if end > tn.Start {
+					t.ReviewMs += end - tn.Start
+				}
 			}
 		}
 	}
