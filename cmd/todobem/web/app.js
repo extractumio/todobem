@@ -2,8 +2,8 @@
 /* todobem SPA. Data comes from /api/* (see docs/SCHEMA.md). All times are Unix ms.
    Aggregates use the root lane's exclusive partition; sub-agent time is shown separately. */
 const LIST_CHUNK = 60; // operations rendered per scroll step
-// BAND is the height of the stage-bracket band at the top of every lane row: the tinted run,
-// its bracket line at the band's bottom edge, and the label sitting clear above that line.
+// BAND is the height of the stage band at the top of every lane row: the tinted run of one SDLC
+// stage, its baseline at the band's bottom edge, and the label sitting clear above that line.
 const BAND = 20;
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -58,6 +58,14 @@ const PHASES = {
   unknown: { name: 'Unknown', short: 'Unknown', color: '#98a4ad', kind: 'unknown' },
 };
 const PHASE_ORDER = Object.keys(PHASES);
+// SUBGROUPS are the finer rows a phase splits into in the breakdown (classify.Subgroup, carried
+// on every op as `sub`): only the phases that lump different work have them.
+const SUBGROUPS = {
+  code: { read: 'Reading files', search: 'Searching & listing', edit: 'Editing files', vcs: 'Version control (git)', hosting: 'Code hosting (gh / glab)', network: 'Network & web', mcp: 'MCP tools', shell: 'Shell, data & inspection' },
+  wait_worker: { agents: 'Sub-agents', polling: 'Processes & CI polling', hooks: 'Hooks (harness)' },
+  unknown: { script: 'Unclassified scripts', tool: 'Unmapped tools', command: 'Unmatched commands' },
+};
+const subgroupName = (phase, sub) => (SUBGROUPS[phase] || {})[sub] || sub;
 // SDLC lifecycle stages: the second exclusive partition of a lane's time (docs/SCHEMA.md
 // "Lifecycle"). Phase says what a tool call was; lifecycle says which stage of the software
 // lifecycle it served. The eight work stages come first in lifecycle order; non-work time
@@ -76,7 +84,7 @@ const LIFECYCLES = {
   test: { name: 'Testing / QA', short: 'Test', color: '#d9bc3d', work: true },
   release: { name: 'Deployment / release', short: 'Release', color: '#4aa65f', work: true },
   operate: { name: 'Maintenance / operations', short: 'Operate', color: '#c4956e', work: true },
-  llm: { name: 'Model output — turn without tool calls', short: 'Model', color: PHASES.llm.color },
+  llm: { name: 'Model output, no tool call', short: 'Model', color: PHASES.llm.color },
   wait_user: { name: PHASES.wait_user.name, short: PHASES.wait_user.short, color: PHASES.wait_user.color },
   wait_worker: { name: PHASES.wait_worker.name, short: PHASES.wait_worker.short, color: PHASES.wait_worker.color },
   idle: { name: PHASES.idle.name, short: PHASES.idle.short, color: PHASES.idle.color },
@@ -90,7 +98,7 @@ const LIFECYCLE_ORDER = Object.keys(LIFECYCLES);
 const lifecycleOf = o => o.lc || o.p || o.phase;
 const alphaOf = p => 1;
 const swatch = p => p === 'no_telemetry' ? `<i class="color-square hatch" style="background:#22313d"></i>` : `<i class="color-square" style="background:${PHASES[p].color}"></i>`;
-// railSwatch is the legend mark of a lifecycle stage: the rail drawn under a lane's fill, so the
+// railSwatch is the legend mark of a lifecycle stage: a thin bar like the stage band above a lane's fill, so the
 // breakdown, the filter chip and the guide show a stage the way the timeline does.
 const railSwatch = color => `<i class="color-rail" style="background:${color}"></i>`;
 // swatchFor picks the mark of a breakdown row from its definition: a rail for a work stage, a
@@ -100,7 +108,7 @@ const ROLES = { background: { name: 'Background process', color: '#8a6d3b' }, pa
 const ROLE_ORDER = ['first', 'retry_after_failure', 'rerun', 'parallel', 'fix', 'infra_recovery', 'worker_queue', 'single', 'remote'];
 const MARKS = { llm_error: { glyph: 'x', color: '#f0a742', name: 'LLM failure (invalid tool call)' }, system_message: { glyph: 'sys', color: '#7d8fa1', name: 'Harness message' }, user_message: { glyph: 'user', color: '#f3f6f8', name: 'User message' }, question: { glyph: 'q', color: '#f2a7b2', name: 'Question to user' }, final_answer: { glyph: 'check', color: '#4aa65f', name: 'Final answer' }, interrupted: { glyph: 'x', color: '#d76368', name: 'Interrupted' }, compaction: { glyph: 'diamond', color: '#c08a45', name: 'Context compaction' }, plan: { glyph: 'plan', color: '#c9b2ff', name: 'Plan update' }, skill: { glyph: 'skill', color: LIFECYCLES.review.color, name: 'Skill invoked' }, result_returned: { glyph: 'result', color: '#48aa8c', name: 'Sub-agent result' }, agent_started: { glyph: 'spawn', color: '#86d0b9', name: 'Sub-agent spawned' }, agent_interacted: { glyph: 'tick', color: '#86d0b9', name: 'Message to sub-agent' }, agent_completed: { glyph: 'done', color: '#86d0b9', name: 'Sub-agent turn completed' }, agent_interrupted: { glyph: 'x', color: '#d76368', name: 'Sub-agent interrupted' } };
 
-const state = { locked: false, authEnabled: false, page: 'sessions', id: null, model: null, sessions: [], a: 0, b: 0, follow: false, interval: 60, expanded: new Set(), hiddenLanes: new Set(), phase: 'all', role: 'all', lifecycle: 'all', lane: 'all', sort: 'longest', listShown: 60, metricsOpen: false, openRuns: new Set(), search: '', fleetSort: 'updated', fleetFilter: { kind: '30d', from: '', to: '', cwd: '', sources: {} }, selected: null, groups: true, inTurn: false, allLanes: false, failedOnly: false, breakdownSort: 'longest', convOpen: new Set(), version: null, lastRefresh: 0, pollTimer: null, tick: null, focus: null, insights: null, pendingFocus: null };
+const state = { locked: false, authEnabled: false, page: 'sessions', id: null, model: null, sessions: [], a: 0, b: 0, follow: false, interval: 60, expanded: new Set(), hiddenLanes: new Set(), phase: 'all', sub: 'all', role: 'all', lifecycle: 'all', lane: 'all', sort: 'longest', listShown: 60, metricsOpen: false, openRuns: new Set(), search: '', fleetSort: 'updated', fleetFilter: { kind: '30d', from: '', to: '', cwd: '', sources: {} }, selected: null, groups: true, inTurn: false, allLanes: false, failedOnly: false, breakdownSort: 'longest', convOpen: new Set(), version: null, lastRefresh: 0, pollTimer: null, tick: null, focus: null, insights: null, pendingFocus: null };
 let geometry = null, overviewDrag = null, plotDrag = null, lastDragTime = 0, toastTimer, resizeTimer, tipTimer, focusTimer;
 // Async work may finish after navigation, another selection, or a newer refresh.
 let navigationRequest = 0, sessionRequest = 0, sessionsRequest = 0, inspectorRequest = 0, pollSchedule = 0, pollBusy = false;
@@ -176,7 +184,7 @@ function root() { return state.model?.lanes[0]; }
 function laneById(id) { return state.model?.lanes.find(l => l.id === id); }
 function prepare(m) {
   m.groups = m.groups || []; m.lanes = m.lanes || []; m.totals = m.totals || {}; m.totals.by_kind = m.totals.by_kind || {}; m.totals.by_phase = m.totals.by_phase || {};
-  for (const l of m.lanes) { l.turns = l.turns || []; l.ops = l.ops || []; l.markers = l.markers || []; l.segments = l.segments || []; l.stages = l.stages || []; l.active = l.active || []; l.by_phase = l.by_phase || {}; }
+  for (const l of m.lanes) { l.turns = l.turns || []; l.ops = l.ops || []; l.markers = l.markers || []; l.segments = l.segments || []; l.active = l.active || []; l.by_phase = l.by_phase || {}; }
   for (const l of m.lanes) for (const mk of l.markers) mk.text = mk.text ?? '';
   m.opById = new Map();
   m.laneById = new Map();
@@ -225,7 +233,7 @@ async function loadSession(id, { keepWindow = false, isCurrent = () => true, ref
   m = prepare(m);
   const prev = state.model;
   state.model = m; state.id = id; state.version = m.version; state.lastRefresh = Date.now();
-  if (!keepWindow || !prev || prev.id !== id) { state.a = m.started; state.b = m.ended; state.expanded = new Set(); state.hiddenLanes = new Set(); state.phase = 'all'; state.role = 'all'; state.lifecycle = 'all'; state.lane = 'all'; state.listShown = LIST_CHUNK; state.openRuns = new Set(); state.selected = null; state.follow = m.live; }
+  if (!keepWindow || !prev || prev.id !== id) { state.a = m.started; state.b = m.ended; state.expanded = new Set(); state.hiddenLanes = new Set(); state.phase = 'all'; state.sub = 'all'; state.role = 'all'; state.lifecycle = 'all'; state.lane = 'all'; state.listShown = LIST_CHUNK; state.openRuns = new Set(); state.selected = null; state.follow = m.live; }
   else if (state.follow) { const span = state.b - state.a; state.b = m.ended; state.a = Math.max(m.started, m.ended - span); }
   else if (Math.abs(prev.ended - state.b) < 1000) state.b = m.ended; // window was pinned to the end
   state.a = clamp(state.a, m.started, m.ended); state.b = clamp(state.b, state.a + 1000, m.ended);
@@ -238,11 +246,14 @@ function windowStats(a, b) {
   const by = Object.fromEntries(PHASE_ORDER.map(k => [k, 0]));
   const byLc = Object.fromEntries(LIFECYCLE_ORDER.map(k => [k, 0]));
   const lcSplit = Object.fromEntries(LIFECYCLE_ORDER.map(k => [k, { llm: 0, tools: 0 }]));
+  const bySub = {}, allBySub = {}; // exclusive time per "phase:subgroup" (the winning op's subgroup)
+  const addSub = (into, sg, ov) => { const o = sg.op ? m.opById.get(sg.op) : null; if (o && o.sub) { const k = `${sg.p}:${o.sub}`; into[k] = (into[k] || 0) + ov; } };
   for (const sg of r.segments) {
     if (sg.e <= a) continue;
     if (sg.s >= b) break;
     const ov = overlap(sg.s, sg.e, a, b);
     by[sg.p] += ov;
+    addSub(bySub, sg, ov);
     const lc = lifecycleOf(sg);
     byLc[lc] = (byLc[lc] || 0) + ov;
     if (!lcSplit[lc]) lcSplit[lc] = { llm: 0, tools: 0 };
@@ -264,6 +275,7 @@ function windowStats(a, b) {
       if (sg.s >= b) break;
       const ov = overlap(sg.s, sg.e, a, b);
       allBy[sg.p] += ov;
+      addSub(allBySub, sg, ov);
       if (l !== r) subBy[sg.p] += ov;
       const lc = lifecycleOf(sg);
       allByLc[lc] = (allByLc[lc] || 0) + ov;
@@ -271,11 +283,10 @@ function windowStats(a, b) {
       allLcSplit[lc][sg.p === 'llm' ? 'llm' : 'tools'] += ov;
     }
   }
-  const stageBy = {}; for (const st of r.stages) { if (st.e <= a) continue; if (st.s >= b) break; stageBy[st.p] = (stageBy[st.p] || 0) + overlap(st.s, st.e, a, b); }
   let raw = 0, bg = 0, bgOps = 0; for (const o of r.ops) { if (o.start >= b) break; const ov = overlap(o.start, o.end, a, b); if (o.background) { bg += ov; if (ov) bgOps++; } else raw += ov; }
   let inTurn = 0; for (const t of r.turns) inTurn += overlap(t.start, t.status === 'open' ? m.now : t.end, a, b);
   const workOf = o => ['code', 'build', 'test', 'release', 'infra'].reduce((n, k) => n + o[k], 0);
-  return { duration: b - a, by, byLc, lcSplit, allByLc, allLcSplit, allBy, subBy, stageBy, roles, work, raw, bg, bgOps, inTurn, llm: by.llm, allWork: workOf(allBy), subWork: workOf(subBy), waiting: by.wait_user + by.wait_worker + by.idle, overhead: by.compaction, unknown: by.no_telemetry + by.unknown, agentMs, agentWall: wall, agentLanes };
+  return { duration: b - a, by, byLc, lcSplit, allByLc, allLcSplit, allBy, subBy, bySub, allBySub, roles, work, raw, bg, bgOps, inTurn, llm: by.llm, allWork: workOf(allBy), subWork: workOf(subBy), waiting: by.wait_user + by.wait_worker + by.idle, overhead: by.compaction, unknown: by.no_telemetry + by.unknown, agentMs, agentWall: wall, agentLanes };
 }
 function opsInWindow(a, b) {
   const m = current(); const out = [];
@@ -609,7 +620,7 @@ async function copyText(t) {
 }
 function lastState() {
   const m = current(), r = root();
-  if (!r.stages.length) return '<p class="muted-note">No activity recorded.</p>';
+  if (!r.segments.length) return '<p class="muted-note">No activity recorded.</p>';
   const fin = [...r.markers].reverse().find(k => k.kind === 'final_answer');
   let html = '';
   // The agent's final answer, verbatim and scrollable, with a one-click copy.
@@ -618,11 +629,11 @@ function lastState() {
   } else {
     html += `<div class="answer-head"><span class="eyebrow">Last answer</span></div><p class="muted-note">No final answer recorded${m.live ? ' yet — the session is still in progress.' : ' (the last turn produced no final message).'}</p>`;
   }
-  // For a live session, the stage in progress (unique to this panel); nothing extra for a closed
-  // one — the end time and turn count already live in the summary on the left.
+  // For a live session, what is in progress right now (unique to this panel); nothing extra for
+  // a closed one — the end time and turn count already live in the summary on the left.
   if (m.live) {
-    const st = r.stages[r.stages.length - 1];
-    if (st) html += `<div class="last-op-row"><div><span class="chip live" style="padding:1px 7px"><i class="dot"></i>live</span> <span class="mono note">${PHASES[st.p].name} since ${stamp(st.s, false)}</span></div></div>`;
+    const sg = r.segments[r.segments.length - 1];
+    if (sg) html += `<div class="last-op-row"><div><span class="chip live" style="padding:1px 7px"><i class="dot"></i>live</span> <span class="mono note">${PHASES[sg.p].name} since ${stamp(sg.s, false)}</span></div></div>`;
   }
   return html;
 }
@@ -643,12 +654,12 @@ function sessionPage() {
 <div class="metrics-body"><div id="sessionMetrics">${metricsHTML()}</div>
 <section class="card" aria-labelledby="siTitle"><div class="card-head"><div><h2 id="siTitle">${esc(INSIGHT_TEXT.sessionCard.title)}</h2><p>${esc(INSIGHT_TEXT.sessionCard.subtitle)}</p></div><span class="scope">${esc(INSIGHT_TEXT.page.title)}</span></div><div id="sessionInsights" class="session-insights"><p class="muted-note">${esc(INSIGHT_TEXT.states.loading)}</p></div></section>${lifecycleRingHTML(m)}</div>
 <section class="card timeline-card" aria-labelledby="timelineTitle"><div class="card-head"><div><h2 id="timelineTitle">Session timeline</h2><p><span id="totalOps">${m.totals.ops}</span> operations · ${m.groups.length} retry groups · <span id="laneCount">${m.lanes.length - 1} sub-agent lanes</span> · ${m.totals.user_messages} user messages${m.totals.failed_ops ? ` · <span title="failed steps: tests, builds, releases, infra, edits and scripts with a non-zero exit">${m.totals.failed_ops} failed</span>` : ''}${m.totals.query_misses ? ` · <span title="reads, searches, listings and probes that answered with a non-zero exit; recorded as failed by the harness, not counted as failures">${m.totals.query_misses} query misses</span>` : ''}</p></div><div class="actions"><button class="btn ghost" data-action="fit" title="Show the entire session">${icon('expand', true)}Fit all</button><button class="btn ghost ${state.follow ? 'active' : ''}" data-action="follow" id="followBtn" aria-pressed="${state.follow}">${icon('latest', true)}Follow latest</button></div></div>
-<div class="overview-section"><div class="overview-heading"><strong id="overviewDuration">${fmt(m.ended - m.started)} overview · ${MAIN_THREAD}${m.lanes.length > 1 ? ' · sub-agent activity' : ''} · errors below · SDLC stages at the foot</strong><span>Drag to select a window · handles resize it</span><span class="mono" id="overviewRange"></span></div><div id="overview" class="overview" aria-label="Session overview. Drag to select a time window."><svg id="overviewSvg" aria-hidden="true"></svg><div class="brush-shade" id="shadeLeft"></div><div class="brush-shade" id="shadeRight"></div><div class="brush" id="brush"><div class="brush-handle left" data-handle="start" tabindex="0" role="slider" aria-label="Visible window start"></div><div class="brush-handle right" data-handle="end" tabindex="0" role="slider" aria-label="Visible window end"></div></div></div><div class="overview-lc" id="overviewLc" aria-label="SDLC stage over time"></div><div class="overview-axis" id="overviewAxis"></div><div class="legend legend-phases" id="legend"><div class="legend-group"><span class="row legend-caption">Activity · fill</span>${legend(['model', 'work'])}</div><div class="legend-group">${legend(['wait', 'overhead', 'unknown'])}</div><div class="legend-group" id="legendLifecycle"><span class="row legend-caption">Lifecycle stage · band below, rail on lanes</span>${railLegend}</div></div></div>
+<div class="overview-section"><div class="overview-heading"><strong id="overviewDuration">${fmt(m.ended - m.started)} overview · ${MAIN_THREAD}${m.lanes.length > 1 ? ' · sub-agent activity' : ''} · errors below · SDLC stages at the foot</strong><span>Drag to select a window · handles resize it</span><span class="mono" id="overviewRange"></span></div><div id="overview" class="overview" aria-label="Session overview. Drag to select a time window."><svg id="overviewSvg" aria-hidden="true"></svg><div class="brush-shade" id="shadeLeft"></div><div class="brush-shade" id="shadeRight"></div><div class="brush" id="brush"><div class="brush-handle left" data-handle="start" tabindex="0" role="slider" aria-label="Visible window start"></div><div class="brush-handle right" data-handle="end" tabindex="0" role="slider" aria-label="Visible window end"></div></div></div><div class="overview-lc" id="overviewLc" aria-label="SDLC stage over time"></div><div class="overview-axis" id="overviewAxis"></div><div class="legend legend-phases" id="legend"><div class="legend-group"><span class="row legend-caption">Activity · fill</span>${legend(['model', 'work'])}</div><div class="legend-group">${legend(['wait', 'overhead', 'unknown'])}</div><div class="legend-group" id="legendLifecycle"><span class="row legend-caption">Lifecycle stage · band above each lane, strip under the overview</span>${railLegend}</div></div></div>
 <div class="timeline-toolbar"><div class="zoom-group"><div class="zoom-presets" aria-label="Visible time window">${[[0, 'All'], [86400000, '24h'], [21600000, '6h'], [3600000, '1h'], [900000, '15m'], [300000, '5m']].map(([n, l]) => `<button data-action="preset" data-span="${n}">${l}</button>`).join('')}</div><div class="zoom-step" aria-label="Zoom controls"><button data-action="zoom" data-dir="-1" aria-label="Zoom out">−</button><span class="zoom-caption" id="zoomCaption"></span><button data-action="zoom" data-dir="1" aria-label="Zoom in">+</button></div></div><div class="toolbar-right"><label><input id="showGroups" type="checkbox" ${state.groups ? 'checked' : ''}>Retry groups</label><button class="btn small ghost" data-action="expand-all">Expand all lanes</button><button class="btn small ghost" data-action="collapse-all">Collapse</button></div></div>
 <div class="range-bar"><span class="range-label" id="rangeLabel"></span><div class="nav-arrows"><button class="btn icon-only" data-action="pan" data-dir="-1" aria-label="Move to earlier time">${icon('left', true)}</button><button class="btn icon-only" data-action="pan" data-dir="1" aria-label="Move to later time">${icon('right', true)}</button></div></div>
 <div class="timeline-plot" id="plot" tabindex="0" role="group" aria-label="Interactive session timeline"><svg id="chartSvg" aria-hidden="true"></svg><div class="agent-scroll" id="agentScroll" hidden><svg id="agentSvg" aria-hidden="true"></svg></div></div>
 
-<div class="chart-footer"><span class="chart-note" id="chartNote"></span><span class="chart-shortcuts"><kbd>+</kbd> <kbd>−</kbd> zoom · <kbd>←</kbd> <kbd>→</kbd> pan · <kbd>Home</kbd> fit · drag to pan</span></div><div class="legend legend-marks" id="legendMarks"><span class="row"><svg width="12" height="12">${userGlyph(6, 0, MARKS.user_message.color, .85)}</svg>User message</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="#4aa65f"/></svg>Final answer</span><span class="row"><svg width="14" height="12"><rect x="0" y="5" width="14" height="3" rx="1.5" fill="#c9a15c"/></svg>Background process</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5.5" fill="#4aa65f"/><path d="M3 6l2 2 4-4" stroke="#0f1b23" stroke-width="1.6" fill="none"/></svg>Turn completed</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5.5" fill="#d76368"/><path d="M3.5 3.5l5 5m0-5l-5 5" stroke="#0f1b23" stroke-width="1.6"/></svg>Interrupted</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="#22313d" stroke="#7d8fa1" stroke-width="1.5"/><path d="M2.5 9.5l7-7" stroke="#7d8fa1" stroke-width="1.5"/></svg>Never closed</span><span class="row"><svg width="14" height="12"><path d="M1 8v-3h12v3" fill="none" stroke="#4690ce" stroke-width="1.5"/></svg>Activity bracket (a run of tool calls of one activity, with the LLM time before each)</span><span class="row"><svg width="14" height="12"><rect x="0" y="4" width="14" height="4" rx="1" fill="#22313d"/><rect x="0" y="9" width="14" height="3" fill="${LIFECYCLES.review.color}"/></svg>Lifecycle rail (the SDLC stage the time served; colours above)</span><span class="row"><svg width="12" height="12"><path d="M2 2l8 8m0-8l-8 8" stroke="#e5484d" stroke-width="2.4" stroke-linecap="round"/></svg>Tool failure (non-zero exit)</span><span class="row"><svg width="12" height="12"><path d="M2 2l8 8m0-8l-8 8" stroke="#f0a742" stroke-width="2.4" stroke-linecap="round"/></svg>LLM failure: invalid tool call / broken exec script</span></div></section>
+<div class="chart-footer"><span class="chart-note" id="chartNote"></span><span class="chart-shortcuts"><kbd>+</kbd> <kbd>−</kbd> zoom · <kbd>←</kbd> <kbd>→</kbd> pan · <kbd>Home</kbd> fit · drag to pan</span></div><div class="legend legend-marks" id="legendMarks"><span class="row"><svg width="12" height="12">${userGlyph(6, 0, MARKS.user_message.color, .85)}</svg>User message</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="#4aa65f"/></svg>Final answer</span><span class="row"><svg width="14" height="12"><rect x="0" y="5" width="14" height="3" rx="1.5" fill="#c9a15c"/></svg>Background process</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5.5" fill="#4aa65f"/><path d="M3 6l2 2 4-4" stroke="#0f1b23" stroke-width="1.6" fill="none"/></svg>Turn completed</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5.5" fill="#d76368"/><path d="M3.5 3.5l5 5m0-5l-5 5" stroke="#0f1b23" stroke-width="1.6"/></svg>Interrupted</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="#22313d" stroke="#7d8fa1" stroke-width="1.5"/><path d="M2.5 9.5l7-7" stroke="#7d8fa1" stroke-width="1.5"/></svg>Never closed</span><span class="row"><svg width="14" height="12"><rect x="0" y="1" width="14" height="5" rx="1" fill="${LIFECYCLES.implement.color}" opacity=".35"/><rect x="0" y="5" width="14" height="2" fill="${LIFECYCLES.implement.color}"/><rect x="0" y="8" width="14" height="4" rx="1" fill="#22313d"/></svg>Stage band (the SDLC stage the time served, above the raw fill; colours above)</span><span class="row"><svg width="12" height="12"><path d="M2 2l8 8m0-8l-8 8" stroke="#e5484d" stroke-width="2.4" stroke-linecap="round"/></svg>Tool failure (non-zero exit)</span><span class="row"><svg width="12" height="12"><path d="M2 2l8 8m0-8l-8 8" stroke="#f0a742" stroke-width="2.4" stroke-linecap="round"/></svg>LLM failure: invalid tool call / broken exec script</span></div></section>
 <div class="analysis-grid"><section class="card" id="breakdownCard" aria-labelledby="breakdownTitle"><div class="card-head"><div><h2 id="breakdownTitle">Time in this window</h2><p id="breakdownScope"></p></div><span class="scope" id="breakdownScopeChip">Main thread · exclusive</span></div><div id="breakdownBody" class="breakdown-body"></div><div class="panel-foot">${icon('info', true)}Sub-agent time runs in parallel and is listed separately. Gaps are unknown, not idle.</div></section>
 <section class="card fill" id="operationsCard" aria-labelledby="operationsTitle"><div class="card-head"><div><h2 id="operationsTitle">Operations in view</h2><p id="operationCount"></p></div><span class="scope">All lanes</span></div><div class="operation-tools"><select class="select" id="phaseSelect" aria-label="Filter by phase"><option value="all">All phases</option>${PHASE_ORDER.map(k => `<option value="${k}">${PHASES[k].name}</option>`).join('')}</select><select class="select" id="laneSelect" aria-label="Filter by lane"><option value="all">All lanes</option>${m.lanes.map(l => `<option value="${esc(l.id)}">${esc(l.path)}</option>`).join('')}</select><select class="select" id="sortSelect" aria-label="Sort operations"><option value="longest">Longest in window</option><option value="latest">Latest first</option><option value="earliest">Earliest first</option><option value="failed">Failed first</option></select><label class="row chip" style="cursor:pointer"><input type="checkbox" id="failedOnly" ${state.failedOnly ? 'checked' : ''}>Failures only</label></div><div id="roleFilter"></div><div class="operation-list scroll-fade" id="operationList"></div></section></div>
 <div class="analysis-grid"><section class="card" aria-labelledby="convTitle"><div class="card-head"><div><h2 id="convTitle">Conversation</h2><p>User messages, questions and final answers, verbatim. Select one to jump there.</p></div><span class="scope">${m.totals.user_messages} inputs</span></div><div class="conv scroll-fade" id="conversation"></div></section>
@@ -814,9 +825,9 @@ function renderTimeline() {
         }
         for (const iv of l.active || []) { if (iv.e <= state.a || iv.s >= state.b) continue; html += `<rect x="${x(Math.max(iv.s, state.a))}" y="${y + BAND}" width="${Math.max(1, x(Math.min(iv.e, state.b)) - x(Math.max(iv.s, state.a)))}" height="${rh - BAND - 4}" fill="#2e4655" rx="3"/>`; }
       }
-      // Fill = the raw exclusive partition (teal is real model time). Activity brackets above the
-      // fill name the run of tool calls (Dev / Test / Release …) as a grouping, not as time.
-      const top0 = y + BAND + 1, fh = rh - BAND - 6; // fill box under the bracket band
+      // Fill = the raw exclusive partition (teal is real model time): what ran. The stage band
+      // above the fill = the lifecycle partition of the same time: which SDLC stage it served.
+      const top0 = y + BAND + 1, fh = rh - BAND - 6; // fill box under the stage band
       const segsVis = l.segments.filter(sg => sg.e > state.a && sg.s < state.b && !(l.depth > 0 && sg.p === 'idle'));
       const { runs, per } = bucketRuns(segsVis, state.a, state.b, P, bw, it => it.p);
       const lastRun = runs[runs.length - 1];
@@ -833,11 +844,12 @@ function renderTimeline() {
         } else if (ww > 52 && p !== 'wait_user' && p !== 'idle' && p !== 'llm') { const label = `${PHASES[p].short} ${fmt(tb - ta)}`; html += `<text class="op-label ${p === 'code' || p === 'compaction' ? 'light' : ''}" x="${xa + 5}" y="${top0 + fh / 2 + 3.5}">${esc(label.slice(0, Math.floor((ww - 8) / 5.8)))}</text>`; }
         html += `</g>`;
       }
-      // lifecycle rail: a thin band along the bottom of the fill showing the SDLC stage the time
-      // served (the second partition), separated from the fill by a dark seam; the fill above
-      // keeps the raw llm/code/wait split. Pass-through stages (waits, gaps, unattributed model
-      // output) draw nothing.
+      // stage band: the SDLC stage the time served (the second partition), one tinted run per
+      // stage with its baseline and label. Pass-through time (waits, compaction, telemetry gaps,
+      // model output of a tool-less turn) is not a stage and leaves the band empty; the fill
+      // below still shows what it was.
       const lcRuns = bucketRuns(segsVis, state.a, state.b, P, bw, it => lifecycleOf(it)).runs;
+      let lastLabelEnd = -1;
       for (const run of lcRuns) {
         const def = LIFECYCLES[run.key];
         if (!def || !def.work) continue;
@@ -845,18 +857,16 @@ function renderTimeline() {
         const ww = Math.max(1, (run.end - run.start) * bw - (run.end - run.start > 1 ? .6 : 0));
         const ta = state.a + run.start * per;
         const tb = state.a + run.end * per;
-        html += `<rect x="${xa.toFixed(1)}" y="${top0 + fh - 4}" width="${ww.toFixed(1)}" height="1" fill="#0f1b23"/>`;
-        html += `<rect class="lc-strip" x="${xa.toFixed(1)}" y="${top0 + fh - 3}" width="${ww.toFixed(1)}" height="3" fill="${def.color}" data-lc="${run.key}"><title>${def.name} · ${fmt(tb - ta)}</title></rect>`;
-      }
-      // stage brackets (tool-call runs of one phase, thinking before each call included)
-      const stageVis = l.stages.filter(st => st.e > state.a && st.s < state.b && PHASES[st.p] && PHASES[st.p].kind === 'work');
-      let lastLabelEnd = -1;
-      for (const st of stageVis) {
-        const xa = x(Math.max(st.s, state.a)), xb = x(Math.min(st.e, state.b)), ww = xb - xa; if (ww < 14) continue;
-        const c = PHASES[st.p].color, ly = y + BAND - 1;
-        html += `<g class="mark" data-stage="1" data-lane="${esc(l.id)}" data-ta="${st.s}" data-tb="${st.e}" data-phase="${st.p}" data-bracket="1"><rect x="${xa.toFixed(1)}" y="${y + 2}" width="${ww.toFixed(1)}" height="${BAND - 4}" rx="2" fill="${c}" opacity=".16"/><path d="M${xa.toFixed(1)} ${ly}v-3h${ww.toFixed(1)}v3" fill="none" stroke="${c}" stroke-width="2"/><rect x="${xa.toFixed(1)}" y="${y}" width="${ww.toFixed(1)}" height="${BAND}" fill="transparent"/>`;
-        const label = `${PHASES[st.p].short} ${fmt(st.e - st.s)}`; const lw = label.length * 6 + 8;
-        if (ww >= lw && xa >= lastLabelEnd) { html += `<text x="${xa + 4}" y="${y + BAND - 8}" font-size="11" font-weight="700" fill="${c}">${esc(label)}</text>`; lastLabelEnd = xa + lw; }
+        const c = def.color, ly = y + BAND - 1;
+        html += `<g class="mark" data-stage="1" data-band="1" data-lane="${esc(l.id)}" data-ta="${Math.round(ta)}" data-tb="${Math.round(tb)}" data-lc="${run.key}"><title>${def.name} · ${fmt(tb - ta)}</title><rect x="${xa.toFixed(1)}" y="${y + 2}" width="${ww.toFixed(1)}" height="${BAND - 4}" rx="2" fill="${c}" opacity=".22"/><rect x="${xa.toFixed(1)}" y="${ly - 2}" width="${ww.toFixed(1)}" height="2" fill="${c}"/>`;
+        if (ww >= 14) {
+          const label = `${def.short} ${fmt(tb - ta)}`;
+          const lw = label.length * 6 + 8;
+          if (ww >= lw && xa >= lastLabelEnd) {
+            html += `<text x="${xa + 4}" y="${y + BAND - 8}" font-size="11" font-weight="700" fill="${c}">${esc(label)}</text>`;
+            lastLabelEnd = xa + lw;
+          }
+        }
         html += `</g>`;
       }
       // turn ends: ✓ completed · ✕ interrupted · ⊘ never closed
@@ -968,7 +978,7 @@ function renderTimeline() {
   const agentsTotal = m.lanes.length - 1;
   const agentsShown = rows.filter(r => r.kind === 'lane' && r.lane.depth > 0 && laneInWindow(r.lane)).length;
   if ($('#laneCount')) $('#laneCount').textContent = `${agentsTotal} sub-agent lanes` + (agentsShown < agentsTotal ? ` · ${agentsShown} in this window` : '');
-  $('#chartNote').innerHTML = icon('info', true) + (span / P >= 800 ? `${fmt(bucketRuns([], state.a, state.b, P, bw, () => 0).per)} per column: fill = dominant phase (teal is LLM time), brackets above = activity runs, rail below = lifecycle stage; in expanded rows bar height = coverage. Select a block to frame it (again to zoom in); a turn's end glyph highlights the turn.` : `Fine zoom: expanded rows show individual operations. Select one to inspect the source event.`);
+  $('#chartNote').innerHTML = icon('info', true) + (span / P >= 800 ? `${fmt(bucketRuns([], state.a, state.b, P, bw, () => 0).per)} per column: fill = dominant phase (teal is LLM time), band above = the lifecycle stage the time served; in expanded rows bar height = coverage. Select a block to frame it (again to zoom in); a turn's end glyph highlights the turn.` : `Fine zoom: expanded rows show individual operations. Select one to inspect the source event.`);
   $$('[data-action="preset"]').forEach(el => { const v = Number(el.dataset.span) || (m.ended - m.started); el.classList.toggle('active', Math.abs(span - v) < 1000); el.disabled = Number(el.dataset.span) > m.ended - m.started; });
   $('[data-action="zoom"][data-dir="-1"]').disabled = span >= m.ended - m.started - 500; $('[data-action="zoom"][data-dir="1"]').disabled = span <= 60500;
   $('[data-action="pan"][data-dir="-1"]').disabled = state.a <= m.started + 1; $('[data-action="pan"][data-dir="1"]').disabled = state.b >= m.ended - 1;
@@ -978,7 +988,7 @@ function renderTimeline() {
 function setWindow(a, b, { manual = true, lower = true } = {}) { const m = current(); const span = clamp(b - a, 60000, m.ended - m.started); a = clamp(a, m.started, m.ended - span); state.a = a; state.b = a + span; state.listShown = LIST_CHUNK; if (manual) state.focus = null; if (manual && state.b < m.ended - 1000) state.follow = false; hideTooltip(); renderTimeline(); if (lower) renderLower(); }
 function chooseSpan(span, center = (state.a + state.b) / 2) { const m = current(); span = Math.min(span, m.ended - m.started); setWindow(center - span / 2, center + span / 2); }
 function zoom(dir, anchor = .5) { const m = current(), cur = state.b - state.a, total = m.ended - m.started, levels = [60e3, 300e3, 900e3, 3600e3, 10800e3, 21600e3, 43200e3, 86400e3, 172800e3, total].filter(n => n <= total).sort((a, b) => a - b), next = dir > 0 ? [...levels].reverse().find(n => n < cur - 1) : levels.find(n => n > cur + 1); if (!next) return; const t = state.a + cur * anchor; setWindow(t - next * anchor, t + next * (1 - anchor)); }
-// zoomToBlock frames a coarse block (a run of columns, a stage bracket) with a small margin; a
+// zoomToBlock frames a coarse block (a run of columns, a stage-band run) with a small margin; a
 // block that already fills the view zooms in on its centre instead, so a second click goes deeper.
 function zoomToBlock(ta, tb) {
   const framed = Math.max(120e3, (tb - ta) * 1.3);
@@ -1027,18 +1037,18 @@ function renderLower() {
   // share = the row's part of its section's total (the same denominator as the bar), so the
   // rows of a section add up to 100 %; the two sub-agent rows are not a partition and show none
   const pct = (n, total) => (total ? n / total * 100 : 0).toFixed(1) + '%';
-  const stageOf = k => PHASES[k]?.kind === 'work' ? t.stageBy[k] || 0 : 0; // the activity bracket: the calls plus the LLM time before each
-  const rows = (entries, total) => entries.filter(([, n, , , , count]) => n > 0 || count == null || count > 0).map(([k, n, def, sel, data, count, sub]) => { const stg = def === PHASES[k] ? stageOf(k) : 0; return `<button class="breakdown-item ${sel ? 'active' : ''}" ${data} title="${esc(def.name)}: ${fmt(n, true)}${sub ? ' · ' + esc(sub) : ' of tool time'}${stg ? ` · bracket ${fmt(stg, true)}: the calls plus the LLM time before each` : ''}${count == null ? '' : ` · ${plural(count, INTERVAL_PHASES.has(k) ? 'interval' : 'operation')} in the list · ${pct(n, total)} of this section`}"><span class="name">${swatchFor(def)}<span class="label">${def.name}</span>${sub ? `<small class="row-sub">${esc(sub)}</small>` : ''}</span><span class="bar-track"><span class="bar-fill" style="width:${total ? clamp(n / total * 100, 0, 100) : 0}%;background:${def.color}"></span>${stg ? `<span class="bar-stage" style="width:${total ? clamp(stg / total * 100, 0, 100) : 0}%;border-color:${def.color}"></span>` : ''}</span><span class="count num">${count == null ? '' : count}</span><span class="share num">${count == null ? '' : pct(n, total)}</span><span class="time num">${fmt(n)}${stg ? `<small>bracket ${fmt(stg)}</small>` : ''}</span></button>`; }).join('');
+  const rows = (entries, total) => entries.filter(([, n, , , , count]) => n > 0 || count == null || count > 0).map(([k, n, def, sel, data, count, sub, cls]) => `<button class="breakdown-item${cls ? ' ' + cls : ''}${sel ? ' active' : ''}" ${data} title="${esc(def.name)}: ${fmt(n, true)}${sub ? ' · ' + esc(sub) : ' of tool time'}${count == null ? '' : ` · ${plural(count, INTERVAL_PHASES.has(k) ? 'interval' : 'operation')} in the list · ${pct(n, total)} of this section`}"><span class="name">${swatchFor(def)}<span class="label">${def.name}</span>${sub ? `<small class="row-sub">${esc(sub)}</small>` : ''}</span><span class="bar-track"><span class="bar-fill" style="width:${total ? clamp(n / total * 100, 0, 100) : 0}%;background:${def.color}"></span></span><span class="count num">${count == null ? '' : count}</span><span class="share num">${count == null ? '' : pct(n, total)}</span><span class="time num">${fmt(n)}</span></button>`).join('');
   const inWindow = opsInWindow(state.a, state.b);
-  const countOf = (phase, role) => INTERVAL_PHASES.has(phase) ? intervalRecords(phase).length : inWindow.filter(o => opMatches(o, phase, role, 'all')).length;
-  const countOfLc = lc => INTERVAL_PHASES.has(lc) ? intervalRecords(lc).length : inWindow.filter(o => opMatches(o, 'all', 'all', lc)).length;
+  const countOf = (phase, role) => INTERVAL_PHASES.has(phase) ? intervalRecords(phase).length : inWindow.filter(o => opMatches(o, phase, role, 'all', 'all')).length;
+  const countOfLc = lc => INTERVAL_PHASES.has(lc) ? intervalRecords(lc).length : inWindow.filter(o => opMatches(o, 'all', 'all', lc, 'all')).length;
+  const countOfSub = (phase, sub) => inWindow.filter(o => opMatches(o, phase, 'all', 'all', sub)).length;
   if ($('#breakdownScopeChip')) $('#breakdownScopeChip').textContent = state.allLanes ? 'All lanes · agent time' : 'Main thread · exclusive';
-  $('#breakdownScope').textContent = `${fmt(t.duration)} selected · ${fmt(t.inTurn)} inside turns · sub-agents ${fmt(t.agentMs)} in parallel · "bracket" = tool calls + LLM time before them`;
+  $('#breakdownScope').textContent = `${fmt(t.duration)} selected · ${fmt(t.inTurn)} inside turns · sub-agents ${fmt(t.agentMs)} in parallel`;
   const testTotal = Math.max(1, ROLE_ORDER.filter(k => k !== 'remote').reduce((n, k) => n + t.roles[k], 0));
   const src = state.allLanes ? t.allBy : t.by;
   const denom = state.allLanes ? Math.max(1, PHASE_ORDER.reduce((n, k) => n + (k === 'idle' ? 0 : src[k]), 0)) : state.inTurn ? Math.max(1, t.inTurn) : t.duration;
   const byTime = (a, b) => b[1] - a[1] || (b[5] || 0) - (a[5] || 0);
-  const sorters = { longest: byTime, stage: (a, b) => stageOf(b[0]) - stageOf(a[0]) || byTime(a, b), records: (a, b) => (b[5] || 0) - (a[5] || 0) || byTime(a, b) };
+  const sorters = { longest: byTime, records: (a, b) => (b[5] || 0) - (a[5] || 0) || byTime(a, b) };
   const order = arr => arr.slice().sort(sorters[state.breakdownSort] || byTime);
   const phaseRows = PHASE_ORDER.filter(k => k !== 'idle' && !(state.inTurn && k === 'wait_user'));
   // Lifecycle rows: the same time keyed by SDLC stage, each with its LLM / tools split so the
@@ -1056,16 +1066,28 @@ function renderLower() {
     const sel = INTERVAL_PHASES.has(k) ? state.phase === k && state.lifecycle === 'all' : state.lifecycle === k;
     return [k, n, LIFECYCLES[k], sel, `data-action="filter-lifecycle" data-lc="${k}"`, countOfLc(k), sub];
   });
-  const lcSection = `<div class="mini-heading"><h3>Lifecycle stage</h3><span class="mini-note">same time, by SDLC stage</span></div>` + rows(order(lcEntries), denom) + `<div class="mini-heading"><h3>Activity</h3><span class="mini-note">what each tool call was</span></div>`;
+  // Only SDLC stages are stages. Waiting, compaction, telemetry gaps, unknown commands and the
+  // model output of a turn without tool calls happened inside or between them; they keep their
+  // own name in the data (the partition still sums to elapsed) and sit under "Outside stages".
+  const stageEntries = lcEntries.filter(e => LIFECYCLES[e[0]].work);
+  const outsideEntries = lcEntries.filter(e => !LIFECYCLES[e[0]].work);
+  const outsideRows = rows(order(outsideEntries), denom);
+  const lcSection = `<div class="mini-heading"><h3>Lifecycle stage</h3><span class="mini-note">same time, by SDLC stage</span></div>` + rows(order(stageEntries), denom)
+    + (outsideRows ? `<div class="mini-heading"><h3>Outside stages</h3><span class="mini-note">inside or between the stages above · same total</span></div>` + outsideRows : '')
+    + `<div class="mini-heading"><h3>Activity</h3><span class="mini-note">what each tool call was</span></div>`;
+  // a phase with sub-rows lists them right under it, by time, hidden when empty
+  const subSrc = state.allLanes ? t.allBySub : t.bySub;
+  const subEntries = k => Object.keys(SUBGROUPS[k] || {}).map(sub => [`${k}:${sub}`, subSrc[`${k}:${sub}`] || 0, { name: SUBGROUPS[k][sub], color: PHASES[k].color }, state.phase === k && state.sub === sub, `data-action="filter-sub" data-sub-phase="${k}" data-sub="${sub}"`, countOfSub(k, sub), '', 'sub']).sort(byTime);
   const roleRows = rows(order(ROLE_ORDER.map(k => [k, t.roles[k], ROLES[k], state.role === k, `data-action="filter-role" data-role="${k}"`, countOf('all', k)])), testTotal);
   const roleSection = roleRows ? `<div class="mini-heading"><h3>Attempts &amp; retries</h3><span class="mini-note">test · build · release · infra · op time, ${MAIN_THREAD}</span></div>` + roleRows : '';
-  const sortOptions = [['longest', 'by time (%)'], ['stage', 'by bracket'], ['records', 'by records']].map(([v, l]) => `<option value="${v}" ${state.breakdownSort === v ? 'selected' : ''}>${l}</option>`).join('');
+  const sortOptions = [['longest', 'by time (%)'], ['records', 'by records']].map(([v, l]) => `<option value="${v}" ${state.breakdownSort === v ? 'selected' : ''}>${l}</option>`).join('');
   const tools = `<div class="mini-heading breakdown-tools">`
     + `<label class="row"><input type="checkbox" id="inTurnToggle" ${state.inTurn ? 'checked' : ''}>Inside turns only</label>`
     + `<label class="row"><input type="checkbox" id="allLanesToggle" ${state.allLanes ? 'checked' : ''}>Include sub-agents</label>`
     + `<span class="row note">sort <select class="select compact" id="breakdownSort">${sortOptions}</select></span>`
     + `<span class="mini-note">${fmt(t.raw)} op time in ${fmt(t.inTurn)}</span></div>`;
-  $('#breakdownBody').innerHTML = tools + lcSection + rows(order(phaseRows.map(k => [k, src[k], PHASES[k], state.phase === k, `data-action="filter" data-phase="${k}"`, countOf(k, 'all'), PHASES[k].kind === 'work' ? 'tool calls only' : ''])), denom) + roleSection + (t.bg ? `<div class="mini-heading"><h3>Background processes</h3><span class="mini-note">${t.bgOps} · not in totals</span></div>${rows([['bg', t.bg, { name: 'Outlived their turn (servers, watchers)', color: '#8a6d3b' }, state.role === 'background', 'data-action="filter-role" data-role="background"', countOf('all', 'background')]], Math.max(t.bg, t.duration))}` : '') + (t.agentMs ? `<div class="mini-heading"><h3>Sub-agents in window</h3><span class="mini-note">${t.agentLanes} lanes</span></div>${rows([['agents', t.agentMs, { name: 'Agent time (sum)', color: '#86d0b9' }, false, 'data-action="noop"', null], ['wall', t.agentWall, { name: 'Wall clock (union)', color: '#5f8f86' }, false, 'data-action="noop"', null]], Math.max(t.agentMs, 1))}` : '');
+  const phaseEntries = order(phaseRows.map(k => [k, src[k], PHASES[k], state.phase === k, `data-action="filter" data-phase="${k}"`, countOf(k, 'all'), PHASES[k].kind === 'work' ? 'tool calls only' : ''])).flatMap(e => [e, ...subEntries(e[0])]);
+  $('#breakdownBody').innerHTML = tools + lcSection + rows(phaseEntries, denom) + roleSection + (t.bg ? `<div class="mini-heading"><h3>Background processes</h3><span class="mini-note">${t.bgOps} · not in totals</span></div>${rows([['bg', t.bg, { name: 'Outlived their turn (servers, watchers)', color: '#8a6d3b' }, state.role === 'background', 'data-action="filter-role" data-role="background"', countOf('all', 'background')]], Math.max(t.bg, t.duration))}` : '') + (t.agentMs ? `<div class="mini-heading"><h3>Sub-agents in window</h3><span class="mini-note">${t.agentLanes} lanes</span></div>${rows([['agents', t.agentMs, { name: 'Agent time (sum)', color: '#86d0b9' }, false, 'data-action="noop"', null], ['wall', t.agentWall, { name: 'Wall clock (union)', color: '#5f8f86' }, false, 'data-action="noop"', null]], Math.max(t.agentMs, 1))}` : '');
   renderOperations(); renderConversation(); renderAgents();
 }
 // Interval phases have no operations behind them: waiting for the user (root) or the parent
@@ -1073,9 +1095,10 @@ function renderLower() {
 const INTERVAL_PHASES = new Set(['wait_user', 'idle', 'no_telemetry']);
 // opMatches is the operations-list predicate for one phase / role choice; the failures-only
 // filter applies with it, so the breakdown counts match what a click on that row lists.
-function opMatches(o, phase, role, lifecycle = state.lifecycle) {
+function opMatches(o, phase, role, lifecycle = state.lifecycle, sub = state.sub) {
   if (state.failedOnly && !failure(o)) return false;
   if (phase !== 'all' && o.phase !== phase) return false;
+  if (sub !== 'all' && o.sub !== sub) return false;
   if (lifecycle !== 'all' && lifecycleOf(o) !== lifecycle) return false;
   if (role === 'all') return true;
   if (role === 'single') return o.phase === 'test' && !roleOf(o.kind);
@@ -1145,6 +1168,7 @@ function renderOperations() {
   $('#operationCount').textContent = `${plural(ops.length, noun)}${state.failedOnly ? ' · failures only' : ''}${folded ? ` · ${rows.length} rows, ${folded} run${folded > 1 ? 's' : ''} of identical calls folded` : ''} · durations clipped to the window`;
   const chips = [];
   if (state.role !== 'all') chips.push(`<button class="chip" data-action="clear-role">${ROLES[state.role].name} ${icon('close', true)}</button>`);
+  if (state.sub !== 'all') chips.push(`<button class="chip" data-action="clear-sub">${swatchFor(PHASES[state.phase] || PHASES.unknown)}${esc(subgroupName(state.phase, state.sub))} ${icon('close', true)}</button>`);
   if (state.lifecycle !== 'all') chips.push(`<button class="chip" data-action="clear-lifecycle">${swatchFor(LIFECYCLES[state.lifecycle] || LIFECYCLES.unknown)}${LIFECYCLES[state.lifecycle]?.name || state.lifecycle} ${icon('close', true)}</button>`);
   $('#roleFilter').innerHTML = chips.length ? `<div style="padding:0 22px 10px;display:flex;gap:8px;flex-wrap:wrap">${chips.join('')}</div>` : '';
   const intervalItem = (o, i) => {
@@ -1204,6 +1228,7 @@ function renderAgents() {
 // them is either redundant or empty.
 function filterPhase(phase) {
   state.phase = phase;
+  state.sub = 'all';
   if (phase !== 'all') {
     state.role = 'all';
     state.lifecycle = 'all';
@@ -1214,6 +1239,7 @@ function filterPhase(phase) {
 }
 function filterRole(role) {
   state.role = role;
+  state.sub = 'all';
   if (role !== 'all') {
     state.phase = 'all';
     state.lifecycle = 'all';
@@ -1231,8 +1257,21 @@ function filterLifecycle(lc) {
   state.lifecycle = state.lifecycle === lc ? 'all' : lc;
   if (state.lifecycle !== 'all') {
     state.phase = 'all';
+    state.sub = 'all';
     state.role = 'all';
   }
+  state.listShown = LIST_CHUNK;
+  renderTimeline();
+  renderLower();
+}
+// filterSub narrows the operations list to one sub-row of a phase (a subgroup of its kinds); a
+// second click on the same sub-row clears both.
+function filterSub(phase, sub) {
+  const same = state.phase === phase && state.sub === sub;
+  state.phase = same ? 'all' : phase;
+  state.sub = same ? 'all' : sub;
+  state.role = 'all';
+  state.lifecycle = 'all';
   state.listShown = LIST_CHUNK;
   renderTimeline();
   renderLower();
@@ -1240,7 +1279,7 @@ function filterLifecycle(lc) {
 
 async function guide() {
   const dlg = $('#guide');
-  dlg.innerHTML = `<div class="dialog-head"><h2 id="guideTitle">Reading the timeline</h2><button class="btn icon-only ghost" data-action="close-guide" aria-label="Close" autofocus>${icon('close')}</button></div><div class="dialog-body"><section class="guide-section"><h3>One row per agent</h3><p>The ${MAIN_THREAD} (the ${MOTHER_AGENT}'s) is the first lane; every sub-agent thread is its own lane, indented by depth, with a ▶ at spawn, ticks at each message from the parent, and a bar at each completed turn. A dashed line connects spawn time to the parent. Only lanes alive inside the visible window are drawn. Click a lane to expand it into phase rows (and, at fine zoom, individual operations); the ⓘ at the right of its name opens the agent card: nickname, model, the prompt it was spawned with and its final answer.</p></section><section class="guide-section"><h3>Activity brackets, not tool calls</h3><p>A lane's fill is the real exclusive time split: teal is LLM time (the model generating — reasoning, answers and the code of every patch), colours are tool phases, pink is waiting for the user, hatched is missing telemetry. Development is every tool call around the code short of building, testing and shipping: reading and searching sources, edits, local git, formatting, lookups and probes. The model's time writing a patch is LLM, not Development: the activity split never moves model output into a tool phase. Above the fill, thin <em>activity brackets</em> name runs of tool calls of one phase (Dev, Test, Release …) — a grouping that includes the LLM time before each call, so a bracket can be long while its coloured fill is thin. Under the fill, a thin <em>rail</em> carries the lifecycle stage (below): a bracket says what the calls were, the rail says which stage they served, and the two use different shapes on purpose. Turn ends carry ✓ (completed), ✕ (interrupted) or ⊘ (never closed); a pulsing dot means the turn is still open. Dashed pink verticals are turn starts.</p></section><section class="guide-section"><h3>What is inferred and what is not</h3><p>Phases come from a rule table over the command text (below). Turn boundaries give waiting-for-user time; a turn that never closed becomes "No telemetry". Retry groups only join operations with an identical normalized command. A failure is a test, build, release, infra step, edit or script that exited non-zero; a read, search, listing or probe that exited non-zero is a <em>query miss</em> (the exit was its answer) — kept verbatim with its exit code, not counted. Token totals sum each thread's per-call usage, so a resumed thread whose counter restarted still adds up. Nothing is derived from how long something took, and no "goal reached" score exists — read the conversation panel.</p></section><section class="guide-section"><h3>Parallel time</h3><p>Session totals are the ${MAIN_THREAD}'s exclusive wall clock. Sub-agent time is summed separately and its union shown as "wall".</p></section><section class="guide-section"><h3>Code review</h3><p>A bookmark glyph marks where a review or cleanup skill (for example <code>code-review-cc</code> or <code>simplify</code>) was <em>actually invoked</em> — detected from the harness's skill-instruction injection, not from the words in a prompt. The lifecycle rail under the fill takes the Code review colour for each turn a review skill ran in — and for the sub-agent turns spawned inside it, which work for that review — and the whole-session card totals the ${MAIN_THREAD}'s wall clock; it is a stage, not an activity, so the fill still shows the real LLM/development/wait split above it. Turns that reuse the skill later without re-invoking it are not counted. Detection has two sources: a built-in set of tools and skills, and an optional user overlay (project commands and review-skill names); both are listed below.</p></section><section class="guide-section"><h3>Keyboard</h3><p><kbd>+</kbd>/<kbd>−</kbd> zoom, <kbd>←</kbd>/<kbd>→</kbd> pan, <kbd>Home</kbd> fit, <kbd>Esc</kbd> close. Drag the plot to pan; drag on the overview to select.</p></section><section class="guide-section"><h3>Lifecycle stages (SDLC)</h3><p>Every millisecond of a lane also belongs to exactly one <em>lifecycle stage</em>: the stage of the software lifecycle the time served. It is a second partition next to the activity phases (same total), never a replacement: a code review still runs tests, and those minutes stay Testing in the activity list while they are Code review here. Each stage row shows its model / tools split because the two partitions attribute model output differently. Every assignment comes from a literal, harness-level signal — a collaboration mode, a skill the harness actually injected, an agent's spawn role, an edited path, a command kind — never from words in a message and never from a duration. Requirements and design have no built-in detector: nothing in a Codex rollout or a Claude Code log marks them; add skill names, agent roles or document paths in your overlay. Model output takes the stage of the nearest tool call in its turn — the next one (the call it prepared), else the previous one (the answer that reported on it); a compaction or a telemetry gap in between is skipped over, while a wait for a worker or the user closes the bracket. Only a turn that made no tool call at all keeps its model output as <em>Model output</em>: nothing in it says which stage it served, and only a harness signal (plan mode, a skill, a plan written with <code>update_plan</code> or <code>ExitPlanMode</code>) could. A sub-agent's turn is a tool call of the parent turn it ran inside, so it takes that turn's stage when it has no signal of its own; the inspector names the origin.</p><div style="overflow:auto;max-height:340px"><table class="rules-table" id="lifecycleTable"></table></div></section><section class="guide-section"><h3>Classification rules</h3><p id="rulesNote">loading…</p><div style="overflow:auto;max-height:340px"><table class="rules-table" id="rulesTable"></table></div></section>${insightsGuideHTML()}</div>`;
+  dlg.innerHTML = `<div class="dialog-head"><h2 id="guideTitle">Reading the timeline</h2><button class="btn icon-only ghost" data-action="close-guide" aria-label="Close" autofocus>${icon('close')}</button></div><div class="dialog-body"><section class="guide-section"><h3>One row per agent</h3><p>The ${MAIN_THREAD} (the ${MOTHER_AGENT}'s) is the first lane; every sub-agent thread is its own lane, indented by depth, with a ▶ at spawn, ticks at each message from the parent, and a bar at each completed turn. A dashed line connects spawn time to the parent. Only lanes alive inside the visible window are drawn. Click a lane to expand it into phase rows (and, at fine zoom, individual operations); the ⓘ at the right of its name opens the agent card: nickname, model, the prompt it was spawned with and its final answer.</p></section><section class="guide-section"><h3>Stage band above, raw fill below</h3><p>A lane's fill is the real exclusive time split: teal is LLM time (the model generating — reasoning, answers and the code of every patch), colours are tool phases, pink is waiting for the user, hatched is missing telemetry. Development is every tool call around the code short of building, testing and shipping: reading and searching sources, edits, local git, formatting, lookups and probes. The model's time writing a patch is LLM, not Development: the activity split never moves model output into a tool phase. Above the fill, the <em>stage band</em> names the SDLC stage the same time served (the second partition, below): Implementation, Testing, Code review … in the stage colours, with the model / tools split in its tooltip. The band answers <em>why</em>, the fill answers <em>what</em>; waiting, compaction and telemetry gaps are not stages and leave the band empty. Turn ends carry ✓ (completed), ✕ (interrupted) or ⊘ (never closed); a pulsing dot means the turn is still open. Dashed pink verticals are turn starts.</p></section><section class="guide-section"><h3>What is inferred and what is not</h3><p>Phases come from a rule table over the command text (below). Turn boundaries give waiting-for-user time; a turn that never closed becomes "No telemetry". Retry groups only join operations with an identical normalized command. A failure is a test, build, release, infra step, edit or script that exited non-zero; a read, search, listing or probe that exited non-zero is a <em>query miss</em> (the exit was its answer) — kept verbatim with its exit code, not counted. Token totals sum each thread's per-call usage, so a resumed thread whose counter restarted still adds up. Nothing is derived from how long something took, and no "goal reached" score exists — read the conversation panel.</p></section><section class="guide-section"><h3>Parallel time</h3><p>Session totals are the ${MAIN_THREAD}'s exclusive wall clock. Sub-agent time is summed separately and its union shown as "wall".</p></section><section class="guide-section"><h3>Code review</h3><p>A bookmark glyph marks where a review or cleanup skill (for example <code>code-review-cc</code> or <code>simplify</code>) was <em>actually invoked</em> — detected from the harness's skill-instruction injection, not from the words in a prompt. The stage band above the fill takes the Code review colour for each turn a review skill ran in — and for the sub-agent turns spawned inside it, which work for that review — and the whole-session card totals the ${MAIN_THREAD}'s wall clock; it is a stage, not an activity, so the fill still shows the real LLM/development/wait split above it. Turns that reuse the skill later without re-invoking it are not counted. Detection has two sources: a built-in set of tools and skills, and an optional user overlay (project commands and review-skill names); both are listed below.</p></section><section class="guide-section"><h3>Keyboard</h3><p><kbd>+</kbd>/<kbd>−</kbd> zoom, <kbd>←</kbd>/<kbd>→</kbd> pan, <kbd>Home</kbd> fit, <kbd>Esc</kbd> close. Drag the plot to pan; drag on the overview to select.</p></section><section class="guide-section"><h3>Lifecycle stages (SDLC)</h3><p>Every millisecond of a lane also belongs to exactly one <em>lifecycle stage</em>: the stage of the software lifecycle the time served. It is a second partition next to the activity phases (same total), never a replacement: a code review still runs tests, and those minutes stay Testing in the activity list while they are Code review here. Each stage row shows its model / tools split because the two partitions attribute model output differently. Every assignment comes from a literal, harness-level signal — a collaboration mode, a skill the harness actually injected, an agent's spawn role, an edited path, a command kind — never from words in a message and never from a duration. Requirements and design have no built-in detector: nothing in a Codex rollout or a Claude Code log marks them; add skill names, agent roles or document paths in your overlay. Model output takes the stage of the nearest tool call in its turn — the next one (the call it prepared), else the previous one (the answer that reported on it); a compaction or a telemetry gap in between is skipped over, while a wait for a worker or the user ends that attribution. Only a turn that made no tool call at all keeps its model output as <em>Model output, no tool call</em>: nothing in it says which stage it served, and only a harness signal (plan mode, a skill, a plan written with <code>update_plan</code> or <code>ExitPlanMode</code>) could. The stage list holds the SDLC stages only; waiting, compaction, telemetry gaps, unknown commands and that model output are not stages — they happened inside or between them and sit under <em>Outside stages</em> with the same denominator, so the two lists still add up to the whole. A turn is read as a group before any of its calls is decided: every code, build, test and infrastructure call between the turn's first and last change (an edit, a patch, a written file) is implementation — a test run between two edits is the loop, not QA — while a test after the last change is the verification pass, and a call before the turn's first plan that changed nothing is planning. A skill pins its stage from the moment it was invoked to the end of the turn (Codex injects it at the turn start, so the whole turn; Claude Code's Skill tool call may come mid-turn). A sub-agent's turn is a tool call of the parent turn it ran inside, so it takes that turn's stage when it has no signal of its own; the inspector names the origin.</p><div style="overflow:auto;max-height:340px"><table class="rules-table" id="lifecycleTable"></table></div></section><section class="guide-section"><h3>Classification rules</h3><p id="rulesNote">loading…</p><div style="overflow:auto;max-height:340px"><table class="rules-table" id="rulesTable"></table></div></section><section class="guide-section"><h3>Sub-rows of Development, Waiting for workers and Unknown</h3><p>Three phases lump different work, so the breakdown lists them with sub-rows: what the tool calls read, searched, edited, versioned, fetched or ran. A sub-row is a fixed grouping of the kinds below (a function of the phase and the kind, never of a duration); its time is the exclusive partition of those calls, its count the calls in the window. Select one to list exactly those operations.</p><div style="overflow:auto;max-height:340px"><table class="rules-table" id="subgroupTable"></table></div></section>${insightsGuideHTML()}</div>`;
   dlg.showModal();
   try {
     const d = await api('/api/rules');
@@ -1249,6 +1288,7 @@ async function guide() {
     $('#rulesNote').innerHTML = `${d.rules.length} rules (${d.builtin_rules ?? d.rules.length} built-in${nUser > 0 ? `, ${nUser} from your overlay` : ''}). A command takes the highest-priority phase among its segments (release &gt; test &gt; build &gt; workers &gt; infra &gt; development). Unmatched commands stay Unknown. Add project-specific commands (optionally pinned to a lifecycle stage) and the skill names, agent roles and document paths that pin a stage in a user rules file (<code>--rules</code>, <code>$TODOBEM_RULES</code>, or <code>~/.todobem/rules.json</code>).${reviewNote}`;
     const builtin = d.builtin_rules ?? d.rules.length;
     $('#lifecycleTable').innerHTML = lifecycleGuideRows(d.lifecycle || {});
+    $('#subgroupTable').innerHTML = `<thead><tr><th>Phase</th><th>Sub-row</th><th>Kinds</th></tr></thead><tbody>${(d.subgroups || []).map(r => `<tr><td><span class="row"><i class="color-square" style="background:${PHASES[r.phase]?.color}"></i>${esc(PHASES[r.phase]?.name || r.phase)}</span></td><td>${esc(subgroupName(r.phase, r.subgroup))}</td><td class="note">${esc(r.kinds)}</td></tr>`).join('')}</tbody>`;
     $('#rulesTable').innerHTML = `<thead><tr><th>Match</th><th>Phase</th><th>Kind</th><th>Note</th></tr></thead><tbody>${d.rules.map((r, i) => `<tr><td><code>${esc(r.match)}</code>${i >= builtin ? ' <span class="chip" style="padding:1px 5px">user</span>' : ''}</td><td><span class="row"><i class="color-square" style="background:${PHASES[r.phase]?.color}"></i>${esc(r.phase)}</span></td><td>${esc(r.kind)}</td><td class="note">${esc(r.note || '')}</td></tr>`).join('')}</tbody>`;
   } catch (e) { $('#rulesNote').textContent = 'rules unavailable'; }
 }
@@ -1261,11 +1301,11 @@ function lifecycleGuideRows(lc) {
   const matchers = lc.matchers || {};
   const list = (obj, stage) => (obj && obj[stage] ? obj[stage] : []);
   const sources = {
-    plan: ['plan mode — Codex collaboration mode, Claude Code permission mode (whole turn)', 'a plan written with update_plan or ExitPlanMode: the model output before it', 'sub-agent turns that ran inside a plan-mode turn (inherited)'],
+    plan: ['plan mode — Codex collaboration mode, Claude Code permission mode (whole turn)', 'a plan written with update_plan or ExitPlanMode: the model output before it, and every tool call before the turn\'s first plan that changed nothing', 'sub-agent turns that ran inside a plan-mode turn (inherited)'],
     requirements: ['no built-in detector'],
     design: ['no built-in detector'],
-    implement: ['default for ' + Object.keys(defaults).filter(p => defaults[p] === 'implement').sort().join(', ') + ' commands', 'operations commands before this lane\'s first release'],
-    review: ['skill invoked in the turn (whole turn)', 'Codex review mode (whole turn)', 'sub-agent turns that ran inside such a turn (inherited)'],
+    implement: ['default for ' + Object.keys(defaults).filter(p => defaults[p] === 'implement').sort().join(', ') + ' commands', 'every code, build, test and infra call between the turn\'s first and last change (an edit, patch, written file, in-place sed, formatter, file copy or move): a test between two edits is the loop, not QA', 'operations commands before this lane\'s first release'],
+    review: ['skill invoked in the turn: from the moment it was invoked to the turn\'s end (Codex injects it at the turn start, so the whole turn; Claude Code\'s Skill tool mid-turn); not inside a plan-mode turn, which stays planning', 'Codex review mode (whole turn)', 'sub-agent turns that ran inside such a turn or run (inherited)'],
     test: ['default for test commands'],
     release: ['default for release commands'],
     operate: ['after this lane\'s first release only'],
@@ -1280,7 +1320,7 @@ function lifecycleGuideRows(lc) {
     }
     return `<tr><td><span class="row">${railSwatch(LIFECYCLES[stage].color)}${LIFECYCLES[stage].name}</span></td><td>${parts.join('<br>')}</td></tr>`;
   });
-  return `<thead><tr><th>Stage</th><th>Assigned from</th></tr></thead><tbody>${rows.join('')}<tr><td><span class="row"><i class="color-square" style="background:${LIFECYCLES.llm.color}"></i>${LIFECYCLES.llm.name}</span></td><td>model output of a turn that made no tool call at all (a text-only answer)</td></tr><tr><td>Waiting, idle, compaction, no telemetry, unknown</td><td>pass through under their activity name</td></tr></tbody>`;
+  return `<thead><tr><th>Stage</th><th>Assigned from</th></tr></thead><tbody>${rows.join('')}<tr><td><span class="row"><i class="color-square" style="background:${LIFECYCLES.llm.color}"></i>${LIFECYCLES.llm.name}</span></td><td>not a stage: model output of a turn that made no tool call at all (a text-only answer), listed under "Outside stages"</td></tr><tr><td>Waiting, idle, compaction, no telemetry, unknown</td><td>not stages: they pass through under their activity name</td></tr></tbody>`;
 }
 
 /* ---------- tooltip ---------- */
@@ -1300,19 +1340,21 @@ function tooltip(event) {
   else if (target.dataset.mk) { const [lane, t, kind] = target.dataset.mk.split(':'); const l = m.laneById.get(lane); const mk = l?.markers.find(k => String(k.t) === t && k.kind === kind); if (!mk) return; body = `<strong>${esc(MARKS[kind]?.name || kind)}</strong><span>${stampS(mk.t)}</span><span>${esc((mk.text || '').slice(0, 220))}</span>`; }
   else if (target.dataset.group) { const g = m.groupById.get(target.dataset.group); body = `<strong>${esc(g.id)} · ${g.attempts} attempts · ${g.failed} failed</strong><span>${spanLabel(g.start, g.end)}</span><span>${esc(g.title.slice(0, 160))}</span><span>Same normalized command. Select to focus.</span>`; }
   else if (target.dataset.op) { const o = m.opById.get(target.dataset.op); if (!o) return; body = `<strong>${esc(o.title.slice(0, 160))}</strong><span>${spanLabel(o.start, o.end)} · ${fmt(o.end - o.start, true)}</span><span>${PHASES[o.phase].name} · ${esc(baseKind(o.kind))}${o.phase === 'llm' ? ' · ' + esc(modelOf(o)) : ''} · ${esc(o.status)}${o.group ? ' · ' + esc(o.group) : ''}${o.background ? ' · background process (outlived its turn; not in totals)' : ''}</span><span>Select to inspect the source event.</span>`; }
-  else if (target.dataset.bracket) {
-    const ta = Number(target.dataset.ta), tb = Number(target.dataset.tb), p = target.dataset.phase, l = m.laneById.get(target.dataset.lane);
-    const ops = l ? l.ops.filter(o => o.end > ta && o.start < tb && o.phase === p).length : 0;
-    // the real split under the bracket: tool time of this phase vs model output attributed to it
-    let tools = 0, model = 0;
+  else if (target.dataset.band) {
+    const ta = Number(target.dataset.ta), tb = Number(target.dataset.tb), lc = target.dataset.lc, l = m.laneById.get(target.dataset.lane);
+    const def = LIFECYCLES[lc] || LIFECYCLES.unknown;
+    // the honesty mechanism: the stage's model / tools split, because the stage band attributes
+    // model output to the stage it served while the fill keeps it as LLM
+    let tools = 0, model = 0, calls = 0;
     for (const sg of l ? l.segments : []) {
       if (sg.e <= ta) continue;
       if (sg.s >= tb) break;
+      if (lifecycleOf(sg) !== lc) continue;
       const ov = overlap(sg.s, sg.e, ta, tb);
-      if (sg.p === p) tools += ov;
-      else if (sg.p === 'llm') model += ov;
+      if (sg.p === 'llm') model += ov; else tools += ov;
     }
-    body = `<strong>Stage: ${PHASES[p].name} · ${fmt(tb - ta)}</strong><span>${spanLabel(ta, tb)}</span><span>tools ${fmt(tools, true)} · model output before them ${fmt(model, true)}</span><span>${ops} ${PHASES[p].short.toLowerCase()} operation${ops === 1 ? '' : 's'} plus the LLM time before each. The fill below shows the real split.</span>`;
+    for (const o of l ? l.ops : []) { if (o.phase !== 'llm' && !o.background && o.end > ta && o.start < tb && lifecycleOf(o) === lc) calls++; }
+    body = `<strong>${esc(def.name)} · ${fmt(tb - ta)}</strong><span>${spanLabel(ta, tb)}</span><span>model ${fmt(model, true)} · tools ${fmt(tools, true)} · ${calls} tool call${calls === 1 ? '' : 's'}</span><span>The stage this time served; the fill below shows what ran. Select to frame it.</span>`;
   }
   else if (target.dataset.phase === 'cluster') { const ta = Number(target.dataset.ta), tb = Number(target.dataset.tb), l = m.laneById.get(target.dataset.lane); const items = l.markers.filter(k => k.t >= ta && k.t < tb && MARKS[k.kind] && !k.kind.startsWith('agent_')); body = `<strong>${items.length} markers · ${spanLabel(ta, tb)}</strong>` + items.slice(0, 8).map(k => `<span>${stamp(k.t, false)} ${esc(MARKS[k.kind].name)}: ${esc((k.text || '').slice(0, 70))}</span>`).join('') + (items.length > 8 ? `<span>…</span>` : '') + `<span>Select to zoom in.</span>`; }
   else if (target.dataset.pending) { const ta = Number(target.dataset.ta), tb = Number(target.dataset.tb); body = `<strong>No telemetry yet (in progress) · ${fmt(tb - ta)}</strong><span>${spanLabel(ta, tb)}</span><span>The turn is still open: the agent is generating and nothing has been recorded since the last event.</span><span>It resolves to a phase as soon as the next event lands.</span>`; }
@@ -1355,9 +1397,11 @@ document.addEventListener('click', e => {
   if (a === 'filter') { filterPhase(state.phase === el.dataset.phase ? 'all' : el.dataset.phase); return; }
   if (a === 'filter-role') { filterRole(state.role === el.dataset.role ? 'all' : el.dataset.role); return; }
   if (a === 'filter-lifecycle') { filterLifecycle(el.dataset.lc); return; }
+  if (a === 'filter-sub') { filterSub(el.dataset.subPhase, el.dataset.sub); return; }
+  if (a === 'clear-sub') { filterSub(state.phase, state.sub); return; }
   if (a === 'clear-role') { filterRole('all'); return; }
   if (a === 'clear-lifecycle') { filterLifecycle('all'); return; }
-  if (a === 'clear-filters') { state.phase = 'all'; state.role = 'all'; state.lifecycle = 'all'; state.lane = 'all'; renderTimeline(); renderLower(); return; }
+  if (a === 'clear-filters') { state.phase = 'all'; state.sub = 'all'; state.role = 'all'; state.lifecycle = 'all'; state.lane = 'all'; renderTimeline(); renderLower(); return; }
   if (a === 'inspect') return inspect(el.dataset.id);
   if (a === 'run-toggle') { const id = el.dataset.run; state.openRuns.has(id) ? state.openRuns.delete(id) : state.openRuns.add(id); renderOperations(); return; }
   if (a === 'inspect-interval') {

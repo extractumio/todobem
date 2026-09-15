@@ -482,6 +482,7 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 		"priority":      classify.Priority,
 		"builtin_rules": classify.BuiltinRuleCount(), // rules[:n] are built-in; rules[n:] are user-added
 		"review_skills": classify.ReviewSkillMatchers(),
+		"subgroups":     classify.Subgroups(), // the breakdown's sub-rows: (phase, kind) → subgroup
 		// the lifecycle (SDLC stage) partition: stage order, the phase → stage defaults, the
 		// command kinds pinned to another stage, and the skill / role / path matchers
 		"lifecycle": map[string]any{

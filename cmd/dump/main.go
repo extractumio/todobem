@@ -227,15 +227,34 @@ func main() {
 		}
 	}
 	for _, l := range m.Lanes {
-		fmt.Printf("LANE %-45s depth=%d turns=%d ops=%d segs=%d stages=%d markers=%d live=%v span=%s\n", l.Path, l.Depth, len(l.Turns), len(l.Ops), len(l.Segments), len(l.Stages), len(l.Markers), l.Live, fmtd(l.Ended-l.Started))
+		fmt.Printf("LANE %-45s depth=%d turns=%d ops=%d segs=%d markers=%d live=%v span=%s\n", l.Path, l.Depth, len(l.Turns), len(l.Ops), len(l.Segments), len(l.Markers), l.Live, fmtd(l.Ended-l.Started))
 	}
 	root := m.Lanes[0]
-	fmt.Println("ROOT STAGES (first 40):")
-	for i, st := range root.Stages {
+	// stage runs: consecutive segments of one lifecycle stage, as the timeline's stage band draws them
+	fmt.Println("ROOT STAGE RUNS (first 40):")
+	type run struct {
+		lc          model.Lifecycle
+		start, end  int64
+		model, tool int64
+	}
+	var runs []run
+	for _, sg := range root.Segments {
+		if n := len(runs); n > 0 && runs[n-1].lc == sg.Lifecycle && runs[n-1].end == sg.Start {
+			runs[n-1].end = sg.End
+		} else {
+			runs = append(runs, run{lc: sg.Lifecycle, start: sg.Start, end: sg.End})
+		}
+		if sg.Phase == model.Phase("llm") {
+			runs[len(runs)-1].model += sg.End - sg.Start
+		} else {
+			runs[len(runs)-1].tool += sg.End - sg.Start
+		}
+	}
+	for i, r := range runs {
 		if i >= 40 {
 			break
 		}
-		fmt.Printf("  %s  %-12s %8s  ops=%d\n", time.UnixMilli(st.Start).UTC().Format("01-02 15:04:05"), st.Phase, fmtd(st.End-st.Start), st.Ops)
+		fmt.Printf("  %s  %-12s %8s  model=%s tools=%s\n", time.UnixMilli(r.start).UTC().Format("01-02 15:04:05"), r.lc, fmtd(r.end-r.start), fmtd(r.model), fmtd(r.tool))
 	}
 	fmt.Println("GROUPS:")
 	for _, g := range m.Groups {

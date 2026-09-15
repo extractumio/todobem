@@ -223,8 +223,9 @@ func TestTurnsOpsTokensAndHooks(t *testing.T) {
 		t.Fatalf("bash op: %+v", bash)
 	}
 	edit := opByID(root, "t2")
-	// (path pins come from the user overlay only; none here, so the stage is the phase default)
-	if edit == nil || edit.Phase != classify.Code || edit.Kind != "edit" || edit.Title != "edit x_test.go" || edit.End != 12_200 || edit.Status != "completed" || edit.Lifecycle != classify.LcImplement || edit.LifecycleRule != "phase code" {
+	// (path pins come from the user overlay only; none here, so the stage comes from the turn's
+	// composition: the edit is the turn's change window)
+	if edit == nil || edit.Phase != classify.Code || edit.Kind != "edit" || edit.Title != "edit x_test.go" || edit.End != 12_200 || edit.Status != "completed" || edit.Lifecycle != classify.LcImplement || edit.LifecycleRule != "inside the turn's change window (first edit … last edit)" || edit.Subgroup != "edit" {
 		t.Fatalf("edit op: %+v", edit)
 	}
 	read := opByID(root, "t3")

@@ -32,9 +32,6 @@ func Derive(s *Session, now int64) {
 		if l.Segments == nil {
 			l.Segments = []Segment{}
 		}
-		if l.Stages == nil {
-			l.Stages = []Stage{}
-		}
 	}
 	root := s.Lanes[0]
 	s.Live = false
@@ -53,14 +50,23 @@ func Derive(s *Session, now int64) {
 		}
 	}
 	for _, l := range s.Lanes {
+		// a review / cleanup skill invoked anywhere in the turn: Turn.Skill is the first skill the
+		// adapter saw, a skill marker records every invocation (Claude Code can invoke several)
+		reviewIn := map[string]bool{}
+		for _, m := range l.Markers {
+			if m.Kind == "skill" && classify.ReviewSkill(m.Ref) {
+				reviewIn[m.Turn] = true
+			}
+		}
 		for _, t := range l.Turns {
-			t.Review = classify.ReviewSkill(t.Skill)
+			t.Review = classify.ReviewSkill(t.Skill) || reviewIn[t.ID]
 		}
 		for _, o := range l.Ops {
 			// a query kind's failure is an answer, not a failed step (before groups: the retry
 			// roles read Operation.Failure). Codex records the exit code; Claude Code records only
 			// that the tool errored (status "failed"): both are the harness's word.
 			o.QueryMiss = classify.QueryKind(o.Phase, o.Kind) && (o.Status == "failed" || o.Exit != nil && *o.Exit != 0)
+			o.Subgroup = classify.Subgroup(o.Phase, o.Kind)
 		}
 		extendPendingOperations(l, now)
 		markBackground(l, now)
@@ -71,7 +77,6 @@ func Derive(s *Session, now int64) {
 		laneByID[l.ID] = l
 		buildSegments(l, l.ID == root.ID, now)
 		assignLifecycle(l, laneByID[l.Parent])
-		buildStages(l)
 		l.Active = activeIntervals(l)
 	}
 	buildTotals(s)
@@ -320,62 +325,6 @@ func buildSegments(l *Lane, isRoot bool, now int64) {
 }
 
 // ---- stages: think attributed to the next tool op inside the same turn, then coalesced
-
-func buildStages(l *Lane) {
-	l.Stages = l.Stages[:0]
-	segs := l.Segments
-	turnAt := func(t int64) string {
-		for _, tn := range l.Turns {
-			if t >= tn.Start && t < tn.End {
-				return tn.ID
-			}
-		}
-		return ""
-	}
-	n := len(segs)
-	phases := make([]Phase, n)
-	for i := range segs {
-		phases[i] = segs[i].Phase
-	}
-	for i := n - 1; i >= 0; i-- {
-		if segs[i].Phase != classify.LLM {
-			continue
-		}
-		turn := turnAt(segs[i].Start)
-		for j := i + 1; j < n; j++ {
-			p := segs[j].Phase
-			if p == classify.WaitUser || p == classify.Idle || p == classify.NoTelemetry {
-				break
-			}
-			if turnAt(segs[j].Start) != turn {
-				break
-			}
-			if p != classify.LLM {
-				phases[i] = phases[j]
-				break
-			}
-		}
-	}
-	for i := range segs {
-		s := segs[i]
-		ph := phases[i]
-		if k := len(l.Stages); k > 0 {
-			last := &l.Stages[k-1]
-			if last.Phase == ph && last.End == s.Start {
-				last.End = s.End
-				if s.Op != "" {
-					last.Ops++
-				}
-				continue
-			}
-		}
-		st := Stage{Start: s.Start, End: s.End, Phase: ph, Turn: turnAt(s.Start)}
-		if s.Op != "" {
-			st.Ops = 1
-		}
-		l.Stages = append(l.Stages, st)
-	}
-}
 
 // activeIntervals: for sub-agents, the turns are the active periods.
 func activeIntervals(l *Lane) []Interval {

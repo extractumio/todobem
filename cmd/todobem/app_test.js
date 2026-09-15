@@ -136,7 +136,7 @@ function session(id = 'session', lane = 'lane', turn = 'turn', op = 'op-A') {
         { id: 'op-B', lane, turn, title: 'Operation B', phase: 'code', kind: 'read', status: 'completed', start: 5000, end: 6000 },
       ],
       markers: [], segments: [{ s: 1000, e: 121000, p: 'code', op }],
-      stages: [{ s: 1000, e: 121000, p: 'code' }], by_phase: { code: 120000 },
+      by_phase: { code: 120000 },
     }],
   };
 }
@@ -557,7 +557,6 @@ function waitingSession() {
   lane.ops[1].start = 80000;
   lane.ops[1].end = 81000;
   lane.segments = [{ s: 1000, e: 50000, p: 'code', op: 'op-A' }, { s: 50000, e: 70000, p: 'wait_user' }, { s: 70000, e: 301000, p: 'code', op: 'op-B' }];
-  lane.stages = [{ s: 1000, e: 50000, p: 'code' }, { s: 70000, e: 301000, p: 'code' }];
   lane.by_phase = { code: 280000, wait_user: 20000 };
   lane.markers.push({ t: 69000, kind: 'user_message', lane: 'lane', text: 'Now part two' });
   return model;
@@ -675,7 +674,7 @@ function lifecycleSession() {
     { id: 'turn2', start: 70000, end: 301000, status: 'completed', skill: 'code-review-cc', review: true, lc: 'review' },
   ];
   lane.ops = [
-    { id: 'op-A', lane: 'lane', turn: 'turn', title: 'Operation A', phase: 'code', kind: 'read', status: 'completed', start: 2000, end: 3000, lc: 'implement', lc_rule: 'phase code' },
+    { id: 'op-A', lane: 'lane', turn: 'turn', title: 'Operation A', phase: 'code', kind: 'read', sub: 'read', status: 'completed', start: 2000, end: 3000, lc: 'implement', lc_rule: 'phase code' },
     { id: 'op-T', lane: 'lane', turn: 'turn', title: 'go test', phase: 'test', kind: 'go test', status: 'completed', start: 10000, end: 20000, lc: 'test', lc_rule: 'phase test' },
     { id: 'op-B', lane: 'lane', turn: 'turn2', title: 'go test', phase: 'test', kind: 'go test', status: 'completed', start: 80000, end: 90000, lc: 'review', lc_rule: 'skill code-review-cc' },
     { id: 'op-P', lane: 'lane', turn: 'turn2', title: 'journalctl -u app', phase: 'infra', kind: 'journalctl', status: 'completed', start: 100000, end: 101000, lc: 'review', lc_rule: 'skill code-review-cc' },
@@ -693,7 +692,6 @@ function lifecycleSession() {
     { s: 100000, e: 101000, p: 'infra', lc: 'review', op: 'op-P' },
     { s: 101000, e: 301000, p: 'llm', lc: 'review' },
   ];
-  lane.stages = [{ s: 1000, e: 3000, p: 'code' }, { s: 3000, e: 20000, p: 'test' }, { s: 70000, e: 90000, p: 'test' }, { s: 90000, e: 101000, p: 'infra' }];
   lane.by_phase = { llm: 248000, code: 1000, test: 20000, infra: 1000, wait_user: 20000 };
   lane.by_lifecycle = { implement: 2000, test: 17000, llm: 30000, wait_user: 20000, review: 231000 };
   model.totals = { ops: 4, user_messages: 0, tokens: {}, reviews: 1, elapsed_ms: 300000, by_phase: lane.by_phase, by_lifecycle: lane.by_lifecycle };
@@ -708,10 +706,9 @@ test('the code phase is labelled Development and its activity number is tool tim
   assert.match(row, /<span class="label">Development<\/span>/);
   // op-A is 1 s of tool time; the 1 s of model output before it is LLM, not Development
   assert.match(row, /<span class="time num">1s/);
-  assert.match(row, /title="Development: 1s · tool calls only · bracket 2s: the calls plus the LLM time before each/);
+  assert.match(row, /title="Development: 1s · tool calls only · 1 operation in the list/);
   assert.match(row, /<small class="row-sub">tool calls only<\/small>/, 'the row says on screen what the lifecycle rows above it do not: no model time');
-  // the bracket figure is the grouping view: the call plus the LLM time before it
-  assert.match(row, /bracket 2s/);
+  assert.doesNotMatch(row, /bracket/, 'no activity-bracket figure: the stage band carries the model time');
   assert.doesNotMatch(h.node('main').innerHTML, /Coding/);
   assert.match(h.node('main').innerHTML, /<option value="code">Development<\/option>/, 'the phase filter uses the same label');
 });
@@ -727,14 +724,48 @@ test('the breakdown leads with lifecycle stages: same total as the activity list
   assert.match(row('review'), /<span class="time num">3m</);
   assert.match(row('review'), /model 3m · tools 11s/, 'a review stage includes its model time and says so');
   assert.match(row('implement'), /model 1s · tools 1s/);
-  assert.match(row('llm'), /Model output — turn without tool calls/);
+  assert.match(row('llm'), /Model output, no tool call/);
   assert.match(row('llm'), /<span class="time num">30s/);
+  // not stages: the llm and wait_user rows sit under "Outside stages", after every stage row
+  const outsideAt = body.indexOf('>Outside stages<');
+  assert.ok(outsideAt > lifecycleAt && outsideAt < activityAt, 'an Outside stages footer sits between the stages and the activity list');
+  for (const lc of ['review', 'implement', 'test']) assert.ok(body.indexOf(`data-lc="${lc}"`) < outsideAt, `${lc} is a stage row`);
+  for (const lc of ['llm', 'wait_user']) assert.ok(body.indexOf(`data-lc="${lc}"`) > outsideAt, `${lc} is not a stage`);
   assert.equal(row('operate'), '', 'a stage with no time and no records is hidden');
   const shares = [...body.matchAll(/data-lc="([a-z_]+)"[^]*?<span class="share num">([^<]*)<\/span>/g)].map(m => parseFloat(m[2]));
   assert.ok(Math.abs(shares.reduce((n, x) => n + x, 0) - 100) < 0.2, `lifecycle shares sum to 100: ${shares}`);
   const activity = [...body.matchAll(/data-phase="([a-z_]+)"[^]*?<span class="share num">([^<]*)<\/span>/g)].map(m => parseFloat(m[2]));
   assert.ok(Math.abs(activity.reduce((n, x) => n + x, 0) - 100) < 0.2, `activity shares still sum to 100: ${activity}`);
   assert.match(row('review'), /<span class="count num">2<\/span>/, 'the two operations inside the review turn');
+});
+
+test('Development lists sub-rows by what its calls did, and a sub-row filters the operations list', async () => {
+  const h = await harness().ready();
+  await h.open('session', lifecycleSession());
+  const body = h.node('breakdownBody').innerHTML;
+  const dev = body.indexOf('data-phase="code"'), sub = body.indexOf('data-action="filter-sub" data-sub-phase="code" data-sub="read"');
+  assert.ok(dev >= 0 && sub > dev, 'the Reading files sub-row follows the Development row');
+  const row = (body.match(/<button class="breakdown-item sub"[^]*?data-sub="read"[^]*?<\/button>/) || [''])[0];
+  assert.match(row, /<span class="label">Reading files<\/span>/);
+  assert.match(row, /<span class="count num">1<\/span>/);
+  assert.match(row, /<span class="time num">1s/);
+  assert.doesNotMatch(body, /data-sub="edit"/, 'a sub-row with neither time nor calls is hidden');
+  assert.doesNotMatch(body, /data-sub-phase="test"/, 'a phase without subgroups has no sub-rows');
+  h.action('filter-sub', { subPhase: 'code', sub: 'read' });
+  assert.equal(h.run('state.phase'), 'code');
+  assert.equal(h.run('state.sub'), 'read');
+  assert.match(h.node('operationCount').textContent, /^1 operation /);
+  assert.match(h.node('operationList').innerHTML, /Operation A/);
+  assert.match(h.node('roleFilter').innerHTML, /data-action="clear-sub"[^]*?Reading files/);
+  assert.match(h.node('breakdownBody').innerHTML, /<button class="breakdown-item sub active"[^]*?data-sub="read"/);
+  assert.match(h.node('breakdownBody').innerHTML, /data-phase="code"[^]*?<span class="count num">1<\/span>/, 'the Development count ignores the sub-row filter');
+  h.action('filter', { phase: 'test' });
+  assert.equal(h.run('state.sub'), 'all', 'a phase filter clears the sub-row');
+  h.action('filter-sub', { subPhase: 'code', sub: 'read' });
+  h.action('filter-sub', { subPhase: 'code', sub: 'read' });
+  assert.equal(h.run('state.phase'), 'all', 'a second click clears both');
+  h.action('inspect', { id: 'op-A' });
+  assert.match(h.node('inspector').innerHTML, /Development › Reading files · read/);
 });
 
 test('a lifecycle row filters the operations list by stage and is exclusive with the activity filter', async () => {
@@ -758,13 +789,14 @@ test('a lifecycle row filters the operations list by stage and is exclusive with
   assert.equal(h.run('state.lifecycle'), 'all');
 });
 
-test('the timeline draws a lifecycle strip under the fill for work stages only, and the inspector names the stage and its rule', async () => {
+test('the timeline draws a stage band above the fill for work stages only, and the inspector names the stage and its rule', async () => {
   const h = await harness().ready();
   await h.open('session', lifecycleSession());
   const svg = timelineHTML(h);
-  const strips = [...svg.matchAll(/class="lc-strip"[^>]*data-lc="([a-z_]+)"/g)].map(m => m[1]);
-  assert.ok(strips.includes('review') && strips.includes('implement'), `strips: ${strips}`);
-  assert.ok(!strips.includes('llm') && !strips.includes('wait_user'), 'pass-through stages draw no strip');
+  const bands = [...svg.matchAll(/data-band="1"[^>]*data-lc="([a-z_]+)"/g)].map(m => m[1]);
+  assert.ok(bands.includes('review') && bands.includes('implement'), `bands: ${bands}`);
+  assert.ok(!bands.includes('llm') && !bands.includes('wait_user'), 'time outside the stages leaves the band empty');
+  assert.doesNotMatch(svg, /data-bracket=|lc-strip/, 'no activity brackets and no rail: one band, one fill');
   assert.match(svg, /<title>Code review · /);
   // the tiles are part of the page markup; the metrics container is not a tracked node
   assert.match(h.node('main').innerHTML, /Code review<\/span><strong class="metric-value num">3m</);
@@ -828,7 +860,7 @@ test('the legend separates activity fills from lifecycle rails, and stage hues n
   const main = h.node('main').innerHTML;
   const legend = main.slice(main.indexOf('id="legend"'), main.indexOf('<div class="timeline-toolbar"'));
   assert.match(legend, /legend-caption">Activity · fill<\/span><span class="row"><i class="color-square"/);
-  assert.match(legend, /id="legendLifecycle"><span class="row legend-caption">Lifecycle stage · band below, rail on lanes<\/span>/);
+  assert.match(legend, /id="legendLifecycle"><span class="row legend-caption">Lifecycle stage · band above each lane, strip under the overview<\/span>/);
   const rails = [...legend.matchAll(/<i class="color-rail" style="background:(#[0-9a-f]{6})"><\/i>([^<]+)</g)].map(m => [m[2], m[1]]);
   assert.deepEqual(rails.map(r => r[0]), ['Planning', 'Requirements', 'Design', 'Implementation', 'Code review', 'Testing / QA', 'Deployment / release', 'Maintenance / operations']);
   assert.ok(!legend.includes('color-rail" style="background:#a889fc'), 'no stage is Build purple');
@@ -892,21 +924,21 @@ test('the stylesheet keeps [hidden] above every display rule (the Lock button hi
   assert.match(css, /\[hidden\]\{display:none!important\}/);
 });
 
-test('a stage bracket tooltip states the real split: tool time of the phase vs model output before it', async () => {
+test('a stage band tooltip states the real split: model output attributed to the stage vs its tool time', async () => {
   const h = await harness().ready();
   const model = session();
   const lane = model.lanes[0];
-  // 47 s of model output ending in a 2 s infra command: the bracket is Infra 49 s, the fill is llm
-  lane.ops = [{ id: 'dk', lane: 'lane', turn: 'turn', title: 'docker run', phase: 'infra', kind: 'docker', status: 'completed', start: 48000, end: 50000 }];
-  lane.segments = [{ s: 1000, e: 48000, p: 'llm' }, { s: 48000, e: 50000, p: 'infra', op: 'dk' }, { s: 50000, e: 121000, p: 'llm' }];
-  lane.stages = [{ s: 1000, e: 50000, p: 'infra', n: 1 }];
+  // 47 s of model output ending in a 2 s infra command, all implementation: the band says
+  // Implementation 49 s, the fill under it is llm, and the tooltip says which is which
+  lane.ops = [{ id: 'dk', lane: 'lane', turn: 'turn', title: 'docker run', phase: 'infra', kind: 'docker', status: 'completed', start: 48000, end: 50000, lc: 'implement' }];
+  lane.segments = [{ s: 1000, e: 48000, p: 'llm', lc: 'implement' }, { s: 48000, e: 50000, p: 'infra', lc: 'implement', op: 'dk' }, { s: 50000, e: 121000, p: 'llm', lc: 'llm' }];
   lane.by_phase = { llm: 118000, infra: 2000 };
   await h.open('session', model);
-  h.run("const bracket = { dataset: { bracket: '1', stage: '1', ta: '1000', tb: '50000', phase: 'infra', lane: 'lane' }, classList: { contains: () => false } }; bracket.closest = () => bracket; tooltip({ target: bracket, clientX: 10, clientY: 10 })");
+  h.run("const band = { dataset: { band: '1', stage: '1', ta: '1000', tb: '50000', lc: 'implement', lane: 'lane' }, classList: { contains: () => false } }; band.closest = () => band; tooltip({ target: band, clientX: 10, clientY: 10 })");
   const tip = h.node('tooltip').innerHTML;
-  assert.match(tip, /Stage: Infrastructure · 49s/);
-  assert.match(tip, /tools 2s · model output before them 47s/);
-  assert.match(tip, /1 infra operation plus the LLM time before each/);
+  assert.match(tip, /Implementation · 49s/);
+  assert.match(tip, /model 47s · tools 2s · 1 tool call</);
+  assert.match(tip, /The stage this time served; the fill below shows what ran/);
 });
 
 test('the session list marks a session whose agent is waiting for an answer, with how long it has waited', async () => {

@@ -120,3 +120,90 @@ re-derives). Validation (`cmd/dump`, both partitions balance on every lane): the
 → review 98.4 % of the main thread, 99.3 % across lanes, every sub-agent turn `inherited from
 /root (skill code-review-cc)`; three further Codex and three Claude Code sessions → no
 `partition mismatch`, `llm` at most 0.2 % of elapsed (text-only turns).
+
+## Amendment 2026-09-15 (2) — stages by composition, operations by sub-row
+
+Trigger: the session breakdown confused its operator. The "Lifecycle stage" list mixed SDLC stages
+with waiting, compaction, unknown, telemetry gaps and "model output — turn without tool calls";
+the stage of a call was decided by that call alone (one `go test` between two edits made a
+"Testing / QA" bracket); "Model output" showed 875 operations and 0 s; "Development" hid what 895
+tool calls did; and in Claude Code a skill invoked mid-turn painted the whole turn. The user asked
+for stages decided from groups of operations after reading the whole turn, non-stages moved out of
+the stage list, and operations regrouped by what they are.
+
+A first concept (analysis stage before the first edit, absorption of waits and gaps into the run,
+Σ stages = in-turn time, a 19-row cluster vocabulary, `OutBytes` as "bytes into context", hard vs
+soft release signals) went to the `pragmatic` reviewer with a simulation over four real sessions.
+Verdict: rework. Findings taken, all of them:
+
+1. **Decision C rejected**: `sum(by_lifecycle) == in_turn_ms` was false on the simulation itself
+   (an orphaned turn's gap lies outside every turn; `AskUserQuestion` holds `wait_user` inside a
+   turn). Rule 7 stays; the UI splits the list into "Lifecycle stage" and "Outside stages".
+2. **Absorption rejected**: of the +1h10m the concept moved into Implementation on the Codex
+   session, 42 m was `sleep` / `gh pr checks` polling and compaction relabelled; a telemetry gap
+   with a stage is a rule-3 violation. Non-stages keep their key; they sit under "Outside stages".
+3. **Op pins kept** above composition (`gh pr review`, edited paths, the operate guard).
+4. **"Analysis before the first change" rejected**: 50 / 36 / 26 / 1.2 % of in-turn time on the
+   four sessions — a measure of where turn boundaries fell, not of comprehension.
+5. **The tool-less turn is not a stage**: it stays `llm`, named "Model output, no tool call",
+   under "Outside stages" (the previous review's watch item).
+6. **The 875 / 0 s row was a model defect**: `llm`-phase ops took the pass-through stage `llm`
+   while their segments took the nearest tool call's stage. Fixed: a model-output op carries the
+   stage of the segment that covers it (`TestLifecycleModelOutputOpsCarryTheirSegmentStage`).
+7. **One release definition**: script names are the same class of literal signal as test- and
+   build-scripts (rule 4); this repository's `scripts/deploy.sh` is an overlay row for its user.
+8. **`OutBytes` dropped**: Claude Code writes a result twice per line, a Codex `exec` closes N
+   commands with one output, escaping and truncation pull in opposite directions, screenshots are
+   base64. `context_peak` and the first call's uncached input already measure context growth.
+9. **Sub-rows, not a new vocabulary**: `classify.Subgroup(phase, kind)` splits Development,
+   Waiting for workers and Unknown under the validated phases; carried on every op as `sub`, no
+   `Phase` change, no totals field.
+10. **Plan run ends at the first anchor**, not the last.
+11. **Skill runs, source-uniform**: a `skill` marker opens a run from its own timestamp to the
+    turn's end or the next stage-bearing marker; nothing ran before it → the whole turn (Codex,
+    unchanged); Claude Code's mid-turn `Skill` call leaves the calls before it to composition.
+12. **Documents**: the "single order-dependent rule" sentence rewritten in `SCHEMA.md` and
+    `DESIGN.md`; the SDLC ring and metric tiles are untouched because rule 7 is.
+
+Landed (`internal/model/lifecycle.go`, `internal/classify/{lifecycle,subgroup}.go`,
+`cmd/todobem/web/app.js`): the change window — every code, build, test and infra call between a
+turn's first and last change op (`classify.ChangeKinds`) is implementation, tests after the last
+edit stay the verification pass, release ops keep release wherever they sit; the plan run; skill
+runs (`Turn.lc_runs`); model-output ops on their segment's stage; sub-rows with their own filter;
+the "Outside stages" footer. `RulesFingerprint` schema 3 → 4.
+
+Validation (`cmd/dump`, root lane, share of in-turn time, before → after; the three Claude Code
+sessions match the pre-implementation simulation to the second; no `partition mismatch`, no new
+unknown heads):
+
+| session | implement | test | release |
+|---|---|---|---|
+| Claude Code, 7 turns, 57 m in turns | 77.6 → 77.7 % | 19.6 → 19.5 % | 2.0 → 2.0 % |
+| Claude Code, 8 turns, 1 h 11 m | 64.1 → 77.0 % | 31.4 → 18.4 % | 4.5 → 4.5 % |
+| Claude Code, 4 turns, 1 h 03 m (79 test runs inside 13 edits) | 65.9 → 98.8 % | 33.4 → 0.5 % | 0.3 → 0.3 % |
+| Codex, 6 turns, one of 3 h with 975 ops (simulation; the session was live) | 34.8 → 37.1 % | 2.5 → 0.2 % | 24.7 → 24.7 % |
+
+A skill invoked inside a plan-mode turn reviews the plan: plan mode keeps the whole turn (the
+user's call, 2026-09-15).
+
+Decisions recorded from the user: A one release definition; B no absorption; C rule 7 unchanged;
+D no analysis stage now; E the tool-less turn is a remainder, not a stage; F sub-rows under the
+phases; G `gh pr checks` / `gh run watch` with a non-zero exit is a CI status, not a failed step —
+a separate change.
+
+## Amendment 2026-09-15 (3) — the stage band replaces the activity brackets
+
+Trigger: on the session page the band above a lane read "Test 3m" over a fill that was entirely
+model output. That was the activity bracket — a run of tool calls of one phase plus the model
+output before each call — and after the stage rework it contradicted the stage rail under the
+same fill: the bracket attributed the minutes to the next call by phase (test), the rail to the
+turn's composition (implementation). The user's read: a stage answers *why*, an operation answers
+*what*; the bracket answered a third question nobody asked.
+
+Change (option A of three offered; B was an honest bracket label with the split, C brackets over
+the calls only): the band above each lane now draws the lifecycle partition — runs of consecutive
+same-stage segments in the stage colours with a label, the model / tools split and the tool-call
+count in the tooltip; time outside the stages leaves the band empty. The thin rail under the fill,
+the bracket figures and the "by bracket" sort in the breakdown, and the stored `Lane.Stages` /
+`buildStages` (a dead coalesced view once nothing drew it) are gone; `cmd/dump` prints stage runs
+with their model / tools split instead. Rule 7 in `CLAUDE.md` no longer speaks of brackets.

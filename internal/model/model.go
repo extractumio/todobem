@@ -49,7 +49,9 @@ type Operation struct {
 	// An adapter may pre-pin it from the classifier or an edited path; Derive fills the rest.
 	Lifecycle     Lifecycle `json:"lc"`
 	LifecycleRule string    `json:"lc_rule,omitempty"`
-	Src           *Src      `json:"src,omitempty"`
+	// Subgroup is the finer breakdown row of the phase (classify.Subgroup): "" when the phase has none.
+	Subgroup string `json:"sub,omitempty"`
+	Src      *Src   `json:"src,omitempty"`
 	// Compaction ops only: Context is the input of the last counted model call before the
 	// compaction (the context it started from); Tokens the first counted call after it (what
 	// the model re-read). Zero / nil = no usage record around it.
@@ -75,14 +77,6 @@ type Segment struct {
 	Phase     Phase     `json:"p"`
 	Lifecycle Lifecycle `json:"lc"`
 	Op        string    `json:"op,omitempty"`
-}
-
-type Stage struct {
-	Start int64  `json:"s"`
-	End   int64  `json:"e"`
-	Phase Phase  `json:"p"`
-	Ops   int    `json:"n"`
-	Turn  string `json:"turn,omitempty"`
 }
 
 type Marker struct {
@@ -114,6 +108,11 @@ type Turn struct {
 	// names the signal, the origin lane included when inherited.
 	Lifecycle     Lifecycle `json:"lc,omitempty"`
 	LifecycleRule string    `json:"lc_rule,omitempty"`
+	// Runs are the skill runs layered on the turn: a skill invoked mid-turn (Claude Code's Skill
+	// tool call) pins its stage from that moment to the turn's end or the next run. A skill
+	// invoked before anything ran (Codex injects it at the turn start) is promoted to Lifecycle
+	// instead, so Runs is empty for every Codex turn. Ops and segments carry the stage in force.
+	Runs []StageRun `json:"lc_runs,omitempty"`
 	// Token accounting of the turn's counted model calls (codex/tokens.go): Tokens is their
 	// sum, Responses their number, First the usage of the first one (its uncached input is what
 	// the model re-read after a gap; a sub-agent's first turn: the cost of being spawned),
@@ -125,6 +124,13 @@ type Turn struct {
 	// RootTurn is the root turn a sub-agent turn ran inside, from the harness's own
 	// token_usage_record.root_turn_id (CLI >= 0.153); "" = not recorded. Never inferred.
 	RootTurn string `json:"root_turn,omitempty"`
+}
+
+// StageRun is a span of a turn pinned to a stage by a skill invocation (Turn.Runs).
+type StageRun struct {
+	From      int64     `json:"from"`
+	Lifecycle Lifecycle `json:"lc"`
+	Rule      string    `json:"lc_rule"`
 }
 
 type Interval struct {
@@ -171,7 +177,6 @@ type Lane struct {
 	Turns      []*Turn         `json:"turns"`
 	Ops        []*Operation    `json:"ops"`
 	Segments   []Segment       `json:"segments"`
-	Stages     []Stage         `json:"stages"`
 	Markers    []Marker        `json:"markers"`
 	Active     []Interval      `json:"active,omitempty"` // the lane's own turns (Derive); a sub-agent is active inside them
 	Tokens     *TokenUsage     `json:"tokens,omitempty"` // usage consumed by this thread: per-call usage summed on every change of the cumulative counter (survives counter restarts and a forked child's inherited counter)

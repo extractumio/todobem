@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 // Lifecycle is the SDLC stage an operation or segment served: the second, orthogonal partition
@@ -13,13 +14,17 @@ import (
 // Lifecycle says WHICH STAGE of the software lifecycle it belonged to (implementation, code
 // review, release …). Both partition the same segments, so each sums to the lane's elapsed time.
 //
-// Every assignment is a literal, harness-level signal — never prose in a message, never a
-// duration:
-//   - turn level: the harness's collaboration mode (plan), a skill it actually injected
-//     (SkillLifecycle), Codex review mode; the whole turn takes that stage;
+// Every assignment is a literal, harness-level signal or the order of such signals inside one
+// turn — never prose in a message, never a duration:
 //   - lane level: the role a sub-agent was spawned with (RoleLifecycle, user overlay);
+//   - turn level: the harness's collaboration mode (plan), Codex review mode; the whole turn
+//     takes that stage. A skill the harness actually injected (SkillLifecycle) pins a run: from
+//     the moment it was invoked to the turn's end (Codex injects at the turn start, so the run is
+//     the whole turn; Claude Code's Skill tool is a mid-turn call);
 //   - op level: the winning command rule's Lifecycle pin, an edited path (PathLifecycle, user
-//     overlay), else the phase's default (PhaseLifecycle).
+//     overlay); else the turn's composition (model.assignLifecycle: reads before the plan was
+//     submitted are planning, every tool call between the turn's first and last change op
+//     (ChangeKinds) is implementation); else the phase's default (PhaseLifecycle).
 //
 // Requirements and design have no built-in detector: nothing in a Codex rollout marks them.
 // They exist so a user overlay can pin them from skill names, agent roles or document paths.
@@ -66,11 +71,36 @@ func PhaseLifecycle(p Phase) Lifecycle {
 	return Lifecycle(p)
 }
 
+// ChangeKinds are the code-phase kinds that change files in the working tree — edits, patches,
+// written files, in-place sed, formatters, file-system moves and copies: the literal evidence
+// that a turn implemented something. Between a turn's first and last change op every other tool
+// call is the implementation loop (model.assignLifecycle: the change window). Branch operations
+// (checkout, merge, stash …) navigate the tree rather than change its content and stay out. The
+// same set is the "Editing files" subgroup of the breakdown (Subgroup).
+var ChangeKinds = map[string]bool{
+	"edit": true, "sed -i": true, "write-file": true, "script-write": true, "format": true,
+	"mkdir": true, "cp": true, "mv": true, "touch": true, "ln": true,
+	"git rm": true, "git mv": true, "git apply": true, "git cherry-pick": true,
+}
+
+// BaseKind strips the "|role" suffix a grouped op carries (model.withRole: "go test|rerun").
+func BaseKind(kind string) string {
+	if i := strings.IndexByte(kind, '|'); i >= 0 {
+		return kind[:i]
+	}
+	return kind
+}
+
+// IsChangeOp reports whether an op of this phase and kind changed a file (ChangeKinds).
+func IsChangeOp(phase Phase, kind string) bool {
+	return phase == Code && ChangeKinds[BaseKind(kind)]
+}
+
 // LifecyclePins are the command kinds whose stage is not the phase default, keyed by Rule.Kind
 // (the kind must be unique to the commands it pins). Review verbs on a PR/MR are review work
 // even though the phase stays release. Log reading, service control and system diagnostics are
 // operations candidates: model.Derive demotes them to implementation before the lane's first
-// release op (the single order-dependent rule — see docs/SCHEMA.md). An overlay rule with a
+// release op (an order rule, like the change window — see docs/SCHEMA.md). An overlay rule with a
 // "lifecycle" value adds its kind here.
 var LifecyclePins = map[string]Lifecycle{
 	"pr review": LcReview, "pr comment": LcReview, "mr approve": LcReview, "mr note": LcReview,
@@ -162,10 +192,19 @@ func ReviewSkillMatchers() []string { return matcherSources(lifecycleSkills)[LcR
 // overlay, lifecycle pins included) and every lifecycle matcher — so a session cache keyed by it
 // is invalidated whenever classification could change. The leading schema tag also invalidates it
 // across model changes (2: the lifecycle partition; 3: sub-agent turns inherit the parent turn's
-// stage and model output takes the nearest tool call's stage).
+// stage and model output takes the nearest tool call's stage; 4: skill runs, the change window,
+// model-output ops carry their segment's stage, subgroups).
 func RulesFingerprint() string {
 	h := sha1.New()
-	fmt.Fprint(h, "schema=3;")
+	fmt.Fprint(h, "schema=4;")
+	change := make([]string, 0, len(ChangeKinds))
+	for k := range ChangeKinds {
+		change = append(change, k)
+	}
+	sort.Strings(change)
+	for _, k := range change {
+		fmt.Fprintf(h, "change:%s\n", k)
+	}
 	for _, r := range Rules {
 		fmt.Fprintf(h, "%s|%s|%s\n", r.Match, r.Phase, r.Kind)
 	}

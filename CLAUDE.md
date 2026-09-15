@@ -63,13 +63,16 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
 - `internal/classify/` — `Rules` in `classify.go` is the single source of truth for command →
   phase/kind (served at `/api/rules`), plus the heredoc and remote/queued regexes right below
   it; `shell.go` splits commands and masks heredocs; `Identity` normalizes commands for retry
-  groups; `lifecycle.go` holds the SDLC-stage type, the phase → stage defaults, the kind pins
-  and the skill / role / path matchers; `userconfig.go` the overlay. Definitions:
+  groups; `lifecycle.go` holds the SDLC-stage type, the phase → stage defaults, the change
+  kinds, the kind pins and the skill / role / path matchers; `subgroup.go` the breakdown
+  sub-rows (phase, kind → subgroup); `userconfig.go` the overlay. Definitions:
   `docs/SCHEMA.md`, `docs/DESIGN.md` §2.
 - `internal/model/` — `model.go` is the normalized schema (`docs/SCHEMA.md`); `derive.go`
   builds the exclusive partition, stages, retry groups, background flags and totals;
-  `lifecycle.go` assigns the second partition (turn signal → op pin → phase default, the
-  operations-before-release guard, model output to the next tool call).
+  `lifecycle.go` assigns the second partition (lane role → turn signal and skill runs → inherited
+  → op pin → the turn's composition: the plan run and the change window → phase default; the
+  operations-before-release guard; model output to the nearest tool call, and model-output ops
+  to their segment's stage).
 - `internal/server/` — JSON API on loopback: `/api/sessions`, `…/{id}` (`?refresh=1` re-parses),
   `…/{id}/version`, `…/{id}/op/{opId}`, `/api/event`, `/api/rules`; host check, gzip, LRU of 6
   parser-backed sessions plus a separate pool of cache-served models. `auth.go` is the gate:
@@ -134,8 +137,8 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
    signal, which the sub-agent turns that ran inside that turn inherit (downward only, never
    upward); only a turn with no tool call at all keeps its model output as `llm`. It is always
    shown with its model/tools split and never compared per key with the activity partition.
-   Activity brackets are a grouping view, never a total. Raw op-sum is shown next to exclusive
-   time.
+   The timeline draws the lifecycle partition as a stage band above the raw fill, never a
+   third grouping of the same time. Raw op-sum is shown next to exclusive time.
 8. Nothing leaves the machine, and nothing is shown to a stranger. Loopback bind **and** a
    token-locked UI: every `/api/*` route needs a session opened with a one-time `todobem token`
    (key file `~/.todobem/auth.key`, 0600, the root of trust; `-auth=off` is an explicit choice

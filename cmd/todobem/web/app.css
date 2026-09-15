@@ -242,6 +242,10 @@ kbd{background:#243543;border-radius:4px;padding:1px 5px;font-size:12px;font-fam
 .breakdown-item .name{display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:8px;align-items:center;min-width:0}
 .breakdown-item .name .label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .breakdown-item .name .row-sub{grid-column:2;font-size:12px;line-height:1.25;color:var(--subtle);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.breakdown-item.sub{padding-top:3px;padding-bottom:3px;font-size:13px;color:var(--muted)}
+.breakdown-item.sub .name{padding-left:18px}
+.breakdown-item.sub .bar-track{height:5px}
+.breakdown-item.sub .bar-fill{opacity:.7}
 /* breakdown bars: square, with grid ticks at 25 / 50 / 75 % (the same instrument look as the Insights bars) */
 .bar-track{height:7px;background:#172530;background-image:repeating-linear-gradient(90deg,transparent 0 calc(25% - 1px),var(--line) calc(25% - 1px) 25%);overflow:hidden;position:relative}
 .bar-fill{display:block;height:100%;position:relative;z-index:1}

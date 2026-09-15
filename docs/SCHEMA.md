@@ -52,10 +52,10 @@ Lane {
   started, ended int64
   turns     Turn[]      // {id, start, end, status: completed|aborted|open|orphaned, trigger: user|system,
                         //  skill, review, mode: "plan"|"", lc: turn-level lifecycle or "",
-                        //  lc_rule: the signal that pinned it (the origin lane when inherited)}
+                        //  lc_rule: the signal that pinned it (the origin lane when inherited),
+                        //  lc_runs: skill runs inside the turn [{from, lc, lc_rule}]}
   ops       Operation[] // may overlap (parallel commands)
   segments  Segment[]   // exclusive partition of [started, ended]
-  stages    Stage[]     // coalesced view of segments (think attributed to next op)
   markers   Marker[]    // point events
   active    [start,end][] // the lane's own turns (derive.activeIntervals): a sub-agent is active inside its turns
   tokens    {input, cached, cache_write, output, reasoning, total} // usage consumed by this thread: per-call usage
@@ -70,7 +70,10 @@ Lane {
 ```
 Turn {
   id, start, end, status: completed|aborted|open|orphaned, trigger: user|system, model, effort,
-  final, skill, review, mode: "plan"|"", lc
+  final, skill, review, mode: "plan"|"", lc, lc_rule
+  lc_runs      [{from, lc, lc_rule}] // a skill invoked mid-turn (Claude Code's Skill tool call) pins its stage
+                      // from `from` to the turn's end or the next run; a skill invoked before anything ran
+                      // (Codex injects it at the turn start) is the turn's `lc` instead, so Codex turns have none
   tokens       {…}    // sum of the turn's counted model calls (the counting rule above); absent = no record
   responses    int    // number of counted calls in the turn
   first        {…}    // the first counted call: its uncached input (input − cached) is what the model re-read
@@ -92,6 +95,9 @@ Operation {
   phase    Phase     // see table
   kind     string    // sub-kind, see table
   lc       Lifecycle // SDLC stage served (see "Lifecycle"); lc_rule: the literal signal that decided it
+  sub      string    // the breakdown sub-row of the phase (classify.Subgroup): code → read | search | edit | vcs |
+                     // hosting | network | mcp | shell; wait_worker → agents | polling | hooks; unknown → script |
+                     // tool | command; absent for every other phase. A function of (phase, kind), never of time
   start, end int64
   open     bool      // no end recorded yet
   status   string    // completed | failed | aborted | running | recorded (the harness's word, verbatim)
@@ -192,11 +198,14 @@ running (dev servers, watchers, a leftover `npm start`). Background ops are draw
 bar under the lane, summed in `totals.background_ms / background_ops`, and never overlay the
 partition, the raw sums or retry groups.
 
-## Segment / Stage
+## Segment
 ```
 Segment { s, e, p: phase, lc: lifecycle, op }   // exclusive; op = the winning op id or ""
-Stage   { start, end, phase, ops:int, turn }
 ```
+The timeline's stage band and the dump's stage runs are consecutive segments of one `lc`,
+computed where they are drawn; no coalesced view is stored (the activity brackets that once
+attributed model output to the next tool call by phase were retired on 2026-09-15 — the
+lifecycle partition says which stage the time served, the fill says what ran).
 
 ## Marker
 ```
@@ -247,20 +256,23 @@ shows every stage row with its model / tools split.
 
 | lifecycle | meaning | assigned from (literal signals only) |
 |---|---|---|
-| `plan` | planning, scoping, writing the plan | turn: Codex `collaboration_mode.mode == "plan"` (`turn_context`); op: an `update_plan` call that *creates* a plan (no step `completed` yet) is an instantaneous `llm`/`plan` op, so the model output before it is planning; progress updates stay markers |
+| `plan` | planning, scoping, writing the plan | turn: Codex `collaboration_mode.mode == "plan"` (`turn_context`), Claude Code `permissionMode: plan`; op: an `update_plan` call that *creates* a plan (no step `completed` yet) or `ExitPlanMode` is an instantaneous `llm`/`plan` op — the model output before it is planning, and so is every code, build, test or infra call before the turn's **first** such anchor that changed nothing (a change op there stays implementation); progress updates stay markers |
 | `requirements` | eliciting / specifying requirements | **no built-in detector** — overlay `lifecycle.skills` / `roles` / `paths` |
 | `design` | architecture and detailed design | **no built-in detector** — overlay |
-| `implement` | writing code, building, environment work | default for `code`, `build`, `infra` phases; operations candidates before this lane's first release op |
-| `review` | code review / cleanup | turn: an invoked skill matching the review matcher (`code-review`, `codereview`, `simplify`, overlay), Codex review mode (`EnteredReviewMode`), a sub-agent turn that ran inside such a turn (inherited, any depth); lane: a sub-agent whose spawn `agent_role` matches overlay `lifecycle.roles`; op: kinds `pr review`, `pr comment`, `mr note`, `mr approve` |
+| `implement` | writing code, building, environment work | default for `code`, `build`, `infra` phases; **the change window**: every `code`, `build`, `test` and `infra` call between the turn's first and last change op (`classify.ChangeKinds`: edits, patches, written files, `sed -i`, formatters, `mkdir`/`cp`/`mv`/`touch`/`ln`, `git rm`/`mv`/`apply`/`cherry-pick`) — a test between two edits is the implementation loop, a test after the last edit is the verification pass; operations candidates before this lane's first release op |
+| `review` | code review / cleanup | turn: an invoked skill matching the review matcher (`code-review`, `codereview`, `simplify`, overlay) — a **run** from the skill marker to the turn's end (Codex injects the skill at the turn start, so the whole turn; Claude Code's `Skill` tool call is mid-turn, so the calls before it keep their own composition), Codex review mode (`EnteredReviewMode`, whole turn), a sub-agent turn that started inside such a turn or run (inherited, any depth); lane: a sub-agent whose spawn `agent_role` matches overlay `lifecycle.roles`; op: kinds `pr review`, `pr comment`, `mr note`, `mr approve` (an op pin beats the change window) |
 | `test` | testing / QA | default for the `test` phase |
 | `release` | push, PR/MR create/merge, deploy, publish | default for the `release` phase |
 | `operate` | maintenance / operations on a running system | kinds `journalctl`, `systemctl`, `launchctl`, `diagnostics`, `docker logs`, `kubectl logs`, `kubectl describe` (and overlay rules with `"lifecycle": "operate"`) — **only after this lane's first release op** |
-| `llm` | model output of a turn that made no tool call at all (a text-only answer) | nothing in the turn says which stage it served; only a harness signal can |
-| `wait_user`, `wait_worker`, `idle`, `compaction`, `no_telemetry`, `unknown` | pass-through | their phase name |
+| `llm` | **not a stage**: model output of a turn that made no tool call at all (a text-only answer) | nothing in the turn says which stage it served; only a harness signal can. The UI lists it under "Outside stages" |
+| `wait_user`, `wait_worker`, `idle`, `compaction`, `no_telemetry`, `unknown` | **not stages**: pass-through — they happened inside or between the stages and keep their own name, so the partition still sums to elapsed; the UI lists them under "Outside stages" | their phase name |
 
-Precedence: lane role → the turn's own signal → the stage of the parent turn a sub-agent turn
-was **linked** to (inherited; `lc_rule` names the origin lane, through any depth) → op-level pin
-(command kind, edited path) → phase default. The link is a recorded harness signal, never bare
+Precedence: lane role → the turn's own signal (plan mode — a skill invoked inside a plan-mode
+turn reviews the plan, so the turn stays planning; review mode; else a skill run from its marker on) → the stage in force on the parent turn a sub-agent turn was **linked** to when it
+started (inherited; `lc_rule` names the origin lane, through any depth) → op-level pin (command
+kind, edited path, plan anchor) → the turn's composition (the plan run, the change window) →
+phase default. Composition reads the whole turn before deciding any op of it: the stage of a
+call is decided by the group it sits in, never by that call alone. The link is a recorded harness signal, never bare
 time overlap: the harness's `root_turn_id` first, else the spawn / message marker for that lane
 (`agent_started` / `agent_interacted`), else, for the child's
 first turn only, an open `wait_worker` agent op on the parent whose window contains that turn's
@@ -268,8 +280,7 @@ start (a bare wait cannot say which of several concurrent agents it is, so a re-
 later turn is not linked this way); no link → no inheritance. A turn-level stage covers the **whole** turn: tests,
 waits, compaction and model output alike. Model output inside a turn with no turn-level stage
 takes the stage of the nearest tool call in the same turn: the next one first (the call it
-prepared — the activity-bracket rule of `buildStages`), else the previous one (the answer that
-reported on it). Compactions and telemetry gaps inside the turn are transparent — skipped over,
+prepared), else the previous one (the answer that reported on it). Compactions and telemetry gaps inside the turn are transparent — skipped over,
 they keep their own name for their own duration — while a wait for workers (a spawn, sleep or
 poll the model chose), waiting for the user, idle time and the turn's end each close the bracket.
 An unknown command is not transparent either: model output nearest to it is `unknown`. A turn
@@ -278,9 +289,13 @@ the neighbouring turn. Inheritance runs downward only: a sub-agent is its parent
 call, so its work is that turn's work; nothing flows upward, and the root's wait for a review
 sub-agent stays `wait_worker`.
 
-The single **order-dependent** rule is the operations guard: an operations candidate that starts
-before the lane's first `release` op is `implement` ("nothing is after launch before anything
-shipped"); the op's `lc_rule` says so in the inspector. Nothing is ever inferred from a duration.
+The **order-dependent** rules, all over already-classified ops and never over a duration: the
+operations guard (an operations candidate that starts before the lane's first `release` op is
+`implement` — "nothing is after launch before anything shipped"), the skill run (from the marker
+to the turn's end), the plan run (before the turn's first plan anchor) and the change window
+(between the turn's first and last change op). The op's `lc_rule` names the one that decided it
+in the inspector. Model-output ops (Codex `Reasoning` / `AgentMessage` items) carry the stage of
+the segment that covers them, so the operations a stage row lists and the time it shows agree.
 
 A `skill` marker records that a skill was *actually invoked* — parsed from the harness's
 `skills.selected_skill_instructions` injection, never from the words in a user or model message.

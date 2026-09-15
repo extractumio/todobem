@@ -162,20 +162,28 @@ sub-agent turns that ran inside it (inherited downward, never upward); otherwise
 takes the stage of the nearest tool call in the turn — the next one, else the previous one —
 and only a turn without any tool call keeps an honest `llm` bucket (both amended 2026-09-15 after
 a code-review session showed 33 review sub-agents as "implementation" and their findings as
-unattributed model output; `docs/REVIEW-lifecycle.md`). The one order-dependent
-rule is the operations guard — an operations candidate before the lane's first release op is
-implementation — the user's "maintenance cannot precede coding" constraint, made a same-lane
-demotion rather than a detector after the design review (`docs/REVIEW-lifecycle.md`).
+unattributed model output; `docs/REVIEW-lifecycle.md`). The order-dependent rules are the
+operations guard — an operations candidate before the lane's first release op is implementation —
+the user's "maintenance cannot precede coding" constraint, made a same-lane demotion rather than a
+detector after the design review, and, since the 2026-09-15 stage rework (`docs/REVIEW-lifecycle.md`),
+the turn's composition read as a group: a skill run from its marker to the turn's end (Claude Code
+invokes skills mid-turn), the plan run before the turn's first plan anchor, and the change window —
+every code, build, test and infra call between the turn's first and last edit is implementation, so
+a test between two edits is the loop and only the verification pass after the last edit is testing.
+Waiting, compaction, telemetry gaps, unknown commands and the model output of a tool-less turn are
+not stages: they keep their own key in the data (the partition still sums to elapsed) and the UI
+lists them under "Outside stages". The breakdown splits Development, Waiting for workers and Unknown
+into sub-rows (`classify.Subgroup`, a function of phase and kind carried on every op as `sub`).
 
 **Two detection sources**: classification is built-in plus an optional user overlay
 (`--rules`/`$TODOBEM_RULES`/`~/.todobem/rules.json`) for project-specific commands, lifecycle
 pins on those commands, and the skill / role / path matchers, appended to the same tables and
 served at `/api/rules` (SCHEMA.md).
 
-**Stages for the coarse view**: per lane, `think` segments are attributed to the
-phase of the *next* tool op in the same turn (the model was deciding what to do next); then
-consecutive equal-phase segments coalesce into stage blocks. Raw phases (with think separate)
-remain available in the breakdown. Nothing is dropped — stage blocks are a view over segments.
+**The coarse view**: the timeline's band above each lane is the lifecycle partition, drawn as
+runs of consecutive same-stage segments where it is rendered; the fill is the raw phase
+partition. The earlier "stage blocks" (think segments attributed to the phase of the next tool
+op, coalesced) were retired on 2026-09-15: they were a third grouping of the same time.
 
 ## 2b. Insights — the period report (2026-09-14)
 
@@ -340,7 +348,9 @@ detection; partition-balance tests; CLAUDE.md with the non-inference rules.
 
 Kept against the recommendation at first, then changed after real use: the stage strip that
 drew LLM time in the next tool call's colour hid that ~90% of in-turn time is the model
-generating. Lane fills now show the raw partition; stages are brackets above the fill. Test sub-kinds
+generating. Lane fills now show the raw partition; stages were brackets above the fill until
+2026-09-15, when the lifecycle partition took the band: a bracket attributed model time to the next
+tool call by phase, the band says which stage the time served (model / tools split in its tooltip). Test sub-kinds
 (first / retry-after-failure / rerun / fix / queue / infra) were an explicit requirement.
 Old-format `write_stdin` polls are stitched into their process so a polled test is one test op.
 

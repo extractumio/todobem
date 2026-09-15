@@ -321,3 +321,180 @@ func TestLifecycleModelOutputNearestCall(t *testing.T) {
 		t.Fatalf("by_lifecycle %v", by)
 	}
 }
+
+// A model-output op carries the stage of the segment that covers it, so the operation an
+// operator clicks under a stage row and the time the row shows agree (the fixture's trailing
+// message m1 stands on the test stage of the call before it).
+func TestLifecycleModelOutputOpsCarryTheirSegmentStage(t *testing.T) {
+	s := fixture()
+	Derive(s, 2000)
+	l := s.Lanes[0]
+	var m1 *Operation
+	for _, o := range l.Ops {
+		if o.ID == "m1" {
+			m1 = o
+		}
+	}
+	if m1 == nil || m1.Lifecycle != classify.LcTest || m1.LifecycleRule != "model output: the stage of the nearest tool call in the turn" {
+		t.Fatalf("m1: %+v", m1)
+	}
+	for _, o := range l.Ops {
+		if o.Lifecycle == "llm" {
+			t.Errorf("op %s still carries the llm pass-through stage", o.ID)
+		}
+	}
+	// a message op in a turn without any tool call keeps llm, and says so
+	l2 := &Lane{ID: "L2", Path: "/root", Started: 0, Ended: 100, Turns: []*Turn{{ID: "t", Start: 0, End: 100, Status: "completed"}}}
+	l2.Ops = []*Operation{{ID: "m", Lane: "L2", Turn: "t", Phase: classify.LLM, Kind: "message", Start: 10, End: 20, Status: "completed"}}
+	Derive(&Session{ID: "s2", Lanes: []*Lane{l2}}, 2000)
+	if l2.Ops[0].Lifecycle != "llm" || l2.Ops[0].LifecycleRule != "model output in a turn without tool calls" {
+		t.Fatalf("text-only turn: %q %q", l2.Ops[0].Lifecycle, l2.Ops[0].LifecycleRule)
+	}
+}
+
+// Composition (rule 4): between the turn's first and last change op every code, build, test and
+// infra call is implementation; a test after the last change is the verification pass; release
+// ops and op-level pins keep their stage inside the window; reads before the first plan anchor
+// are planning, a change op there is not.
+func TestLifecycleChangeWindowAndPlanRun(t *testing.T) {
+	l := &Lane{ID: "L", Path: "/root", Started: 0, Ended: 1400}
+	l.Turns = []*Turn{{ID: "t1", Start: 0, End: 1000, Status: "completed"}, {ID: "t2", Start: 1000, End: 1400, Status: "completed"}}
+	op := func(id, turn string, ph Phase, kind string, s, e int64) *Operation {
+		return &Operation{ID: id, Lane: "L", Turn: turn, Phase: ph, Kind: kind, Start: s, End: e, Status: "completed"}
+	}
+	l.Ops = []*Operation{
+		op("read0", "t1", classify.Code, "read", 50, 60),            // before the first edit: phase default
+		op("test0", "t1", classify.Test, "go test", 100, 150),       // before the first edit: a reproduction run stays test
+		op("edit1", "t1", classify.Code, "edit", 200, 200),          // first change
+		op("test1", "t1", classify.Test, "go test|rerun", 300, 350), // inside the window: the loop
+		op("build1", "t1", classify.Build, "go build", 400, 420),    // inside the window
+		op("push", "t1", classify.Release, "git push", 450, 460),    // release stays release
+		op("rev", "t1", classify.Release, "pr review", 470, 480),    // op pin (review) beats the window
+		op("edit2", "t1", classify.Code, "edit", 500, 500),          // last change
+		op("test2", "t1", classify.Test, "go test", 600, 700),       // after the last change: verification
+		op("cmt", "t1", classify.Code, "git commit", 800, 810),      // after the last change: implement (default)
+		op("read2", "t2", classify.Code, "read", 1050, 1060),        // before the plan anchor: planning
+		op("edit3", "t2", classify.Code, "edit", 1100, 1100),        // a change before the anchor is not planning
+		op("plan", "t2", classify.LLM, "plan", 1200, 1200),          // the anchor (pinned by the adapter)
+		op("read3", "t2", classify.Code, "read", 1300, 1310),        // after the anchor: phase default
+	}
+	l.Ops[11].Lifecycle, l.Ops[11].LifecycleRule = "", ""
+	l.Ops[6].Lifecycle = classify.LcReview
+	l.Ops[12].Lifecycle, l.Ops[12].LifecycleRule = classify.LcPlan, "plan created (update_plan)"
+	Derive(&Session{ID: "s", Lanes: []*Lane{l}}, 2000)
+	want := map[string][2]string{
+		"read0": {"implement", "phase code"}, "test0": {"test", "phase test"},
+		"edit1":  {"implement", "inside the turn's change window (first edit … last edit)"},
+		"test1":  {"implement", "inside the turn's change window (first edit … last edit)"},
+		"build1": {"implement", "inside the turn's change window (first edit … last edit)"},
+		"push":   {"release", "phase release"}, "rev": {"review", "kind pr review"},
+		"edit2": {"implement", "inside the turn's change window (first edit … last edit)"},
+		"test2": {"test", "phase test"}, "cmt": {"implement", "phase code"},
+		"read2": {"plan", "before the turn's plan was submitted"}, "edit3": {"implement", "inside the turn's change window (first edit … last edit)"},
+		"plan": {"plan", "plan created (update_plan)"}, "read3": {"implement", "phase code"},
+	}
+	for _, o := range l.Ops {
+		w := want[o.ID]
+		if string(o.Lifecycle) != w[0] || o.LifecycleRule != w[1] {
+			t.Errorf("%s: %q %q, want %q %q", o.ID, o.Lifecycle, o.LifecycleRule, w[0], w[1])
+		}
+	}
+	if lifecycleSum(l) != 1400 {
+		t.Fatalf("partition %d", lifecycleSum(l))
+	}
+	// the activity partition never moves: the test runs inside the window are still test time
+	if l.ByPhase[classify.Test] != 50+50+100 {
+		t.Fatalf("by_phase test %d", l.ByPhase[classify.Test])
+	}
+}
+
+// A skill invoked mid-turn (Claude Code's Skill tool call, recorded as a skill marker) pins a
+// run from the marker to the turn's end; the ops before it keep their own composition. A marker
+// before anything ran (Codex injects at the turn start) covers the whole turn as before, and a
+// sub-agent spawned inside the run inherits the run's stage.
+func TestLifecycleSkillRunFromMarker(t *testing.T) {
+	root := &Lane{ID: "R", Path: "/root", Started: 0, Ended: 2000}
+	root.Turns = []*Turn{
+		{ID: "t1", Start: 0, End: 1000, Status: "completed", Skill: "agent-browser"}, // the first skill has no stage; simplify comes mid-turn
+		{ID: "t2", Start: 1000, End: 2000, Status: "completed", Skill: "code-review-cc"},
+	}
+	root.Markers = []Marker{
+		{T: 150, Kind: "skill", Lane: "R", Turn: "t1", Text: "agent-browser", Ref: "agent-browser"},
+		{T: 500, Kind: "skill", Lane: "R", Turn: "t1", Text: "simplify", Ref: "simplify"},
+		{T: 1005, Kind: "skill", Lane: "R", Turn: "t2", Text: "code-review-cc", Ref: "code-review-cc"},
+		{T: 600, Kind: "agent_started", Lane: "R", Turn: "t1", Ref: "S"},
+	}
+	root.Ops = []*Operation{
+		{ID: "e1", Lane: "R", Turn: "t1", Phase: classify.Code, Kind: "edit", Start: 100, End: 100, Status: "completed"},
+		{ID: "x1", Lane: "R", Turn: "t1", Phase: classify.Test, Kind: "go test", Start: 200, End: 250, Status: "completed"},
+		{ID: "e2", Lane: "R", Turn: "t1", Phase: classify.Code, Kind: "edit", Start: 300, End: 300, Status: "completed"},
+		{ID: "x2", Lane: "R", Turn: "t1", Phase: classify.Test, Kind: "go test", Start: 550, End: 580, Status: "completed"},
+		{ID: "w", Lane: "R", Turn: "t1", Phase: classify.WaitWorker, Kind: "agent", Start: 600, End: 900, Status: "completed"},
+		{ID: "r2", Lane: "R", Turn: "t2", Phase: classify.Code, Kind: "read", Start: 1100, End: 1150, Status: "completed"},
+	}
+	sub := &Lane{ID: "S", Path: "/root/fix", Parent: "R", Depth: 1, Started: 600, Ended: 900, Turns: []*Turn{{ID: "u", Start: 600, End: 900, Status: "completed"}}}
+	sub.Ops = []*Operation{{ID: "g", Lane: "S", Turn: "u", Phase: classify.Code, Kind: "read", Start: 700, End: 750, Status: "completed"}}
+	s := &Session{ID: "s", Lanes: []*Lane{root, sub}}
+	Derive(s, 2000)
+	t1, t2 := root.Turns[0], root.Turns[1]
+	if t1.Lifecycle != "" || len(t1.Runs) != 1 || t1.Runs[0].From != 500 || t1.Runs[0].Lifecycle != classify.LcReview || t1.Runs[0].Rule != "skill simplify" {
+		t.Fatalf("t1 runs: lc=%q runs=%+v", t1.Lifecycle, t1.Runs)
+	}
+	if t2.Lifecycle != classify.LcReview || t2.LifecycleRule != "skill code-review-cc" || len(t2.Runs) != 0 {
+		t.Fatalf("t2 (skill before anything ran) must cover the whole turn: %q %q %+v", t2.Lifecycle, t2.LifecycleRule, t2.Runs)
+	}
+	if !t1.Review || !t2.Review || s.Totals.Reviews != 2 {
+		t.Errorf("review flags %v %v, reviews %d", t1.Review, t2.Review, s.Totals.Reviews)
+	}
+	got := map[string]string{}
+	for _, o := range root.Ops {
+		got[o.ID] = string(o.Lifecycle) + " / " + o.LifecycleRule
+	}
+	want := map[string]string{
+		"e1": "implement / inside the turn's change window (first edit … last edit)",
+		"x1": "implement / inside the turn's change window (first edit … last edit)",
+		"e2": "implement / inside the turn's change window (first edit … last edit)",
+		"x2": "review / skill simplify", "w": "review / skill simplify", "r2": "review / skill code-review-cc",
+	}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("%s: %q, want %q", id, got[id], w)
+		}
+	}
+	// the run covers model output and waits from the marker on; before it, the composition
+	if root.ByLifecycle[classify.LcReview] != 500+1000 || root.ByLifecycle[classify.LcImplement] != 500 {
+		t.Fatalf("root by_lifecycle %v", root.ByLifecycle)
+	}
+	for _, sg := range root.Segments {
+		if sg.Start < 500 && sg.End > 500 {
+			t.Fatalf("segment straddles the run start: %+v", sg)
+		}
+	}
+	if sub.Turns[0].Lifecycle != classify.LcReview || sub.Turns[0].LifecycleRule != "inherited from /root (skill simplify)" {
+		t.Fatalf("sub-agent spawned inside the run: %q %q", sub.Turns[0].Lifecycle, sub.Turns[0].LifecycleRule)
+	}
+	if lifecycleSum(root) != 2000 || lifecycleSum(sub) != 300 {
+		t.Fatalf("partitions %d %d", lifecycleSum(root), lifecycleSum(sub))
+	}
+	// a skill invoked inside a plan-mode turn reviews the plan: the turn stays planning, no run
+	pl := &Lane{ID: "P", Path: "/root", Started: 0, Ended: 1000, Turns: []*Turn{{ID: "p", Start: 0, End: 1000, Status: "completed", Mode: "plan"}}}
+	pl.Markers = []Marker{{T: 400, Kind: "skill", Lane: "P", Turn: "p", Text: "code-review-cc", Ref: "code-review-cc"}}
+	pl.Ops = []*Operation{
+		{ID: "r", Lane: "P", Turn: "p", Phase: classify.Code, Kind: "read", Start: 100, End: 150, Status: "completed"},
+		{ID: "x", Lane: "P", Turn: "p", Phase: classify.Test, Kind: "go test", Start: 500, End: 600, Status: "completed"},
+	}
+	Derive(&Session{ID: "s2", Lanes: []*Lane{pl}}, 2000)
+	if pl.Turns[0].Lifecycle != classify.LcPlan || len(pl.Turns[0].Runs) != 0 || pl.ByLifecycle[classify.LcPlan] != 1000 || pl.Ops[1].LifecycleRule != "plan mode" {
+		t.Fatalf("plan-mode turn with a skill: %q runs=%+v by=%v rule=%q", pl.Turns[0].Lifecycle, pl.Turns[0].Runs, pl.ByLifecycle, pl.Ops[1].LifecycleRule)
+	}
+}
+
+func TestSubgroupSetOnEveryOp(t *testing.T) {
+	s := fixture()
+	Derive(s, 2000)
+	for _, o := range s.Lanes[0].Ops {
+		if want := classify.Subgroup(o.Phase, o.Kind); o.Subgroup != want {
+			t.Errorf("%s: subgroup %q, want %q", o.ID, o.Subgroup, want)
+		}
+	}
+}
