@@ -569,16 +569,19 @@ var queryKinds = map[string]bool{
 	"devicectl": true, "simulator": true, "xcode": true, "codesign": true, "dns": true, "net": true,
 }
 
-// QueryKind reports whether a non-zero exit of a code-phase op of this kind is an answer rather
-// than a failure (see queryKinds). Kinds carry a "|role" suffix once grouped; only the base counts.
+// QueryKind reports whether a non-zero exit of an op of this phase and kind is an answer rather
+// than a failure: the code-phase query kinds (queryKinds), and a CI status wait (`gh pr checks`,
+// `gh run watch`: kind `ci` in the wait_worker phase) whose exit code says the checks are still
+// pending or failing — the state of somebody else's run, not a step of this agent that failed.
+// Kinds carry a "|role" suffix once grouped; only the base counts.
 func QueryKind(phase Phase, kind string) bool {
-	if phase != Code {
-		return false
+	switch phase {
+	case Code:
+		return queryKinds[BaseKind(kind)]
+	case WaitWorker:
+		return BaseKind(kind) == "ci"
 	}
-	if i := strings.IndexByte(kind, '|'); i >= 0 {
-		kind = kind[:i]
-	}
-	return queryKinds[kind]
+	return false
 }
 
 // cosmeticFilters are pipe stages that only shape output; they never change what ran.

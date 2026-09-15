@@ -320,6 +320,24 @@ func TestInfraIdentityAllowlist(t *testing.T) {
 	}
 }
 
+func TestCIStatusWaitIsAQuery(t *testing.T) {
+	// gh pr checks / gh run watch exit non-zero while the checks are pending or failing: the
+	// state of CI, not a failed step of this agent (docs/SCHEMA.md query_miss)
+	for _, kind := range []string{"ci", "ci|worker_queue"} {
+		if !QueryKind(WaitWorker, kind) {
+			t.Errorf("wait_worker/%s must be a query kind", kind)
+		}
+	}
+	for _, kind := range []string{"sleep", "poll-loop", "agent", "hook", "process"} {
+		if QueryKind(WaitWorker, kind) {
+			t.Errorf("wait_worker/%s exits are not answers", kind)
+		}
+	}
+	if QueryKind(Test, "ci") || QueryKind(Release, "ci rerun") {
+		t.Error("only the wait_worker ci kind is a CI status query")
+	}
+}
+
 func TestProbesAndQueryKinds(t *testing.T) {
 	// a non-zero exit of a query kind is an answer (not there, no match, not installed), never a
 	// failed step; edits, scripts, `shell` and every other phase keep their verdict

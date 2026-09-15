@@ -103,9 +103,10 @@ Operation {
   status   string    // completed | failed | aborted | running | recorded (the harness's word, verbatim)
   exit     *int      // exit code when known
   query_miss bool    // status "failed" or a non-zero exit on a query kind (read, search, listing, probe, git
-                     // diff/show/status/log, read-only docker/gh/glab/kubectl queries; classify.queryKinds): the
-                     // failure is an answer, not a failed step. Derived; status and exit stay literal (Claude Code
-                     // records no exit code, only is_error); not counted in failed_ops
+                     // diff/show/status/log, read-only docker/gh/glab/kubectl queries; classify.queryKinds) or on
+                     // a CI status wait (`gh pr checks`, `gh run watch`: wait_worker/ci — the exit says the checks
+                     // are pending or failing): the failure is an answer, not a failed step. Derived; status and
+                     // exit stay literal (Claude Code records no exit code, only is_error); not counted in failed_ops
   title    string    // short human label (command head / file / tool)
   detail   string    // full command / file list (≤ 2 KB)
   identity string    // "<cwd>\n<normalized command>" for test/build/release ops and verdict-kind infra ops (classify.infraAttemptKinds); "" otherwise
