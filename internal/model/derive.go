@@ -57,17 +57,20 @@ func Derive(s *Session, now int64) {
 			t.Review = classify.ReviewSkill(t.Skill)
 		}
 		for _, o := range l.Ops {
-			// a query kind's non-zero exit is an answer, not a failed step (before groups: the
-			// retry roles read Operation.Failure)
-			o.QueryMiss = o.Exit != nil && *o.Exit != 0 && classify.QueryKind(o.Phase, o.Kind)
+			// a query kind's failure is an answer, not a failed step (before groups: the retry
+			// roles read Operation.Failure). Codex records the exit code; Claude Code records only
+			// that the tool errored (status "failed"): both are the harness's word.
+			o.QueryMiss = classify.QueryKind(o.Phase, o.Kind) && (o.Status == "failed" || o.Exit != nil && *o.Exit != 0)
 		}
 		extendPendingOperations(l, now)
 		markBackground(l, now)
 	}
 	assignGroups(s)
-	for _, l := range s.Lanes {
+	laneByID := map[string]*Lane{}
+	for _, l := range s.Lanes { // parents come before their children (source.Session orders them)
+		laneByID[l.ID] = l
 		buildSegments(l, l.ID == root.ID, now)
-		assignLifecycle(l)
+		assignLifecycle(l, laneByID[l.Parent])
 		buildStages(l)
 		l.Active = activeIntervals(l)
 	}

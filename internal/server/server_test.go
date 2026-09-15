@@ -12,6 +12,7 @@ import (
 	"testing/fstest"
 
 	"github.com/extractumio/todobem/internal/model"
+	"github.com/extractumio/todobem/internal/settings"
 )
 
 func sourceFixture(t *testing.T, relative bool) (*Server, model.Src, string) {
@@ -46,7 +47,7 @@ func sourceFixture(t *testing.T, relative bool) (*Server, model.Src, string) {
 			t.Fatal(err)
 		}
 	}
-	s := New(configuredHome, fstest.MapFS{})
+	s := New(settings.Homes{Codex: []string{configuredHome}}, fstest.MapFS{})
 	sess, err := s.session("root-thread", true)
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +94,7 @@ func TestRecordedSourceRequiresExactSpan(t *testing.T) {
 					t.Fatalf("served an unrecorded span: %+v", wrong)
 				}
 			}
-			unrecorded := filepath.Join(s.home, "note.txt")
+			unrecorded := filepath.Join(s.src.Source("codex").Homes()[0], "note.txt")
 			if err := os.WriteFile(unrecorded, []byte("harmless fixture"), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -140,7 +141,7 @@ func TestRecordedSourceRejectsSymlinkReplacement(t *testing.T) {
 }
 
 func TestHandlerHostPolicy(t *testing.T) {
-	s := New(t.TempDir(), fstest.MapFS{})
+	s := New(settings.Homes{Codex: []string{t.TempDir()}}, fstest.MapFS{})
 	for _, tc := range []struct {
 		host       string
 		configured string
@@ -169,7 +170,7 @@ func TestHandlerHostPolicy(t *testing.T) {
 }
 
 func TestRulesPayload(t *testing.T) {
-	s := New(t.TempDir(), fstest.MapFS{})
+	s := New(settings.Homes{Codex: []string{t.TempDir()}}, fstest.MapFS{})
 	r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/rules", nil)
 	r.Host = "127.0.0.1:7788"
 	w := httptest.NewRecorder()

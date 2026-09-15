@@ -13,7 +13,7 @@ import (
 // Period selects the sessions of a report: closed sessions whose last activity lies inside
 // [From, To] (docs/INSIGHTS-SPEC.md §6 "Period"). Relative kinds are resolved at build time.
 type Period struct {
-	Kind    string `json:"kind"` // 7d | 30d | 90d | all | custom | session
+	Kind    string `json:"kind"` // 1d | 7d | 30d | 90d | all | custom | session
 	From    int64  `json:"from"` // ms, inclusive
 	To      int64  `json:"to"`   // ms, inclusive
 	Session string `json:"session,omitempty"`
@@ -24,6 +24,8 @@ const day = 24 * 3600e3
 // Resolve fills From/To for the relative kinds at time now; custom and session keep theirs.
 func (p Period) Resolve(now int64) Period {
 	switch p.Kind {
+	case "1d":
+		p.From, p.To = now-day, now
 	case "7d":
 		p.From, p.To = now-7*day, now
 	case "90d":
@@ -40,9 +42,23 @@ func (p Period) Resolve(now int64) Period {
 
 // Params identifies one report.
 type Params struct {
-	CWD         string `json:"cwd"`
-	Period      Period `json:"period"`
-	IncludeLive bool   `json:"include_live,omitempty"`
+	CWD         string   `json:"cwd"`
+	Sources     []string `json:"sources,omitempty"` // session sources in scope ("codex", "claude"); empty = all
+	Period      Period   `json:"period"`
+	IncludeLive bool     `json:"include_live,omitempty"`
+}
+
+// HasSource reports whether sessions of this source are in the report's scope.
+func (p Params) HasSource(name string) bool {
+	if len(p.Sources) == 0 {
+		return true
+	}
+	for _, s := range p.Sources {
+		if s == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Source is one session a report was built from; the fingerprint lets the server tell when the

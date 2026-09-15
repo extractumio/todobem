@@ -47,7 +47,7 @@ func appendRollout(t *testing.T, p *laneParser, lines ...[]byte) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.consume(0); err != nil {
+	if err := p.Consume(0); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -110,7 +110,7 @@ func TestShortChildTurnsPreserveMarkerOnlyToolActivity(t *testing.T) {
 		tool, marker, args string
 	}{
 		{"update_plan", "plan", `{"plan":[{"step":"inspect input","status":"completed"}]}`},
-		{"request_user_input", "question", `{"questions":[{"title":"choose","question":"continue?"}]}`},
+		{"request_user_input_async", "question", `{"questions":[{"title":"choose","question":"continue?"}]}`},
 	} {
 		for _, boundary := range []string{"task_complete", "task_started"} {
 			t.Run(tc.tool+"/"+boundary, func(t *testing.T) {
@@ -270,11 +270,9 @@ func TestRecordedEndpointsReplaceLiveDisplayBounds(t *testing.T) {
 	if p.lane.Ended != 4500 || p.lane.Ops[0].End != 4000 {
 		t.Fatalf("recorded lane end=%d op end=%d", p.lane.Ended, p.lane.Ops[0].End)
 	}
-	p.lane.Ended = 6000
-	s := &Session{ix: NewIndex(t.TempDir()), rootID: "thread-id", parsers: map[string]*laneParser{"thread-id": p}, order: []string{"thread-id"}, Model: &model.Session{}}
-	s.rebuild(7000, 0)
-	if s.Model.Ended != 4500 {
-		t.Fatalf("rebuild retained live bound: %d", s.Model.Ended)
+	// the joiner rebuilds the lane end from the last evidence (source.TestRebuildResetsLiveBounds)
+	if p.LastTS() != 4500 {
+		t.Fatalf("last evidence: %d", p.LastTS())
 	}
 }
 
@@ -593,6 +591,65 @@ func TestTokensPerTurnAndCompaction(t *testing.T) {
 		)
 		if got := root.lane.Turns[0].RootTurn; got != "" {
 			t.Fatalf("root lane must not carry a root turn, got %q", got)
+		}
+	})
+}
+
+// TestRequestUserInputHoldsWaitUserOp: a synchronous request_user_input blocks on the user, so
+// it holds an open wait_user "question" op — the twin of Claude Code's AskUserQuestion. Its
+// function_call_output (the answer) closes it; while unanswered on a live open turn it stays
+// open, so the derived live tail reads "waiting for user", never "no telemetry". The async
+// variant does not block and stays marker-only.
+func TestRequestUserInputHoldsWaitUserOp(t *testing.T) {
+	args := `{"questions":[{"title":"choose","question":"continue?"}]}`
+	t.Run("answered: the wait is wait_user, not model time", func(t *testing.T) {
+		p := testParser(t, "thread", "")
+		appendRollout(t, p,
+			rolloutLine(t, 1000, "event_msg", "task_started", map[string]any{"turn_id": "turn"}),
+			rolloutLine(t, 1100, "response_item", "function_call", map[string]any{"name": "request_user_input", "call_id": "q1", "arguments": args}),
+			rolloutLine(t, 400000, "response_item", "function_call_output", map[string]any{"call_id": "q1", "output": "user answered"}),
+			rolloutLine(t, 400500, "event_msg", "task_complete", map[string]any{"turn_id": "turn", "last_agent_message": "done"}),
+		)
+		var q *model.Operation
+		for _, o := range p.lane.Ops {
+			if o.Kind == "question" {
+				q = o
+			}
+		}
+		if q == nil {
+			t.Fatal("no question op created for request_user_input")
+		}
+		if q.Phase != classify.WaitUser || q.Start != 1100 || q.End != 400000 || q.Open {
+			t.Fatalf("question op = %+v; want wait_user [1100,400000] closed", q)
+		}
+	})
+	t.Run("unanswered on a live open turn: the tail is wait_user, not no_telemetry", func(t *testing.T) {
+		p := testParser(t, "thread", "")
+		appendRollout(t, p,
+			rolloutLine(t, 1000, "event_msg", "task_started", map[string]any{"turn_id": "turn"}),
+			rolloutLine(t, 1100, "response_item", "function_call", map[string]any{"name": "request_user_input", "call_id": "q1", "arguments": args}),
+		)
+		s := &model.Session{ID: "s", Lanes: []*model.Lane{p.lane}}
+		model.Derive(s, 100000) // now, far past the question, no answer yet
+		l := s.Lanes[0]
+		if got := l.ByPhase[classify.NoTelemetry]; got != 0 {
+			t.Fatalf("no_telemetry = %d; a pending question must not read as no telemetry", got)
+		}
+		tail := l.Segments[len(l.Segments)-1]
+		if tail.Phase != classify.WaitUser || tail.End != 100000 {
+			t.Fatalf("live tail = %+v; want wait_user ending at now", tail)
+		}
+	})
+	t.Run("async does not block: marker only, no wait op", func(t *testing.T) {
+		p := testParser(t, "thread", "")
+		appendRollout(t, p,
+			rolloutLine(t, 1000, "event_msg", "task_started", map[string]any{"turn_id": "turn"}),
+			rolloutLine(t, 1100, "response_item", "function_call", map[string]any{"name": "request_user_input_async", "call_id": "q1", "arguments": args}),
+		)
+		for _, o := range p.lane.Ops {
+			if o.Kind == "question" {
+				t.Fatalf("async request_user_input must not create a wait op: %+v", o)
+			}
 		}
 	})
 }

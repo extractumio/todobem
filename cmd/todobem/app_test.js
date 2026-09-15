@@ -158,7 +158,7 @@ test('source identifiers remain single attributes throughout the rendered UI and
   model.lanes[0].ops.push({ ...model.lanes[0].ops[0], id: background, background: true, start: 3000, end: 110000 });
   model.lanes[0].markers.push({ t: 4000, kind: 'agent_started', lane, ref: child });
   model.lanes.push({ id: child, parent: lane, path: '/root/child', depth: 1, started: 4000, ended: 121000 });
-  h.run(`state.sessions = ${JSON.stringify([{ id, title: 'Example', cwd: '/synthetic', started: 1000, updated: 121000, bytes: 10, agents: 1 }])}; renderFleetRows()`);
+  h.run(`state.fleetFilter.kind = 'all'; state.sessions = ${JSON.stringify([{ id, title: 'Example', cwd: '/synthetic', started: 1000, updated: 121000, bytes: 10, agents: 1 }])}; renderFleetRows()`);
   assert.ok(attributeValues(h.node('fleetRows').innerHTML, 'data-id').includes(id));
   await h.open(id, model);
   assert.equal(h.location.hash, '#session/' + encodeURIComponent(id));
@@ -696,9 +696,25 @@ function lifecycleSession() {
   lane.stages = [{ s: 1000, e: 3000, p: 'code' }, { s: 3000, e: 20000, p: 'test' }, { s: 70000, e: 90000, p: 'test' }, { s: 90000, e: 101000, p: 'infra' }];
   lane.by_phase = { llm: 248000, code: 1000, test: 20000, infra: 1000, wait_user: 20000 };
   lane.by_lifecycle = { implement: 2000, test: 17000, llm: 30000, wait_user: 20000, review: 231000 };
-  model.totals = { ops: 4, user_messages: 0, tokens: {}, reviews: 1, by_phase: lane.by_phase, by_lifecycle: lane.by_lifecycle };
+  model.totals = { ops: 4, user_messages: 0, tokens: {}, reviews: 1, elapsed_ms: 300000, by_phase: lane.by_phase, by_lifecycle: lane.by_lifecycle };
   return model;
 }
+
+test('the code phase is labelled Development and its activity number is tool time only', async () => {
+  const h = await harness().ready();
+  await h.open('session', lifecycleSession());
+  const body = h.node('breakdownBody').innerHTML;
+  const row = (body.match(/data-phase="code"[^]*?<\/button>/) || [''])[0];
+  assert.match(row, /<span class="label">Development<\/span>/);
+  // op-A is 1 s of tool time; the 1 s of model output before it is LLM, not Development
+  assert.match(row, /<span class="time num">1s/);
+  assert.match(row, /title="Development: 1s · tool calls only · bracket 2s: the calls plus the LLM time before each/);
+  assert.match(row, /<small class="row-sub">tool calls only<\/small>/, 'the row says on screen what the lifecycle rows above it do not: no model time');
+  // the bracket figure is the grouping view: the call plus the LLM time before it
+  assert.match(row, /bracket 2s/);
+  assert.doesNotMatch(h.node('main').innerHTML, /Coding/);
+  assert.match(h.node('main').innerHTML, /<option value="code">Development<\/option>/, 'the phase filter uses the same label');
+});
 
 test('the breakdown leads with lifecycle stages: same total as the activity list, with each stage split into model and tool time', async () => {
   const h = await harness().ready();
@@ -711,7 +727,7 @@ test('the breakdown leads with lifecycle stages: same total as the activity list
   assert.match(row('review'), /<span class="time num">3m</);
   assert.match(row('review'), /model 3m · tools 11s/, 'a review stage includes its model time and says so');
   assert.match(row('implement'), /model 1s · tools 1s/);
-  assert.match(row('llm'), /Model output — no tool call followed/);
+  assert.match(row('llm'), /Model output — turn without tool calls/);
   assert.match(row('llm'), /<span class="time num">30s/);
   assert.equal(row('operate'), '', 'a stage with no time and no records is hidden');
   const shares = [...body.matchAll(/data-lc="([a-z_]+)"[^]*?<span class="share num">([^<]*)<\/span>/g)].map(m => parseFloat(m[2]));
@@ -752,9 +768,83 @@ test('the timeline draws a lifecycle strip under the fill for work stages only, 
   assert.match(svg, /<title>Code review · /);
   // the tiles are part of the page markup; the metrics container is not a tracked node
   assert.match(h.node('main').innerHTML, /Code review<\/span><strong class="metric-value num">3m</);
-  assert.doesNotMatch(h.node('main').innerHTML, /Planning<\/span>/);
+  assert.doesNotMatch(h.node('main').innerHTML, /Planning<\/span><strong class="metric-value/, 'a stage with no time gets no metric tile');
   h.action('inspect', { id: 'op-P' });
   assert.match(h.node('inspector').innerHTML, /Lifecycle stage<\/dt><dd class="mono">Code review · skill code-review-cc/);
+});
+
+test('a live update keeps the reader in place: the window offset is restored after the page is rebuilt', async () => {
+  const h = await harness().ready();
+  await h.open('session', lifecycleSession());
+  h.run("window.scrollY = 1234; window.__to = null; window.scrollTo = (x, y) => { window.__to = [x, y]; };");
+  h.run("keepPlace(() => { document.querySelector('#main').innerHTML = '<div id=\"rebuilt\"></div>'; })");
+  assert.equal(h.run('JSON.stringify(window.__to)'), '[0,1234]', 'the window is put back where it was');
+  assert.ok(h.node('rebuilt'), 'the page was actually rebuilt inside keepPlace');
+});
+
+test('the overview SDLC band shows each work stage in its colour with a label, user-wait grey, other time dim', async () => {
+  const h = await harness().ready();
+  await h.open('session', lifecycleSession());
+  const band = h.node('overviewLc').innerHTML;
+  const stages = [...new Set([...band.matchAll(/data-lc="([a-z_]+)"/g)].map(m => m[1]))];
+  for (const k of ['review', 'implement', 'test', 'llm', 'wait_user']) assert.ok(stages.includes(k), `band stage ${k} (${stages})`);
+  // a work stage is coloured and classed 'work'; a wide one shows its name in the strip
+  assert.match(band, /<div class="lc-band-seg work"[^>]*background:#cf5e9e[^>]*data-lc="review"[^>]*>\s*<span>Review<\/span>/);
+  // user-input time is grey (class 'user'); other pass-through (model output) is the dim neutral
+  assert.match(band, /<div class="lc-band-seg user"[^>]*data-lc="wait_user"/);
+  assert.match(band, /<div class="lc-band-seg idle"[^>]*data-lc="llm"/);
+});
+
+test('the SDLC ring shows every stage: a work stage with time is filled and shows its % of the session, an unused stage is a pale outline showing 0, and it redraws on update', async () => {
+  const h = await harness().ready();
+  await h.open('session', lifecycleSession());
+  const svg = () => { const main = h.node('main').innerHTML; return main.slice(main.indexOf('lifecycle-ring'), main.indexOf('</figure>')); };
+  let ring = svg();
+  // all eight stages are present as nodes (names + a %/0 each)
+  for (const name of ['Plan', 'Reqs', 'Design', 'Impl', 'Review', 'Test', 'Rel', 'Ops']) assert.match(ring, new RegExp('>' + name + '<'), `${name} node`);
+  // review has time (by_lifecycle.review = 231000 of 301000 ≈ 77%): filled magenta with a % inside
+  // the disc fills bottom-up in proportion to the share: a pale remainder plus the filled level,
+  // and at 77 % the waterline is above the centre so the arc takes the large-arc flag
+  assert.match(ring, /<circle[^>]*fill="#cf5e9e" fill-opacity="\.18"/, 'review keeps a pale remainder disc');
+  assert.match(ring, /<path class="lc-fill" d="M[^"]*A18 18 0 1 0 [^"]*Z" fill="#cf5e9e"\/>/, 'review fills from the bottom, past the half-way line');
+  assert.match(ring, /class="lc-pct"[^>]*>77%</, 'review node shows its share of the session');
+  // a stage with no time (e.g. release) is a pale-grey fill outlined in its stage colour, showing 0
+  assert.match(ring, /fill="var\(--raised\)" stroke="#4aa65f"[^>]*stroke-dasharray="3 2"/, 'release is a pale outline in its colour');
+  assert.match(ring, /class="lc-pct"[^>]*>77%</, 'baseline present');
+  // a live update runs render(); metricsHTML rebuilds, so the ring redraws with the new totals
+  h.run("state.model.totals.elapsed_ms = 600000; state.model.totals.by_lifecycle = { implement: 2000, test: 17000, llm: 30000, wait_user: 20000, review: 231000, idle: 300000 }; render();");
+  ring = svg();
+  assert.doesNotMatch(ring, /class="lc-pct"[^>]*>77%</, 'the ring redrew with the new totals');
+  assert.match(ring, /class="lc-pct"[^>]*>39%</, 'review is now 231000/600000 ≈ 39%');
+});
+
+
+// Colour = concept, shape = partition: the legend names the fill (activity) and the rail
+// (lifecycle stage) as two groups, a stage is drawn as a rail everywhere, and no stage without an
+// activity counterpart may borrow a fill's hue — purple is Build and nothing else.
+test('the legend separates activity fills from lifecycle rails, and stage hues never collide with a different activity', async () => {
+  const h = await harness().ready();
+  await h.open('session', lifecycleSession());
+  const main = h.node('main').innerHTML;
+  const legend = main.slice(main.indexOf('id="legend"'), main.indexOf('<div class="timeline-toolbar"'));
+  assert.match(legend, /legend-caption">Activity · fill<\/span><span class="row"><i class="color-square"/);
+  assert.match(legend, /id="legendLifecycle"><span class="row legend-caption">Lifecycle stage · band below, rail on lanes<\/span>/);
+  const rails = [...legend.matchAll(/<i class="color-rail" style="background:(#[0-9a-f]{6})"><\/i>([^<]+)</g)].map(m => [m[2], m[1]]);
+  assert.deepEqual(rails.map(r => r[0]), ['Planning', 'Requirements', 'Design', 'Implementation', 'Code review', 'Testing / QA', 'Deployment / release', 'Maintenance / operations']);
+  assert.ok(!legend.includes('color-rail" style="background:#a889fc'), 'no stage is Build purple');
+  // the four stages with no activity home take hues no fill uses; the four with one share it
+  const fills = Object.fromEntries([...legend.matchAll(/<i class="color-square(?: hatch)?" style="background:(#[0-9a-f]{6})"><\/i>([^<]+)</g)].map(m => [m[2], m[1]]));
+  const home = { Implementation: 'Development', 'Testing / QA': 'Testing', 'Deployment / release': 'Release & deploy', 'Maintenance / operations': 'Infrastructure' };
+  for (const [stage, color] of rails) {
+    const owner = Object.keys(fills).find(k => fills[k] === color);
+    assert.equal(owner, home[stage], `${stage} rail ${color} must be the hue of ${home[stage] || 'no fill'}, found ${owner}`);
+  }
+  // the breakdown uses the same shapes: a rail for a stage row, a square for an activity row
+  h.run('renderLower()');
+  const body = h.node('breakdownBody').innerHTML;
+  assert.match(body, /data-lc="review"[^]*?<span class="name"><i class="color-rail" style="background:#cf5e9e">/);
+  assert.match(body, /data-phase="test"[^]*?<span class="name"><i class="color-square" style="background:#d9bc3d">/);
+  assert.match(body, /data-lc="wait_user"[^]*?<span class="name"><i class="color-square"/, 'a pass-through row is its activity: a square');
 });
 
 test('the guide lists every lifecycle stage with its rule sources and says which have no detector', async () => {
@@ -774,7 +864,9 @@ test('the guide lists every lifecycle stage with its rule sources and says which
 test('the session heading names the source next to the id, model and CLI version', async () => {
   const h = await harness().ready();
   await h.open('session', { ...session(), source: 'codex', model: 'gpt-6-astra', cli: '0.153.4' });
-  assert.match(h.node('main').innerHTML, /<span class="source-tag">codex<\/span> Session session · gpt-6-astra · cli 0\.153\.4/);
+  assert.match(h.node('main').innerHTML, /<span class="source-tag source-codex">Codex<\/span> Session session · gpt-6-astra · Codex 0\.153\.4/);
+  await h.open('claude-session', { ...session('claude-session'), source: 'claude', model: 'claude-synthetic-1', cli: '2.1.270' });
+  assert.match(h.node('main').innerHTML, /<span class="source-tag source-claude">Claude Code<\/span> Session claude-s · claude-synthetic-1 · Claude Code 2\.1\.270/);
 });
 
 test('the recorded request and the recorded answer share one prose style and one header height', async () => {
@@ -817,10 +909,30 @@ test('a stage bracket tooltip states the real split: tool time of the phase vs m
   assert.match(tip, /1 infra operation plus the LLM time before each/);
 });
 
+test('the session list marks a session whose agent is waiting for an answer, with how long it has waited', async () => {
+  const h = await harness().ready();
+  h.run("go('sessions')");
+  const now = Date.now();
+  h.take('/api/sessions').resolve([
+    { id: 'ask', title: 'Needs you', cwd: '/synthetic', started: now - 3 * 3600e3, updated: now - 2 * 3600e3, bytes: 10, agents: 0, question: now - (2 * 3600e3 + 13 * 60e3) },
+    { id: 'done', title: 'Finished', cwd: '/synthetic', started: now - 3 * 3600e3, updated: now - 3 * 3600e3, bytes: 10, agents: 0, last_answer: 'Done.' },
+  ]);
+  await flush();
+  const rows = h.node('fleetRows').innerHTML;
+  const row = id => (rows.match(new RegExp(`<tr><td><button class="session-link" data-action="session" data-id="${id}"[^]*?</tr>`)) || [''])[0];
+  // the chip sits in the Updated cell, after the timestamp, where the "active" chip goes
+  assert.match(row('ask'), /<td class="mono">\d\d [A-Z][a-z]{2} \d\d:\d\d <span class="chip ask" title="[^"]*"><i class="qmark" aria-hidden="true">\?<\/i>waiting 2h 13m<\/span><\/td>/);
+  assert.doesNotMatch(row('ask'), /<button[^>]*>[^]*?qmark[^]*?<\/button>/, 'not inside the title link');
+  assert.doesNotMatch(row('done'), /chip ask/, 'a session with no recorded question carries no chip');
+  // the mobile tile carries it too
+  assert.equal((rows.match(/class="qmark"/g) || []).length, 2);
+});
+
 test('the session list shows the last completed answer as its description, verbatim; the session page leaves it to the Last answer panel', async () => {
   const h = await harness().ready();
   // the list: from the index's tail read (last_answer), first paragraph only, markdown stripped
   h.run("go('sessions')");
+  h.run("state.fleetFilter.kind = 'all'"); // the fixture's timestamps predate the 30-day default
   h.take('/api/sessions').resolve([{ id: 'abc', title: 'Ship it', cwd: '/synthetic', started: 1000, updated: 2000, bytes: 10, agents: 0, last_answer: 'Deployed **1.0.14** to the device, including the fix.\n\nDetails:\n- a\n- b' }]);
   await flush();
   const rows = h.node('fleetRows').innerHTML;
@@ -998,6 +1110,22 @@ test('the insights page loads a 30-day report and renders groups, cards and the 
   assert.match(html, /The main thread waited 1h while only one sub-agent was working \(of 5h main thread time in turns, 20\.0 %\)\. In 2 of 3 sessions\./);
 });
 
+test('the model-time card names lifecycle stages by their readable label, not the raw key', async () => {
+  const h = await harness().ready();
+  const report = insightsReport();
+  // an M1 card carrying model-output time split across stages, incl. the text-only-turn `llm` key
+  report.groups.push({ id: 'models_and_effort', time_ms: 90e3, tokens: { input: 0, cached: 0, output: 0 }, order_time: 2, order_tokens: 2, cards: [{
+    rule: 'M1', group: 'models_and_effort', title: 'M1', exposure: { time_ms: 90e3, count: 3, tokens: { input: 0, cached: 0, output: 0 } }, sessions: 1, of: 3, no_data: 0,
+    distribution: [], evidence: [],
+    stats: { stage_implement: 60e3, stage_review: 20e3, stage_llm: 10e3 },
+  }] });
+  await openInsights(h, report);
+  const html = h.node('main').innerHTML;
+  assert.match(html, /By stage: Implement 1m, Review \d+s, Model \d+s\./, 'stages read as their short labels');
+  assert.doesNotMatch(html, /By stage:[^.]*implement/, 'the raw stage key never reaches the reader');
+  assert.doesNotMatch(html, /stage_implement/);
+});
+
 test('the axis switch reorders groups by tokens and back', async () => {
   const h = await harness().ready();
   await openInsights(h);
@@ -1036,14 +1164,172 @@ test('changing the period or the project requests a new report', async () => {
   h.document.emit('change', { target: { id: 'insPeriod', value: '7d' } });
   h.take('/api/sessions').resolve([{ id: 'S1', title: 'One', cwd: '/proj', updated: Date.now(), started: 1 }]); await flush();
   h.take('/api/insights/report?period=7d&cwd=%2Fproj').resolve(insightsReport()); await flush();
-  assert.equal(h.run('state.insights.params.period.kind'), '30d', 'the report answers with its own resolved period');
+  assert.equal(h.run('state.insights.params.kind'), '7d', 'the filter keeps the choice');
+  assert.match(h.node('main').innerHTML, /id="insPeriod"[^>]*>(?:(?!<\/select>).)*value="7d" selected/);
+  assert.match(h.node('main').innerHTML, /Report for <b>[^<]*<\/b>/, 'the chip states the period the report was built for');
   h.document.emit('change', { target: { id: 'insProject', value: '' } });
   h.take('/api/sessions').resolve([]); await flush();
-  h.take('/api/insights/report?period=30d').resolve(insightsReport()); await flush();
+  h.take('/api/insights/report?period=7d').resolve(insightsReport()); await flush();
   h.document.emit('change', { target: { id: 'insPeriod', value: 'custom' } });
   h.take('/api/sessions').resolve([]); await flush();
   const url = h.requests.find(r => !r.done && r.url.startsWith('/api/insights/report?period=custom')).url;
   assert.match(url, /period=custom&from=\d+&to=\d+$/);
+  h.take(url).resolve(insightsReport()); await flush();
+  // custom dates: the fields are shown, a typed date waits for Apply, Apply requests the report
+  assert.match(h.node('main').innerHTML, /id="insFrom"[^>]*value="\d{4}-\d{2}-\d{2}"/);
+  h.document.emit('change', { target: { id: 'insFrom', value: '2026-09-01' } });
+  assert.equal(h.requests.filter(r => !r.done).length, 0, 'a date alone requests nothing');
+  h.document.emit('change', { target: { id: 'insTo', value: '2026-09-07' } });
+  h.action('filter-apply', { prefix: 'ins' });
+  h.take('/api/sessions').resolve([]); await flush();
+  const applied = h.requests.find(r => !r.done && r.url.startsWith('/api/insights/report?period=custom')).url;
+  assert.equal(applied, `/api/insights/report?period=custom&from=${new Date(2026, 8, 1).getTime()}&to=${new Date(2026, 8, 8).getTime() - 1}`);
+  // the status is its own row under the controls, never between them
+  assert.match(h.node('main').innerHTML, /<div class="bar-actions">(?:(?!<\/section>).)*<\/div><div class="report-status">/);
+  assert.equal(h.errors.length, 0);
+});
+
+test('the sessions list defaults to 30 days, remembers the chosen period in a cookie, and restores it', async () => {
+  const h = await harness().ready();
+  h.run("go('sessions')");
+  h.take('/api/sessions').resolve([]);
+  await flush();
+  // default: 30 days, and the choice is written to a cookie the moment it changes
+  assert.equal(h.run('state.fleetFilter.kind'), '30d');
+  h.document.emit('change', { target: { id: 'fleetPeriod', value: 'all' } });
+  assert.match(String(h.document.cookie || ''), /todobem_fleet_period=/, 'the period is saved to a cookie');
+  assert.match(decodeURIComponent(String(h.document.cookie)), /"kind":"all"/);
+  // a fresh session (state reset) restores the remembered period from the cookie
+  h.run("state.fleetFilter = { kind: '30d', from: '', to: '', cwd: '', sources: {} }");
+  h.run('restoreFleetPeriod()');
+  assert.equal(h.run('state.fleetFilter.kind'), 'all', 'the period is restored from the cookie');
+  assert.equal(h.errors.length, 0);
+});
+
+test('the session list filters by period and project with the same widget as the report', async () => {
+  const h = await harness().ready();
+  const now = Date.now(), day = 24 * 3600e3;
+  const list = [
+    { id: 'S-new', title: 'Fresh', cwd: '/proj/a', updated: now - day, started: now - 2 * day, bytes: 1e6, agents: 0 },
+    { id: 'S-old', title: 'Old', cwd: '/proj/a', updated: now - 40 * day, started: now - 41 * day, bytes: 1e6, agents: 0 },
+    { id: 'S-b', title: 'Other', cwd: '/proj/b', updated: now - 3 * day, started: now - 3 * day, bytes: 1e6, agents: 0 },
+  ];
+  h.run("go('sessions')");
+  h.take('/api/sessions').resolve(list); await flush();
+  let main = h.node('main').innerHTML;
+  assert.match(main, /id="fleetPeriod"/);
+  // the sessions list defaults to the last 30 days: the 40-day-old session is hidden
+  assert.match(main, /<option value="30d" selected>/, 'period defaults to 30 days');
+  assert.equal(h.node('fleetCount').textContent, '2 of 3 sessions', '30 days by default hides the old session');
+  h.document.emit('change', { target: { id: 'fleetPeriod', value: 'all' } });
+  main = h.node('main').innerHTML;
+  assert.match(main, /id="fleetProject"[^>]*>(?:(?!<\/select>).)*a \(2\)(?:(?!<\/select>).)*b \(1\)/, 'all time: projects carry their full counts');
+  assert.equal(h.node('fleetCount').textContent, '3 sessions', 'all time shows everything');
+  h.document.emit('change', { target: { id: 'fleetPeriod', value: '30d' } });
+  let rows = h.node('fleetRows').innerHTML;
+  assert.match(rows, /data-id="S-new"/);
+  assert.doesNotMatch(rows, /data-id="S-old"/);
+  assert.equal(h.node('fleetCount').textContent, '2 of 3 sessions');
+  h.document.emit('change', { target: { id: 'fleetProject', value: '/proj/b' } });
+  rows = h.node('fleetRows').innerHTML;
+  assert.doesNotMatch(rows, /data-id="S-new"/);
+  assert.match(rows, /data-id="S-b"/);
+  assert.match(h.node('fleetSummary').innerHTML, /<strong class="num">1<\/strong><span>Sessions in view/);
+  // custom dates around the old session only
+  h.document.emit('change', { target: { id: 'fleetProject', value: '' } });
+  h.document.emit('change', { target: { id: 'fleetPeriod', value: 'custom' } });
+  assert.match(h.node('main').innerHTML, /id="fleetFrom"/);
+  h.document.emit('change', { target: { id: 'fleetFrom', value: h.run(`dateInputValue(${now - 45 * day})`) } });
+  h.document.emit('change', { target: { id: 'fleetTo', value: h.run(`dateInputValue(${now - 35 * day})`) } });
+  h.action('filter-apply', { prefix: 'fleet' });
+  rows = h.node('fleetRows').innerHTML;
+  assert.match(rows, /data-id="S-old"/);
+  assert.doesNotMatch(rows, /data-id="S-new"/);
+  // the search still narrows within the period
+  h.document.emit('change', { target: { id: 'fleetPeriod', value: 'all' } });
+  h.document.emit('input', { target: { id: 'sessionSearch', value: 'other' } });
+  rows = h.node('fleetRows').innerHTML;
+  assert.match(rows, /data-id="S-b"/);
+  assert.doesNotMatch(rows, /data-id="S-new"/);
+  assert.equal(h.errors.length, 0);
+});
+
+test('sessions of both sources share one list: a colour mark and the harness name per row, source toggles with counts that narrow the list and the project counts', async () => {
+  const h = await harness().ready();
+  const now = Date.now(), day = 24 * 3600e3;
+  const list = [
+    { id: 'C-1', source: 'codex', title: 'Codex one', cwd: '/proj/a', updated: now - day, started: now - 2 * day, bytes: 1e6, agents: 0, cli: '0.154.0', model: 'gpt-6' },
+    { id: 'A-1', source: 'claude', title: 'Claude one', cwd: '/proj/a', updated: now - 2 * day, started: now - 2 * day, bytes: 1e6, agents: 1, cli: '2.1.270', model: 'claude-synthetic-1' },
+    { id: 'A-2', source: 'claude', title: 'Claude two', cwd: '/proj/b', updated: now - 3 * day, started: now - 3 * day, bytes: 1e6, agents: 0 },
+  ];
+  h.run("go('sessions')");
+  h.take('/api/sessions').resolve(list); await flush();
+  const main = h.node('main').innerHTML;
+  // the toggles: one chip per source with its mark and its count in the period, both on
+  assert.match(main, /<div class="ctl source-toggles" role="group" aria-label="Sources"><label class="chip toggle source-toggle on"><input type="checkbox" id="fleetSrcCodex" checked aria-label="Codex"><i class="source-mark source-codex"><\/i>Codex<span class="count">1<\/span><\/label><label class="chip toggle source-toggle on"><input type="checkbox" id="fleetSrcClaude" checked aria-label="Claude Code"><i class="source-mark source-claude"><\/i>Claude Code<span class="count">2<\/span><\/label><\/div>/);
+  // the rows: the mark before the title, the harness named with its version in the meta line
+  let rows = h.node('fleetRows').innerHTML;
+  assert.match(rows, /data-id="C-1"><strong><i class="source-mark source-codex" title="Codex" aria-label="Codex"><\/i>Codex one<\/strong><span>…\/proj\/a · gpt-6 · Codex 0\.154\.0<\/span>/);
+  assert.match(rows, /data-id="A-1"><strong><i class="source-mark source-claude" title="Claude Code" aria-label="Claude Code"><\/i>Claude one<\/strong><span>…\/proj\/a · claude-synthetic-1 · Claude Code 2\.1\.270<\/span>/);
+  assert.match(rows, /data-id="A-2"><strong>[^<]*<i class="source-mark source-claude"[^>]*><\/i>Claude two<\/strong><span>…\/proj\/b · Claude Code<\/span>/, 'no version known: the harness name alone');
+  // switching Claude Code off hides its rows, its count stays on the chip, the project counts follow
+  h.document.emit('change', { target: { id: 'fleetSrcClaude', type: 'checkbox', checked: false, value: 'on' } });
+  rows = h.node('fleetRows').innerHTML;
+  assert.match(rows, /data-id="C-1"/);
+  assert.doesNotMatch(rows, /data-id="A-1"|data-id="A-2"/);
+  assert.equal(h.node('fleetCount').textContent, '1 of 3 sessions');
+  assert.match(h.node('main').innerHTML, /<label class="chip toggle source-toggle "><input type="checkbox" id="fleetSrcClaude"  aria-label="Claude Code"><i class="source-mark source-claude"><\/i>Claude Code<span class="count">2<\/span>/);
+  assert.match(h.node('main').innerHTML, /id="fleetProject"[^>]*>(?:(?!<\/select>).)*a \(1\)(?:(?!<\/select>).)*<\/select>/);
+  assert.doesNotMatch(h.node('main').innerHTML, /b \(1\)/, 'a project with only hidden sessions leaves the select');
+  // both off: an honest empty list that names the source among the things to change
+  h.document.emit('change', { target: { id: 'fleetSrcCodex', type: 'checkbox', checked: false, value: 'on' } });
+  assert.match(h.node('fleetRows').innerHTML, /No sessions match\.<\/h3><p>Try another search, period, project or source\./);
+  h.document.emit('change', { target: { id: 'fleetSrcCodex', type: 'checkbox', checked: true, value: 'on' } });
+  h.document.emit('change', { target: { id: 'fleetSrcClaude', type: 'checkbox', checked: true, value: 'on' } });
+  assert.equal(h.node('fleetCount').textContent, '3 sessions');
+  // the search finds a session by its source's name
+  h.document.emit('input', { target: { id: 'sessionSearch', value: 'claude code' } });
+  assert.equal(h.node('fleetCount').textContent, '2 of 3 sessions');
+  h.document.emit('input', { target: { id: 'sessionSearch', value: '' } });
+  // one source alone needs no toggle
+  h.run("go('sessions')");
+  h.take('/api/sessions').resolve(list.filter(s => s.source === 'claude')); await flush();
+  assert.doesNotMatch(h.node('main').innerHTML, /source-toggles/);
+  assert.match(h.node('fleetRows').innerHTML, /source-mark source-claude/, 'the mark stays');
+  assert.equal(h.errors.length, 0);
+});
+
+test('a source switched off narrows the Insights report through the sources parameter; all on is the default', async () => {
+  const h = await harness().ready();
+  await openInsights(h);
+  const now = Date.now();
+  const both = [{ id: 'S1', source: 'codex', title: 'One', cwd: '/proj', updated: now, started: 1 }, { id: 'S2', source: 'claude', title: 'Two', cwd: '/proj', updated: now, started: 1 }];
+  h.document.emit('change', { target: { id: 'insPeriod', value: '7d' } });
+  h.take('/api/sessions').resolve(both); await flush();
+  h.take('/api/insights/report?period=7d&cwd=%2Fproj').resolve(insightsReport()); await flush();
+  assert.match(h.node('main').innerHTML, /id="insSrcCodex" checked[\s\S]*id="insSrcClaude" checked/);
+  h.document.emit('change', { target: { id: 'insSrcCodex', type: 'checkbox', checked: false, value: 'on' } });
+  h.take('/api/sessions').resolve(both); await flush();
+  h.take('/api/insights/report?period=7d&cwd=%2Fproj&sources=claude').resolve(insightsReport()); await flush();
+  assert.match(h.node('main').innerHTML, /id="insSrcCodex"  aria-label="Codex"/);
+  h.document.emit('change', { target: { id: 'insSrcCodex', type: 'checkbox', checked: true, value: 'on' } });
+  h.take('/api/sessions').resolve(both); await flush();
+  h.take('/api/insights/report?period=7d&cwd=%2Fproj').resolve(insightsReport()); await flush();
+  assert.equal(h.errors.length, 0);
+});
+
+test('"All projects" stays chosen: the default project fills in only until the reader picks one', async () => {
+  const h = await harness().ready();
+  const list = [{ id: 'S1', title: 'One', cwd: '/proj', updated: Date.now(), started: 1 }, { id: 'S2', title: 'Two', cwd: '/proj', updated: Date.now(), started: 1 }];
+  h.run("go('insights')");
+  h.take('/api/sessions').resolve(list); await flush();
+  // first load: the busiest project is the default
+  h.take('/api/insights/report?period=30d&cwd=%2Fproj').resolve(insightsReport()); await flush();
+  h.document.emit('change', { target: { id: 'insProject', value: '' } });
+  h.take('/api/sessions').resolve(list); await flush();
+  h.take('/api/insights/report?period=30d').resolve(insightsReport()); await flush();
+  assert.equal(h.run('state.insights.params.cwd'), '');
+  assert.match(h.node('main').innerHTML, /<option value="" selected>All projects<\/option>/);
   assert.equal(h.errors.length, 0);
 });
 
@@ -1085,4 +1371,135 @@ test('every visible insights string is plain English', async () => {
       assert.ok(words <= 24, `sentence too long (${words} words): ${sentence}`);
     }
   }
+});
+
+/* ---------- settings page and the rollout path ---------- */
+// settingsPayload is /api/settings: one section per source; `homes` overrides the Codex list,
+// `claude` the Claude Code list.
+function settingsPayload({ homes, claude, ...overrides } = {}) {
+  const codexHomes = homes || [
+    { path: '~/.codex', resolved: '/home/synthetic/.codex', status: 'ok', sessions: 12, elsewhere: 0 },
+    { path: '/Volumes/work/codex', resolved: '/Volumes/work/codex', status: 'missing', sessions: 0, elsewhere: 0 },
+  ];
+  const claudeHomes = claude || [{ path: '~/.claude', resolved: '/home/synthetic/.claude', status: 'ok', sessions: 4, elsewhere: 0 }];
+  return {
+    path: '/home/synthetic/.todobem/settings.json', exists: true, pinned: false,
+    sources: [{ name: 'codex', homes: codexHomes }, { name: 'claude', homes: claudeHomes }],
+    ...overrides,
+  };
+}
+async function openSettings(h, payload = settingsPayload()) {
+  h.run("go('settings')");
+  h.take('/api/settings').resolve(payload); await flush();
+  assert.equal(h.run('state.page'), 'settings');
+}
+
+test('the settings page lists every folder with what the server found there', async () => {
+  const h = await harness().ready();
+  await openSettings(h);
+  const main = h.node('main').innerHTML;
+  assert.match(main, /<h1>Settings<\/h1>/);
+  // one section per source, in source order, each with its mark
+  assert.match(main, /<h2 id="set-codex"><i class="source-mark source-codex"[^>]*><\/i>Codex session folders<\/h2>[\s\S]*<h2 id="set-claude"><i class="source-mark source-claude"[^>]*><\/i>Claude Code session folders<\/h2>/);
+  assert.match(main, /data-source="codex" data-home-index="0" value="~\/\.codex"/);
+  assert.match(main, /\/home\/synthetic\/\.codex<\/span> · 12 sessions/);
+  assert.match(main, /data-source="codex" data-home-index="1" value="\/Volumes\/work\/codex"/);
+  assert.match(main, /home-status warn.*folder not found/);
+  assert.match(main, /data-source="claude" data-home-index="0" value="~\/\.claude"/);
+  assert.match(main, /\/home\/synthetic\/\.claude<\/span> · 4 sessions/);
+  // a folder whose rollouts are also in an earlier folder says where they are shown from; a
+  // source without a folder says it is off
+  await openSettings(h, settingsPayload({ homes: [settingsPayload().sources[0].homes[0], { path: '/Volumes/laptop/codex', resolved: '/Volumes/laptop/codex', status: 'ok', sessions: 3, elsewhere: 9 }], claude: [] }));
+  assert.match(h.node('main').innerHTML, /3 sessions · 9 more also in an earlier folder, shown from there/);
+  assert.match(h.node('main').innerHTML, /No Claude Code folder: Claude Code sessions are not read\./);
+  assert.match(main, /Saved to \/home\/synthetic\/\.todobem\/settings\.json\. Without the file todobem reads ~\/\.codex and ~\/\.claude\./);
+  assert.match(main, /id="setSave"[^>]*disabled/, 'nothing to save yet');
+  assert.match(h.node('breadcrumb').innerHTML, /Settings/);
+  assert.equal(h.errors.length, 0);
+});
+
+test('editing a folder enables Save without re-rendering; add, remove and save post the draft as JSON and apply the answer', async () => {
+  const h = await harness().ready();
+  await openSettings(h);
+  const before = h.node('main').innerHTML;
+  h.document.emit('input', { target: { id: '', dataset: { source: 'codex', homeIndex: '1' }, value: '/Volumes/work/codex-2' } });
+  assert.equal(h.node('main').innerHTML, before, 'typing must not re-render the rows');
+  assert.equal(h.node('setSave').disabled, false, 'a changed draft enables Save');
+  assert.equal(h.run('JSON.stringify(state.settings.draft)'), JSON.stringify({ codex: ['~/.codex', '/Volumes/work/codex-2'], claude: ['~/.claude'] }));
+  h.action('set-add', { source: 'codex' });
+  assert.match(h.node('main').innerHTML, /data-source="codex" data-home-index="2" value=""/);
+  h.run("state.settings.draft.codex[1] = '/Volumes/work/codex'");
+  assert.equal(h.run('settingsDirty(state.settings)'), false, 'an empty added row alone is not a change');
+  h.run("state.settings.draft.codex[1] = '/Volumes/work/codex-2'");
+  assert.match(h.node('main').innerHTML, /data-source="codex" data-home-index="2"[^>]*>[^<]*<button[^>]*data-action="set-remove" data-source="codex" data-index="2"/);
+  h.action('set-remove', { source: 'codex', index: '0' });
+  // the Claude folder can go too: the Codex list still holds a folder
+  h.action('set-remove', { source: 'claude', index: '0' });
+  assert.equal(h.run('JSON.stringify(state.settings.draft)'), JSON.stringify({ codex: ['/Volumes/work/codex-2', ''], claude: [] }));
+  h.document.emit('submit', { target: { id: 'settingsForm' }, preventDefault() {} });
+  const req = h.take('/api/settings');
+  assert.equal(req.options.method, 'POST');
+  assert.equal(req.options.headers['Content-Type'], 'application/json');
+  assert.deepEqual(JSON.parse(req.options.body), { codex_homes: ['/Volumes/work/codex-2', ''], claude_homes: [] });
+  assert.match(h.node('main').innerHTML, /Saving…/);
+  req.resolve(settingsPayload({ homes: [{ path: '/Volumes/work/codex-2', resolved: '/Volumes/work/codex-2', status: 'no_sessions_dir', sessions: 0 }], claude: [] })); await flush();
+  // the answer replaces the draft (the blank entry is gone) and the session list is reloaded
+  assert.equal(h.run('JSON.stringify(state.settings.draft)'), JSON.stringify({ codex: ['/Volumes/work/codex-2'], claude: [] }));
+  assert.match(h.node('main').innerHTML, /no sessions\/ folder here/);
+  assert.match(h.node('main').innerHTML, /data-action="set-remove" data-source="codex" data-index="0" [^>]*disabled/, 'the last folder overall cannot be removed');
+  assert.match(h.node('toast').textContent, /Settings saved · 1 folder/);
+  h.take('/api/sessions').resolve([]); await flush();
+  assert.equal(h.errors.length, 0);
+});
+
+test('a refused save keeps the draft and shows the server\'s reason', async () => {
+  const h = await harness().ready();
+  await openSettings(h);
+  h.document.emit('input', { target: { id: '', dataset: { source: 'codex', homeIndex: '0' }, value: 'relative/codex' } });
+  h.action('set-save');
+  h.take('/api/settings').resolve('"relative/codex": use an absolute path or one starting with ~/', 400); await flush();
+  assert.equal(h.run('JSON.stringify(state.settings.draft.codex)'), JSON.stringify(['relative/codex', '/Volumes/work/codex']));
+  assert.match(h.node('main').innerHTML, /Could not save: .*use an absolute path/);
+  assert.equal(h.node('setSave').disabled, false);
+});
+
+test('folders pinned by -codex / -claude are shown read-only', async () => {
+  const h = await harness().ready();
+  await openSettings(h, settingsPayload({ pinned: true, homes: [{ path: '/srv/rollouts', resolved: '/srv/rollouts', status: 'ok', sessions: 3 }], claude: [] }));
+  const main = h.node('main').innerHTML;
+  assert.match(main, /data-home-index="0" value="\/srv\/rollouts"[^>]*disabled/);
+  assert.match(main, /Set by -codex \/ -claude on the command line/);
+  assert.doesNotMatch(main, /id="setSave"/);
+  assert.doesNotMatch(main, /data-action="set-add"/);
+});
+
+test('a #settings deep link opens the page on load and on a hash change', async () => {
+  const h = harness({ hash: '#settings' });
+  h.take('/api/auth').resolve({ enabled: false, authenticated: true }); await flush();
+  h.take('/api/sessions').resolve([]); await flush();
+  h.take('/api/settings').resolve(settingsPayload()); await flush();
+  assert.equal(h.run('state.page'), 'settings');
+  assert.match(h.node('main').innerHTML, /<h1>Settings<\/h1>/);
+  h.run("go('sessions')");
+  h.take('/api/sessions').resolve([]); await flush();
+  h.location.hash = '#settings';
+  h.window.emit('hashchange');
+  h.take('/api/settings').resolve(settingsPayload()); await flush();
+  assert.equal(h.run('state.page'), 'settings');
+  assert.equal(h.errors.length, 0);
+});
+
+test('the session view names the log file of the main thread and of every agent', async () => {
+  const h = await harness().ready();
+  const model = agentsSession();
+  model.lanes[0].file = '/home/synthetic/.codex/sessions/2026/09/12/rollout-2026-09-12T10-00-00-session.jsonl';
+  model.lanes[1].file = '/home/synthetic/.codex/sessions/2026/09/12/rollout-2026-09-12T10-00-10-early.jsonl';
+  await h.open('session', model);
+  // the path is the request card's own last row (full width), not a cell of the summary list
+  assert.match(h.node('main').innerHTML, /<\/div><dl class="session-summary rollout-path"><div><dt>Log file<\/dt><dd><span class="path" title="[^"]*rollout-2026-09-12T10-00-00-session\.jsonl">\/home\/synthetic\/\.codex\/sessions\/2026\/09\/12\/rollout-2026-09-12T10-00-00-session\.jsonl<\/span><\/dd><\/div><\/dl><\/section>/);
+  assert.doesNotMatch(h.node('main').innerHTML, /<dt>Status<\/dt>(?:(?!<\/dl>).)*Log file/);
+  h.run("inspectLane('early')");
+  assert.match(h.node('inspector').innerHTML, /<dt>Log file<\/dt><dd class="mono">\/home\/synthetic\/\.codex\/sessions\/2026\/09\/12\/rollout-2026-09-12T10-00-10-early\.jsonl<\/dd>/);
+  h.run("inspectLane('lane')");
+  assert.match(h.node('inspector').innerHTML, /rollout-2026-09-12T10-00-00-session\.jsonl/);
 });

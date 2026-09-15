@@ -23,32 +23,21 @@ const toneStyle = id => `--tone:${toneColor(id)}`;
 
 const INSIGHT_TEXT = {
   page: {
-    eyebrow: 'Codex insights on this machine',
+    eyebrow: 'Agent insights on this machine',
     title: 'Insights',
     subtitle: 'Where your sessions lose time and tokens, with the evidence.',
   },
   controls: {
-    period: 'Period',
-    project: 'Project',
-    allProjects: 'All projects',
     session: 'Session',
-    from: 'From',
-    to: 'To',
-    apply: 'Apply',
     orderBy: 'Order by',
     time: 'Time',
     tokens: 'Tokens',
     regenerate: 'Regenerate',
     analyze: 'Analyze',
     cancel: 'Cancel',
-    includeLive: 'Include live sessions',
   },
+  // the period and project controls are the shared filter (filter.js); one period is this page's
   periods: {
-    '7d': 'Last 7 days',
-    '30d': 'Last 30 days',
-    '90d': 'Last 90 days',
-    all: 'All time',
-    custom: 'Custom dates…',
     session: 'One session…',
   },
   report: {
@@ -216,7 +205,8 @@ const INSIGHT_TEXT = {
       measured: 'That time, by model and effort. The split by stage comes from the stage each call served.',
       happened: c => {
         const s = c.stats || {};
-        const stages = Object.keys(s).filter(k => k.startsWith('stage_') && s[k] > 0).sort((a, b) => s[b] - s[a]).slice(0, 4).map(k => `${k.slice(6)} ${fmt(s[k])}`);
+        const stageName = k => { const key = k.slice(6); const def = typeof LIFECYCLES === 'object' && LIFECYCLES[key]; return def ? def.short : key; };
+        const stages = Object.keys(s).filter(k => k.startsWith('stage_') && s[k] > 0).sort((a, b) => s[b] - s[a]).slice(0, 4).map(k => `${stageName(k)} ${fmt(s[k])}`);
         const by = stages.length ? ` By stage: ${stages.join(', ')}.` : '';
         return `The model spent ${fmt(c.exposure.time_ms)} generating on the main thread${shareText(c)}.${by} ${inSessions(c)}`;
       },
@@ -360,51 +350,35 @@ function shapeText(shape) {
 }
 
 /* ---------- state and data ---------- */
+// The report parameters are a shared filter value (filter.js: kind, from, to, cwd) plus this
+// page's own: session (kind 'session'). cwd starts as null — "not chosen yet", replaced by the
+// default project on the first load — and '' once the reader picks "All projects".
 function insightsState() {
   if (!state.insights) {
-    state.insights = { params: { cwd: '', period: { kind: '30d' }, from: '', to: '', session: '', includeLive: false }, axis: 'time', report: null, loading: false, error: '', openGroups: new Set(), showAll: new Set(), scan: null, stale: false, request: 0, timer: null, sessionReports: {} };
+    state.insights = { params: { kind: '30d', from: '', to: '', cwd: null, session: '', sources: {} }, axis: 'time', report: null, loading: false, error: '', openGroups: new Set(), showAll: new Set(), scan: null, stale: false, request: 0, timer: null, sessionReports: {} };
   }
   return state.insights;
 }
 
 // insightsQuery builds the report query in a fixed order (tests match the URL).
 function insightsQuery(p) {
-  const parts = ['period=' + encodeURIComponent(p.period.kind)];
-  if (p.period.kind === 'session') {
+  const parts = ['period=' + encodeURIComponent(p.kind)];
+  if (p.kind === 'session') {
     parts.push('session=' + encodeURIComponent(p.session || ''));
   } else if (p.cwd) {
     parts.push('cwd=' + encodeURIComponent(p.cwd));
   }
-  if (p.period.kind === 'custom') {
+  if (p.kind === 'custom') {
     parts.push('from=' + dayStart(p.from));
     parts.push('to=' + dayEnd(p.to));
   }
-  if (p.includeLive) parts.push('include_live=1');
+  // a source switched off narrows the report's scope; all on is the server's default
+  const on = SOURCE_ORDER.filter(k => sourceOn(p, k));
+  if (p.kind !== 'session' && on.length < SOURCE_ORDER.length) parts.push('sources=' + on.join(','));
   return parts.join('&');
 }
 
-// dayStart / dayEnd turn a date input value (YYYY-MM-DD) into local-time ms.
-function dayStart(v) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || '');
-  if (!m) return 0;
-  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0, 0).getTime();
-}
-
-function dayEnd(v) {
-  const s = dayStart(v);
-  return s ? s + 24 * 3600e3 - 1 : 0;
-}
-
-function dateInputValue(t) {
-  const d = new Date(t);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-function dayLabel(t) {
-  const d = new Date(t);
-  return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
-}
-
+// periodLabel names the period a report was built for (the server's resolved dates).
 function periodLabel(period, rep) {
   if (!period) return '';
   if (period.kind === 'session') {
@@ -416,23 +390,10 @@ function periodLabel(period, rep) {
   return `${dayLabel(period.from)} – ${dayLabel(period.to)}`;
 }
 
-function projectsInPeriod(ins) {
-  const p = ins.params;
-  const counts = new Map();
-  for (const s of state.sessions) {
-    const inPeriod = !p.period.from || (s.updated >= p.period.from && s.updated <= p.period.to);
-    if (!counts.has(s.cwd)) counts.set(s.cwd, { all: 0, period: 0 });
-    const c = counts.get(s.cwd);
-    c.all++;
-    if (inPeriod) c.period++;
-  }
-  return [...counts.entries()].sort((a, b) => b[1].period - a[1].period || b[1].all - a[1].all || a[0].localeCompare(b[0]));
-}
-
 // defaultProject: the project of the open session, else the one with the most sessions.
 function defaultProject(ins) {
   if (state.model && state.model.cwd) return state.model.cwd;
-  const projects = projectsInPeriod(ins);
+  const projects = filterProjects(ins.params, state.sessions);
   return projects.length ? projects[0][0] : '';
 }
 
@@ -447,12 +408,11 @@ async function loadInsights() {
   try {
     await loadSessions();
     if (!owns()) return;
-    if (!ins.params.cwd && ins.params.period.kind !== 'session') ins.params.cwd = defaultProject(ins);
+    if (ins.params.cwd === null && ins.params.kind !== 'session') ins.params.cwd = defaultProject(ins) || null; // no project yet: keep waiting for one
     const rep = await api('/api/insights/report?' + insightsQuery(ins.params));
     if (!owns()) return;
     ins.report = rep;
     ins.loading = false;
-    ins.params.period = rep.params.period;
     ins.openGroups = new Set((rep.groups || []).filter(g => g.cards && g.cards.length).map(g => g.id));
     if ((rep.no_data || []).length) ins.openGroups.add('not_measured');
     ins.showAll = new Set();
@@ -541,12 +501,6 @@ function insightsAction(a, el) {
   if (a === 'ins-regenerate') return loadInsights();
   if (a === 'ins-scan') return startInsightsScan();
   if (a === 'ins-cancel') return cancelInsightsScan();
-  if (a === 'ins-apply-dates') {
-    ins.params.from = ($('#insFrom') || {}).value || ins.params.from;
-    ins.params.to = ($('#insTo') || {}).value || ins.params.to;
-    ins.params.period = { kind: 'custom', from: dayStart(ins.params.from), to: dayEnd(ins.params.to) };
-    return loadInsights();
-  }
   if (a === 'ins-group') {
     const id = el.dataset.insGroup;
     if (ins.openGroups.has(id)) ins.openGroups.delete(id);
@@ -572,56 +526,40 @@ function insightsAction(a, el) {
   }
   if (a === 'ins-project') {
     ins.params.cwd = el.dataset.cwd || '';
-    ins.params.period = { kind: ins.params.period.kind === 'session' ? '30d' : ins.params.period.kind };
+    if (ins.params.kind === 'session') ins.params.kind = '30d';
     if (state.page !== 'insights') return go('insights');
     return loadInsights();
   }
   if (a === 'ins-guide') return guide();
 }
 
-// insightsChange handles the report bar's selects (wired from app.js's change listener).
+// insightsChange handles the report bar's controls (wired from app.js's change listener): the
+// shared filter's period and project, and this page's session picker. Choosing "One session…"
+// takes the newest session of the project until one is picked.
 function insightsChange(id, value) {
   const ins = insightsState();
-  if (id === 'insPeriod') {
-    if (value === 'custom') {
-      const to = Date.now();
-      ins.params.from = ins.params.from || dateInputValue(to - 30 * 24 * 3600e3);
-      ins.params.to = ins.params.to || dateInputValue(to);
-      ins.params.period = { kind: 'custom', from: dayStart(ins.params.from), to: dayEnd(ins.params.to) };
-    } else if (value === 'session') {
-      const first = sessionsForPicker(ins)[0];
-      ins.params.session = ins.params.session || (first ? first.id : '');
-      ins.params.period = { kind: 'session' };
-      if (!ins.params.session) {
-        renderInsights();
-        return;
-      }
-    } else {
-      ins.params.period = { kind: value };
-    }
-    loadInsights();
-    return;
-  }
-  if (id === 'insProject') {
-    ins.params.cwd = value;
-    loadInsights();
-    return;
-  }
   if (id === 'insSession') {
     ins.params.session = value;
-    ins.params.period = { kind: 'session' };
+    ins.params.kind = 'session';
     loadInsights();
     return;
   }
-  if (id === 'insLive') {
-    ins.params.includeLive = !!value;
-    loadInsights();
+  const field = filterField('ins', id);
+  if (!field || !filterChange(ins.params, field, value)) return;
+  if (ins.params.kind === 'session') {
+    const first = sessionsForPicker(ins)[0];
+    ins.params.session = ins.params.session || (first ? first.id : '');
+    if (!ins.params.session) {
+      renderInsights();
+      return;
+    }
   }
+  loadInsights();
 }
 
 function sessionsForPicker(ins) {
   const cwd = ins.params.cwd;
-  return state.sessions.filter(s => !cwd || s.cwd === cwd).slice().sort((a, b) => b.updated - a.updated);
+  return state.sessions.filter(s => (!cwd || s.cwd === cwd) && sourceOn(ins.params, sourceOf(s))).slice().sort((a, b) => b.updated - a.updated);
 }
 
 /* ---------- rendering ---------- */
@@ -656,24 +594,23 @@ function renderReportBar() {
   if (el && state.page === 'insights') el.innerHTML = reportBarHTML();
 }
 
+// reportBarHTML: the shared filter (with this page's "One session…" period and its session
+// picker), the axis switch and Regenerate on the right, and the report status as its own row
+// underneath — a full-width line that wraps as text instead of squeezing between the controls.
 function reportBarHTML() {
   const ins = insightsState();
   const T = INSIGHT_TEXT;
   const p = ins.params;
-  const kind = p.period.kind;
-  const periodSelect = `<label class="ctl">${esc(T.controls.period)}<select class="select" id="insPeriod" aria-label="${esc(T.controls.period)}">${Object.keys(T.periods).map(k => `<option value="${k}" ${k === kind ? 'selected' : ''}>${esc(T.periods[k])}</option>`).join('')}</select></label>`;
-  let extra = '';
-  if (kind === 'custom') {
-    extra = `<label class="ctl">${esc(T.controls.from)}<input type="date" id="insFrom" value="${esc(p.from)}"></label><label class="ctl">${esc(T.controls.to)}<input type="date" id="insTo" value="${esc(p.to)}"></label><button class="btn small" data-action="ins-apply-dates">${esc(T.controls.apply)}</button>`;
-  } else if (kind === 'session') {
+  const kind = p.kind;
+  let between = '';
+  if (kind === 'session') {
     const list = sessionsForPicker(ins);
-    extra = `<label class="ctl">${esc(T.controls.session)}<select class="select" id="insSession" aria-label="${esc(T.controls.session)}">${list.map(s => `<option value="${esc(s.id)}" ${s.id === p.session ? 'selected' : ''}>${esc(trunc(s.title || s.id, 60))} · ${stamp(s.updated)}</option>`).join('')}</select></label>`;
+    between = `<label class="ctl">${esc(T.controls.session)}<select class="select" id="insSession" aria-label="${esc(T.controls.session)}">${list.map(s => `<option value="${esc(s.id)}" ${s.id === p.session ? 'selected' : ''}>${esc(trunc(s.title || s.id, 60))} · ${stamp(s.updated)}</option>`).join('')}</select></label>`;
   }
-  const projects = projectsInPeriod(ins).filter(([cwd, c]) => c.period > 0 || cwd === p.cwd);
-  const projectSelect = kind === 'session' ? '' : `<label class="ctl">${esc(T.controls.project)}<select class="select" id="insProject" aria-label="${esc(T.controls.project)}"><option value="" ${p.cwd ? '' : 'selected'}>${esc(T.controls.allProjects)}</option>${projects.map(([cwd, c]) => `<option value="${esc(cwd)}" ${cwd === p.cwd ? 'selected' : ''}>${esc(shortPath(cwd))} (${c.period})</option>`).join('')}</select></label>`;
+  const controls = filterBarHTML('ins', p, { extraPeriods: { session: T.periods.session }, between, project: kind !== 'session', projects: filterProjects(p, state.sessions), sessions: kind === 'session' ? [] : state.sessions });
   const axis = `<div class="axis-switch" role="group" aria-label="${esc(T.controls.orderBy)}"><button data-action="ins-axis" data-axis="time" class="${ins.axis === 'time' ? 'active' : ''}" aria-pressed="${ins.axis === 'time'}">${esc(T.controls.time)}</button><button data-action="ins-axis" data-axis="tokens" class="${ins.axis === 'tokens' ? 'active' : ''}" aria-pressed="${ins.axis === 'tokens'}">${esc(T.controls.tokens)}</button></div>`;
   const regen = `<button class="btn ${ins.stale ? 'primary' : ''}" data-action="ins-regenerate" ${ins.loading ? 'disabled' : ''}>${icon('refresh', true)}${esc(T.controls.regenerate)}</button>`;
-  return `<section class="report-bar" aria-label="Report period and project">${periodSelect}${extra}${projectSelect}<div class="report-status">${reportStatusHTML(ins)}</div>${axis}${regen}</section>`;
+  return `<section class="report-bar" aria-label="Report period, project and sources">${controls}<div class="bar-actions">${axis}${regen}</div><div class="report-status">${reportStatusHTML(ins)}</div></section>`;
 }
 
 function reportStatusHTML(ins) {
@@ -745,7 +682,7 @@ function reportBodyHTML(ins) {
 }
 
 function projectsHint(ins) {
-  const list = projectsInPeriod(ins).filter(([cwd, c]) => c.period >= 3 && cwd !== ins.params.cwd);
+  const list = filterProjects(ins.params, state.sessions).filter(([cwd, c]) => c.period >= 3 && cwd !== ins.params.cwd);
   if (!list.length) return '';
   return `<p class="muted-note">${esc(INSIGHT_TEXT.states.projectsWithMore)} ${list.slice(0, 6).map(([cwd, c]) => `<button class="text-btn" data-action="ins-project" data-cwd="${esc(cwd)}">${esc(shortPath(cwd))} (${c.period})</button>`).join(' · ')}</p>`;
 }
@@ -878,5 +815,6 @@ function insightsTextSamples() {
     else if (v && typeof v === 'object') Object.values(v).forEach(walk);
   };
   walk(INSIGHT_TEXT);
+  walk(FILTER_TEXT);
   return out;
 }

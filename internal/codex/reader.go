@@ -1,15 +1,11 @@
 // Package codex reads OpenAI Codex CLI rollout files (~/.codex/sessions/**/rollout-*.jsonl)
-// and turns them into the normalized model (internal/model).
+// and turns them into the normalized model (internal/model) through the shared joiner
+// (internal/source): Index is the source, laneParser the parser of one rollout file.
 package codex
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
-	"errors"
-	"io"
-	"os"
-	"time"
 )
 
 // Line types that carry nothing the timeline needs. They are dropped by looking at the
@@ -93,94 +89,5 @@ func prefixField(line []byte, key string, n int) string {
 	return string(rest[:j])
 }
 
-// maxLine is the largest single line we accept. Codex `compacted` lines reach ~5 MB;
-// 64 MB leaves ample room.
-const maxLine = 64 << 20
-
-// tailReader reads complete lines from a file starting at a byte offset. It never
-// returns a partial trailing line: the caller's offset only advances past '\n'.
-type tailReader struct {
-	f       *os.File
-	r       *bufio.Reader
-	off     int64
-	pending int64 // bytes of a discarded line consumed so far
-}
-
-func openTail(path string, off int64) (*tailReader, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := f.Seek(off, io.SeekStart); err != nil {
-		f.Close()
-		return nil, err
-	}
-	return &tailReader{f: f, r: bufio.NewReaderSize(f, 1<<20), off: off}, nil
-}
-
-func (t *tailReader) Close() error { return t.f.Close() }
-
-// next returns the next complete line (without '\n') and its start offset.
-// io.EOF means "no complete line available right now". Lines whose type is in skipTypes
-// are never accumulated: the first chunk decides, the rest is discarded up to '\n'.
-// The returned skipped flag is true for such lines (line then holds only the first chunk).
-func (t *tailReader) next() (line []byte, start int64, skipped bool, err error) {
-	start = t.off
-	var buf []byte
-	discard := false
-	for {
-		chunk, e := t.r.ReadSlice('\n')
-		if e == nil {
-			if discard {
-				t.off = start + t.pending + int64(len(chunk))
-				return buf, start, true, nil
-			}
-			if buf == nil {
-				line = chunk[:len(chunk)-1]
-			} else {
-				buf = append(buf, chunk[:len(chunk)-1]...)
-				line = buf
-			}
-			t.off = start + int64(len(line)) + 1 // line bytes + '\n'
-			if n := len(line); n > 0 && line[n-1] == '\r' {
-				line = line[:n-1]
-			}
-			return line, start, false, nil
-		}
-		if errors.Is(e, bufio.ErrBufferFull) {
-			if discard {
-				t.pending += int64(len(chunk))
-				continue
-			}
-			if buf == nil && skipTypes[lineType(chunk)] {
-				// keep a copy of the head only (for the timestamp), drop the rest
-				buf = append([]byte(nil), chunk[:min(len(chunk), 160)]...)
-				discard = true
-				t.pending = int64(len(chunk))
-				continue
-			}
-			buf = append(buf, chunk...)
-			if len(buf) > maxLine {
-				// pathological line: drop it entirely but keep going
-				discard = true
-				t.pending = int64(len(buf))
-				buf = buf[:160]
-			}
-			continue
-		}
-		// Leave a partial line unconsumed; propagate failures rather than treating them as EOF.
-		t.pending = 0
-		return nil, start, false, e
-	}
-}
-
-func parseTS(s string) int64 {
-	if s == "" {
-		return 0
-	}
-	t, err := time.Parse(time.RFC3339Nano, s)
-	if err != nil {
-		return 0
-	}
-	return t.UnixMilli()
-}
+// skipLine is the TailReader predicate: a line whose type is in skipTypes is never accumulated.
+func skipLine(head []byte) bool { return skipTypes[lineType(head)] }

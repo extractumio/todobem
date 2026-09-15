@@ -20,8 +20,9 @@
   <p class="eyebrow nav-label">IN FOCUS</p>
   <div id="focusCard"></div>
   <div class="sidebar-bottom">
+    <button class="nav-item" data-action="settings" id="navSettings"><span data-icon="gear"></span>Settings</button>
     <button class="nav-item" data-action="guide"><span data-icon="help"></span>Reading the timeline</button>
-    <div class="sidebar-note" id="sidebarNote">Codex rollouts · local only<br><span class="note-sub">todobem / 0.1</span></div>
+    <div class="sidebar-note" id="sidebarNote">Codex &amp; Claude Code logs · local only<br><span class="note-sub">todobem / 0.1</span></div>
   </div>
 </aside>
 <div class="main-shell">
@@ -32,6 +33,7 @@
       <span class="live-label" id="liveLabel"></span>
       <nav class="mobile-nav" aria-label="Mobile navigation"><button class="btn" data-action="sessions" id="mobileSessions">Sessions</button><button class="btn" data-action="session" id="mobileSession">View</button><button class="btn" data-action="insights" id="mobileInsights">Insights</button></nav>
       <button class="btn ghost" data-action="lock" id="lockBtn" title="Lock the viewer: a new token is needed to open it again" hidden><span data-icon="shield"></span>Lock</button>
+      <button class="btn icon-only ghost mobile-only" data-action="settings" aria-label="Settings"><span data-icon="gear"></span></button>
       <button class="btn icon-only ghost" data-action="guide" aria-label="How to read the timeline"><span data-icon="help"></span></button>
     </div>
   </header>
@@ -41,8 +43,10 @@
 <dialog class="guide-dialog" id="guide" aria-labelledby="guideTitle"></dialog>
 <div class="tooltip" id="tooltip" role="tooltip"></div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="filter.js"></script>
 <script src="inspector.js"></script>
 <script src="insights.js"></script>
+<script src="settings.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

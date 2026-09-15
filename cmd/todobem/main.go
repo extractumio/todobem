@@ -12,12 +12,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/extractumio/todobem/internal/auth"
 	"github.com/extractumio/todobem/internal/classify"
-	"github.com/extractumio/todobem/internal/codex"
 	"github.com/extractumio/todobem/internal/server"
+	"github.com/extractumio/todobem/internal/settings"
 	"github.com/extractumio/todobem/internal/store"
 )
 
@@ -36,7 +37,9 @@ func main() {
 	}
 	home, _ := os.UserHomeDir()
 	addr := flag.String("addr", "127.0.0.1:7788", "listen address")
-	codexHome := flag.String("codex", filepath.Join(home, ".codex"), "Codex home directory (contains sessions/)")
+	codexHome := flag.String("codex", "", codexFlagHelp)
+	claudeHome := flag.String("claude", "", claudeFlagHelp)
+	settingsPath := flag.String("settings", settings.DefaultPath(), settingsFlagHelp)
 	openBrowser := flag.Bool("open", true, "open the browser on start")
 	rules := flag.String("rules", "", "path to a user rules overlay (JSON); also loads $TODOBEM_RULES and ~/.todobem/rules.json")
 	cacheDir := flag.String("cache", "", "directory for the parsed-session cache (default ~/.todobem/cache or $TODOBEM_CACHE; \"off\" disables)")
@@ -46,6 +49,13 @@ func main() {
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+	if abs, err := filepath.Abs(*settingsPath); err == nil && *settingsPath != "" {
+		*settingsPath = abs // the page names the file; a relative flag value would name it relative to a cwd nobody sees
+	}
+	homes, err := resolveHomes(*codexHome, *claudeHome, *settingsPath)
+	if err != nil {
+		log.Fatalf("session folders: %v", err)
+	}
 
 	// Second detection source: a user overlay of project-specific commands and review-skill names,
 	// merged into the built-in table before any session is parsed. A malformed config fails loudly.
@@ -60,13 +70,14 @@ func main() {
 		log.Fatal(err)
 	}
 	cache := resolveCacheDir(*cacheDir, home)
-	srv := server.NewWithCache(*codexHome, sub, cache)
+	srv := server.NewWithCache(homes.Homes, sub, cache)
+	srv.ConfigureSettings(*settingsPath, homes.Typed, homes.Pinned)
 	go srv.Scan()
 
 	url := "http://" + *addr + "/"
 	if cache != "" {
 		n, size := store.New(cache).Size()
-		fmt.Printf("session cache: %s (%d sessions, %.1f MB; `todobem cache -prune` drops entries of other codex homes)\n", cache, n, float64(size)/1e6)
+		fmt.Printf("session cache: %s (%d sessions, %.1f MB; `todobem cache -prune` drops entries of other session folders)\n", cache, n, float64(size)/1e6)
 	}
 	// The UI is gated by default: the key file is the root of trust, `todobem token` mints a
 	// one-time login link from it. The token itself is never printed by the server (its stdout
@@ -83,7 +94,7 @@ func main() {
 	} else {
 		fmt.Println("auth: OFF (-auth=off) · anyone who can reach this port sees every session")
 	}
-	fmt.Printf("todobem listening on %s (codex home: %s)\n", url, *codexHome)
+	fmt.Printf("todobem listening on %s\n%s\n", url, homes.Describe())
 	if *openBrowser {
 		open := url
 		if key != nil {
@@ -156,10 +167,17 @@ func runToken(args []string) int {
 func runCache(args []string) int {
 	fs := flag.NewFlagSet("todobem cache", flag.ContinueOnError)
 	home, _ := os.UserHomeDir()
-	codexHome := fs.String("codex", filepath.Join(home, ".codex"), "Codex home directory whose sessions are kept")
+	codexHome := fs.String("codex", "", codexFlagHelp)
+	claudeHome := fs.String("claude", "", claudeFlagHelp)
+	settingsPath := fs.String("settings", settings.DefaultPath(), settingsFlagHelp)
 	cacheDir := fs.String("cache", "", "cache directory (default ~/.todobem/cache or $TODOBEM_CACHE)")
-	prune := fs.Bool("prune", false, "delete the entries of sessions the codex home does not list, and leftover temp files")
+	prune := fs.Bool("prune", false, "delete the entries of sessions the configured folders do not list, and leftover temp files")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	homes, err := resolveHomes(*codexHome, *claudeHome, *settingsPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "session folders:", err)
 		return 2
 	}
 	dir := resolveCacheDir(*cacheDir, home)
@@ -173,15 +191,15 @@ func runCache(args []string) int {
 	if !*prune {
 		return 0
 	}
-	ix := codex.NewIndex(*codexHome)
-	ix.Scan()
-	ids := ix.IDs()
+	srv := server.New(homes.Homes, nil)
+	srv.Scan()
+	ids := srv.Sources().IDs()
 	removed, freed, err := st.Prune(ids)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "prune:", err)
 	}
 	left, leftSize := st.Size()
-	fmt.Printf("pruned: %d entries, %.1f MB (codex home %s lists %d threads)\n        %d sessions, %.1f MB kept\n", removed, float64(freed)/1e6, *codexHome, len(ids), left, float64(leftSize)/1e6)
+	fmt.Printf("pruned: %d entries, %.1f MB (%s list %d threads)\n        %d sessions, %.1f MB kept\n", removed, float64(freed)/1e6, strings.Join(homes.all(), ", "), len(ids), left, float64(leftSize)/1e6)
 	if err != nil {
 		return 1
 	}
@@ -204,4 +222,78 @@ func resolveCacheDir(flagVal, home string) string {
 		return filepath.Join(home, ".todobem", "cache")
 	}
 	return ""
+}
+
+const (
+	codexFlagHelp    = "one Codex home directory (contains sessions/), pinned for this run together with -claude: only the folders given on the command line are read; default: the folders in the settings file, else ~/.codex and ~/.claude"
+	claudeFlagHelp   = "one Claude Code home directory (contains projects/), pinned for this run together with -codex; see -codex"
+	settingsFlagHelp = "settings file with the session folders, written by the Settings page (default ~/.todobem/settings.json or $TODOBEM_SETTINGS)"
+)
+
+// sessionHomes is the resolved answer to "which folders hold the sessions": the absolute homes
+// to scan per source, the same entries as the user wrote them (for the Settings page), whether
+// a flag pinned them for this run, and where they came from (for the startup line).
+type sessionHomes struct {
+	Homes  settings.Homes
+	Typed  settings.Settings
+	Pinned bool
+	source string
+}
+
+// resolveHomes picks the session folders: an explicit -codex and/or -claude pins this run to
+// exactly the folders given (the other source is off; the Settings page shows them read-only);
+// else the settings file when it exists (an absent key is that source's default, an empty list
+// turns it off); else ~/.codex and ~/.claude. A settings file that exists but cannot be read
+// fails loudly — silently reading the wrong folders would be worse. Called after the flag set
+// is parsed: only a flag actually given on the command line counts as explicit ("" is not).
+func resolveHomes(codexFlag, claudeFlag, settingsPath string) (sessionHomes, error) {
+	if codexFlag != "" || claudeFlag != "" {
+		cfg := settings.Settings{CodexHomes: []string{}, ClaudeHomes: []string{}}
+		if codexFlag != "" {
+			cfg.CodexHomes = []string{codexFlag}
+		}
+		if claudeFlag != "" {
+			cfg.ClaudeHomes = []string{claudeFlag}
+		}
+		typed, homes, err := settings.Resolve(cfg)
+		if err != nil {
+			return sessionHomes{}, err
+		}
+		return sessionHomes{Homes: homes, Typed: typed, Pinned: true, source: "command-line flags; the Settings page is read-only"}, nil
+	}
+	cfg, exists, err := settings.Load(settingsPath)
+	if err != nil {
+		return sessionHomes{}, err
+	}
+	typed, homes, err := settings.Resolve(cfg)
+	if err != nil {
+		if exists {
+			return sessionHomes{}, fmt.Errorf("%s: %w", settingsPath, err)
+		}
+		return sessionHomes{}, err
+	}
+	src := settingsPath
+	if !exists {
+		src = "default; " + settingsPath + " absent"
+	}
+	return sessionHomes{Homes: homes, Typed: typed, source: src}, nil
+}
+
+// all lists every folder in effect, Codex first.
+func (h sessionHomes) all() []string {
+	return append(append([]string(nil), h.Homes.Codex...), h.Homes.Claude...)
+}
+
+// Describe is the startup line: the folders in effect per source and why.
+func (h sessionHomes) Describe() string {
+	part := func(noun string, homes []string) string {
+		if len(homes) == 0 {
+			return noun + ": off"
+		}
+		if len(homes) > 1 {
+			noun += "s"
+		}
+		return noun + ": " + strings.Join(homes, ", ")
+	}
+	return fmt.Sprintf("%s · %s (%s)", part("codex home", h.Homes.Codex), part("claude home", h.Homes.Claude), h.source)
 }

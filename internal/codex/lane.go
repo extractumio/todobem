@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/extractumio/todobem/internal/classify"
 	"github.com/extractumio/todobem/internal/model"
+	"github.com/extractumio/todobem/internal/source"
 )
 
 // laneParser holds the resumable state for one rollout file.
@@ -35,7 +35,6 @@ type laneParser struct {
 	// yet (yield_time_ms elapsed); the real CommandExecution item replaces them when it arrives.
 	provisional map[string]*model.Operation
 	sawUserItem bool
-	question    bool // a request_user_input is pending
 	// tokenTotal is the cumulative total_tokens of the last counted token_count record. The
 	// counter restarts (a resumed thread) and a forked child inherits its parent's value, so
 	// the lane's usage is the sum of last_token_usage over the records where it changed.
@@ -221,13 +220,12 @@ func (p *laneParser) noteUserInput(ts int64, turn, text string, src *model.Src, 
 		if p.turn != nil && p.turn.Trigger == "" {
 			p.turn.Trigger = "system"
 		}
-		p.addMarker(ts, "system_message", turn, clip(tag+"\n"+text, 1500), tag, src)
+		p.addMarker(ts, "system_message", turn, source.Clip(tag+"\n"+text, 1500), tag, src)
 		return
 	}
 	if p.turn != nil && p.turn.Trigger == "" {
 		p.turn.Trigger = "user"
 	}
-	p.question = false
 	if !fallback {
 		// the item is authoritative: drop a fallback marker for the same input
 		for n := len(p.lane.Markers); n > 0; n-- {
@@ -340,45 +338,48 @@ var (
 	reQuestion = regexp.MustCompile(`"title"\s*:\s*"((?:[^"\\]|\\.)*)"`)
 )
 
-// consume reads all complete new lines from the file. Returns bytes consumed.
-// If a line's ordinal goes backwards the file was rewritten: the caller restarts from 0.
-func (p *laneParser) consume(now int64) (int64, error) {
-	tr, err := openTail(p.meta.Path, p.off)
+// source.LaneParser: the joiner reads the lane, the file, the offset and the last evidence.
+func (p *laneParser) Lane() *model.Lane            { return p.lane }
+func (p *laneParser) Path() string                 { return p.meta.Path }
+func (p *laneParser) Offset() int64                { return p.off }
+func (p *laneParser) LastTS() int64                { return p.lastTS }
+func (p *laneParser) Stats() (read, decoded int64) { return p.Bytes, p.Decoded }
+
+// Consume reads all complete new lines from the file. If a line's ordinal goes backwards the
+// file was rewritten: source.ErrRewritten, and the joiner restarts the lane from 0.
+func (p *laneParser) Consume(now int64) error {
+	tr, err := source.OpenTail(p.meta.Path, p.off, skipLine)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	defer tr.Close()
-	var n int64
 	for {
-		line, start, skipped, err := tr.next()
+		line, start, skipped, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return n, err
+			return err
 		}
-		p.Bytes += tr.off - start
+		p.Bytes += tr.Offset() - start
 		if skipped {
 			p.touch(prefixTS(line))
 		} else {
 			if o := prefixField(line, "ordinal", 80); o != "" {
 				if v, e := strconv.ParseInt(o, 10, 64); e == nil {
 					if v < p.lastOrdinal {
-						return n, errRewritten
+						return source.ErrRewritten
 					}
 					p.lastOrdinal = v
 				}
 			}
 			p.handle(line, start)
 		}
-		p.off = tr.off
-		n += tr.off - start
+		p.off = tr.Offset()
 	}
 	p.lane.Ended = max(p.lane.Started, p.lastTS)
-	return n, nil
+	return nil
 }
-
-var errRewritten = errors.New("rollout rewritten")
 
 // touch records evidence that the process was alive at ts.
 func (p *laneParser) touch(ts int64) {
@@ -653,8 +654,8 @@ func (p *laneParser) handleItem(line []byte, start int64, ts int64) {
 		}
 		op := p.newOp(head.ID, ic.TurnID, classify.Code, "edit", s, e, src)
 		op.Title = "edit " + title
-		op.Detail = clip(strings.Join(detail, "\n"), 2000)
-		op.Status = orDefault(fc.Status, "completed")
+		op.Detail = source.Clip(strings.Join(detail, "\n"), 2000)
+		op.Status = source.OrDefault(fc.Status, "completed")
 		if lc, ok := classify.PathLifecycle(paths); ok {
 			op.Lifecycle, op.LifecycleRule = lc, "edited path"
 		}
@@ -667,8 +668,8 @@ func (p *laneParser) handleItem(line []byte, start int64, ts int64) {
 		json.Unmarshal(ic.Item, &ti)
 		text := joinText(ti.Content)
 		op := p.newOp(head.ID, ic.TurnID, classify.LLM, "message", s, e, src)
-		op.Title = "message: " + clip(firstLine(text), 90)
-		op.Detail = clip(text, 2000)
+		op.Title = "message: " + source.Clip(source.FirstLine(text), 90)
+		op.Detail = source.Clip(text, 2000)
 		op.Status = "completed"
 		if ti.Phase == "final_answer" {
 			p.noteFinalAnswer(e, ic.TurnID, text, src, false)
@@ -688,7 +689,7 @@ func (p *laneParser) handleItem(line []byte, start int64, ts int64) {
 		json.Unmarshal(ic.Item, &mi)
 		op := p.newOp(head.ID, ic.TurnID, classify.Code, "mcp", s, e, src)
 		op.Title = "mcp " + mi.Server + "." + mi.Tool
-		op.Status = orDefault(mi.Status, "completed")
+		op.Status = source.OrDefault(mi.Status, "completed")
 	case "WebSearch":
 		op := p.newOp(head.ID, ic.TurnID, classify.Code, "web_search", s, e, src)
 		op.Title = "web search"
@@ -794,7 +795,7 @@ func (p *laneParser) handleResponseItem(line []byte, start int64, ts int64) {
 		} else if strings.Contains(sb.String(), "FINAL_ANSWER") {
 			kind = "result_returned"
 		}
-		p.addMarker(ts, kind, p.turnID(), clip(sb.String(), 3000), am.Author, p.src(start, line))
+		p.addMarker(ts, kind, p.turnID(), source.Clip(sb.String(), 3000), am.Author, p.src(start, line))
 	case "web_search_call", "tool_search_call":
 		op := p.newOp(p.generatedOpID("ws", start), p.turnID(), classify.Code, "web_search", ts, ts, p.src(start, line))
 		op.Title = strings.TrimSuffix(pt, "_call")
@@ -846,17 +847,17 @@ func (p *laneParser) onCall(fc funcCall, ts int64, start int64, line []byte, cus
 	case "wait_agent":
 		op := p.newOp(fc.CallID, turn, classify.WaitWorker, "agent", ts, ts, src)
 		op.Title = "wait for sub-agents"
-		op.Detail = clip(fc.Arguments, 300)
+		op.Detail = source.Clip(fc.Arguments, 300)
 		op.Open, op.Status = true, "running"
 		pc.op = op
 	case "sleep":
 		op := p.newOp(fc.CallID, turn, classify.WaitWorker, "sleep", ts, ts, src)
-		op.Title = "sleep " + clip(fc.Arguments, 60)
+		op.Title = "sleep " + source.Clip(fc.Arguments, 60)
 		op.Open, op.Status = true, "running"
 		pc.op = op
 	case "update_plan":
 		summary, created := planSummary(fc.Arguments)
-		p.addMarker(ts, "plan", turn, clip(summary, 1500), "", src)
+		p.addMarker(ts, "plan", turn, source.Clip(summary, 1500), "", src)
 		if created {
 			// A plan with no completed step is the agent writing its plan; the op is instantaneous
 			// (phase llm: it is model output) and pins the planning stage so the reasoning before
@@ -866,13 +867,31 @@ func (p *laneParser) onCall(fc funcCall, ts int64, start int64, line []byte, cus
 			op.Status = "completed"
 			op.Lifecycle, op.LifecycleRule = classify.LcPlan, "plan created (update_plan)"
 		}
-	case "request_user_input_async", "request_user_input":
+	case "request_user_input_async":
+		// async: the agent posts a question but does NOT block on it (it keeps working), so no
+		// wait op — just the marker.
 		var qs []string
 		for _, m := range reQuestion.FindAllStringSubmatch(fc.Arguments, -1) {
 			qs = append(qs, unescapeJSON(m[1]))
 		}
-		p.question = true
-		p.addMarker(ts, "question", turn, clip(strings.Join(qs, "\n"), 2000), "", src)
+		p.addMarker(ts, "question", turn, source.Clip(strings.Join(qs, "\n"), 2000), "", src)
+	case "request_user_input":
+		// the agent handed control to the user and is blocked. An open wait_user op (the twin of
+		// Claude Code's AskUserQuestion op) so the wait reads "waiting for user", not model time;
+		// its function_call_output (the answer) closes it, and while it is unanswered it stays
+		// open and, on a live open turn, extends to now — so the live tail is wait_user, never
+		// no_telemetry.
+		var qs []string
+		for _, m := range reQuestion.FindAllStringSubmatch(fc.Arguments, -1) {
+			qs = append(qs, unescapeJSON(m[1]))
+		}
+		text := source.Clip(strings.Join(qs, "\n"), 2000)
+		p.addMarker(ts, "question", turn, text, "", src)
+		op := p.newOp(fc.CallID, turn, classify.WaitUser, "question", ts, ts, src)
+		op.Title = "question to user"
+		op.Detail = text
+		op.Open, op.Status = true, "running"
+		pc.op = op
 	case "view_image":
 		op := p.newOp(fc.CallID, turn, classify.Code, "image", ts, ts, src)
 		op.Title = "view image"
@@ -890,7 +909,7 @@ func (p *laneParser) onCall(fc funcCall, ts int64, start int64, line []byte, cus
 		pc.op = op
 	case "run":
 		op := p.newOp(fc.CallID, turn, classify.Unknown, "run", ts, ts, src)
-		op.Title = "run " + clip(fc.Arguments, 60)
+		op.Title = "run " + source.Clip(fc.Arguments, 60)
 		op.Open, op.Status = true, "running"
 		pc.op = op
 	default:
@@ -903,7 +922,7 @@ func (p *laneParser) onCall(fc funcCall, ts int64, start int64, line []byte, cus
 		}
 		op := p.newOp(fc.CallID, turn, phase, kind, ts, ts, src)
 		op.Title = fc.Name
-		op.Detail = clip(fc.Arguments, 1000)
+		op.Detail = source.Clip(fc.Arguments, 1000)
 		op.Open, op.Status = true, "running"
 		pc.op = op
 	}
@@ -923,7 +942,7 @@ func (p *laneParser) onOutput(fo funcOutput, ts int64, start int64, line []byte)
 			}
 			joined := strings.Join(cmds, "\n")
 			if joined == "" {
-				joined = clip(p.execInput, 500)
+				joined = source.Clip(p.execInput, 500)
 			}
 			op := p.commandOp(fo.CallID, p.turnID(), joined, "", p.execStart, ts, p.src(start, line))
 			op.Status = "completed"
@@ -936,8 +955,8 @@ func (p *laneParser) onOutput(fo funcOutput, ts int64, start int64, line []byte)
 					op.Phase = classify.Unknown
 				}
 				op.Kind = "exec-script-error"
-				op.Title = "exec script failed (no commands ran): " + clip(firstLine(out), 80)
-				p.addMarker(ts, "llm_error", op.Turn, clip(out, 300), op.ID, p.src(start, line))
+				op.Title = "exec script failed (no commands ran): " + source.Clip(source.FirstLine(out), 80)
+				p.addMarker(ts, "llm_error", op.Turn, source.Clip(out, 300), op.ID, p.src(start, line))
 			} else {
 				// commands may still be running (yield_time_ms elapsed): keep the op only until the
 				// real CommandExecution item reports the same command
@@ -989,7 +1008,7 @@ func (p *laneParser) onOutput(fo funcOutput, ts int64, start int64, line []byte)
 		// the model produced arguments the harness could not parse: an LLM-side failure
 		op.Status = "failed"
 		op.Kind = "llm-invalid-args"
-		p.addMarker(ts, "llm_error", op.Turn, clip(out, 300), op.ID, p.src(start, line))
+		p.addMarker(ts, "llm_error", op.Turn, source.Clip(out, 300), op.ID, p.src(start, line))
 	}
 }
 
@@ -998,7 +1017,7 @@ func (p *laneParser) commandOp(id, turn, cmd, codexKind string, s, e int64, src 
 	res := classify.Command(cmd, codexKind)
 	op := p.newOp(id, turn, res.Phase, res.Kind, s, e, src)
 	op.Title = res.Title
-	op.Detail = clip(cmd, 2000)
+	op.Detail = source.Clip(cmd, 2000)
 	op.Identity = res.Identity
 	op.Remote = res.Remote
 	op.Queued = res.Queued
@@ -1093,7 +1112,7 @@ func prefixTS(line []byte) int64 {
 	rest := line[len(key):]
 	for i := 0; i < len(rest) && i < 40; i++ {
 		if rest[i] == '"' {
-			return parseTS(string(rest[:i]))
+			return source.ParseTS(string(rest[:i]))
 		}
 	}
 	return 0
@@ -1157,7 +1176,7 @@ func planSummary(args string) (summary string, created bool) {
 		Explanation string `json:"explanation"`
 	}
 	if json.Unmarshal([]byte(args), &v) != nil {
-		return clip(args, 500), false
+		return source.Clip(args, 500), false
 	}
 	created = len(v.Plan) > 0
 	var sb strings.Builder
@@ -1173,29 +1192,4 @@ func planSummary(args string) (summary string, created bool) {
 		sb.WriteString(mark + " " + s.Step + "\n")
 	}
 	return strings.TrimSpace(sb.String()), created
-}
-
-func clip(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	// cut on a rune boundary
-	for n > 0 && n < len(s) && (s[n]&0xC0) == 0x80 {
-		n--
-	}
-	return s[:n] + "…"
-}
-
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
-	}
-	return s
-}
-
-func orDefault(s, d string) string {
-	if s == "" {
-		return d
-	}
-	return s
 }

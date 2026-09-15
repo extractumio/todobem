@@ -21,7 +21,8 @@ import (
 // cacheVersion is bumped when the on-disk shape changes or the parser's output for the same
 // input changes (a marker rule, a new injected prefix); an older file is treated as a miss.
 // 4: per-call token accounting (Lane.Tokens), Operation.QueryMiss and Totals.QueryMisses.
-const cacheVersion = 5
+// 6: QueryMiss on a failed query kind without an exit code; SessionSummary/Session.Source.
+const cacheVersion = 6
 
 // FileFP fingerprints one source file. Append-only rollouts change size on every write and the
 // file set changes when a sub-agent appears, so (path,size,mtime) detects every real change.

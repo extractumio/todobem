@@ -27,10 +27,10 @@ type Operation struct {
 	Open   bool   `json:"open,omitempty"`
 	Status string `json:"status"` // completed | failed | aborted | running | recorded
 	Exit   *int   `json:"exit,omitempty"`
-	// QueryMiss: the harness recorded a non-zero exit (status "failed") for a query kind — a
-	// search with no match, a read or listing of a path that is not there, `git diff --quiet`
-	// saying "there are changes", `test`/`which` probes. Status and exit stay the literal record;
-	// the op is not counted as a failure (classify.QueryKind; set by Derive).
+	// QueryMiss: the harness recorded a failure (status "failed", or a non-zero exit) for a
+	// query kind — a search with no match, a read or listing of a path that is not there,
+	// `git diff --quiet` saying "there are changes", `test`/`which` probes. Status and exit stay
+	// the literal record; the op is not counted as a failure (classify.QueryKind; set by Derive).
 	QueryMiss bool   `json:"query_miss,omitempty"`
 	Title     string `json:"title"`
 	Detail    string `json:"-"` // full command / file list; served per-op, not in the model payload
@@ -109,8 +109,11 @@ type Turn struct {
 	Review  bool   `json:"review,omitempty"` // Skill is a code-review / cleanup skill (classify.ReviewSkill)
 	Mode    string `json:"mode,omitempty"`   // harness collaboration mode from turn_context ("plan"); "" = default
 	// Lifecycle is the stage a harness-level signal pinned on the WHOLE turn (plan mode, an
-	// invoked skill, review mode, or the lane's agent role); "" = decided per op.
-	Lifecycle Lifecycle `json:"lc,omitempty"`
+	// invoked skill, review mode, the lane's agent role, or — for a sub-agent turn with no
+	// signal of its own — the parent turn it ran inside); "" = decided per op. LifecycleRule
+	// names the signal, the origin lane included when inherited.
+	Lifecycle     Lifecycle `json:"lc,omitempty"`
+	LifecycleRule string    `json:"lc_rule,omitempty"`
 	// Token accounting of the turn's counted model calls (codex/tokens.go): Tokens is their
 	// sum, Responses their number, First the usage of the first one (its uncached input is what
 	// the model re-read after a gap; a sub-agent's first turn: the cost of being spawned),
@@ -230,7 +233,7 @@ type Parallel struct {
 
 type Session struct {
 	ID       string   `json:"id"`
-	Source   string   `json:"source"`
+	Source   string   `json:"source"` // "codex" | "claude"
 	Title    string   `json:"title"`
 	CWD      string   `json:"cwd"`
 	Branch   string   `json:"branch,omitempty"`
@@ -251,6 +254,7 @@ type Session struct {
 // SessionSummary is the list-view row.
 type SessionSummary struct {
 	ID      string `json:"id"`
+	Source  string `json:"source"` // "codex" | "claude"
 	Title   string `json:"title"`
 	CWD     string `json:"cwd"`
 	Branch  string `json:"branch,omitempty"`
@@ -264,6 +268,12 @@ type SessionSummary struct {
 	// LastAnswer is the final message of the last completed root turn, verbatim (clipped):
 	// the only recorded description of what a session ended on. Never generated.
 	LastAnswer string `json:"last_answer,omitempty"`
+	// Question is the time (ms) of a question the agent asked the user that nothing has answered
+	// yet — a literal harness record (AskUserQuestion, ExitPlanMode or request_user_input without
+	// its answer),
+	// never read from prose; absent when none is pending. The list marks the session and shows
+	// how long it has been waiting.
+	Question int64 `json:"question,omitempty"`
 	// Filled when the session has been parsed at least once.
 	Totals *Totals `json:"totals,omitempty"`
 }

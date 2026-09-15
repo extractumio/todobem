@@ -13,6 +13,7 @@ import (
 	"github.com/extractumio/todobem/internal/classify"
 	"github.com/extractumio/todobem/internal/model"
 	"github.com/extractumio/todobem/internal/server"
+	"github.com/extractumio/todobem/internal/settings"
 )
 
 // `todobem unknown` is the agent-facing view of what the classifier could not name: unmatched
@@ -23,15 +24,18 @@ import (
 
 type unknownHead struct {
 	Head     string   `json:"head"`
+	Sources  []string `json:"sources"` // session sources the head appears in ("codex", "claude")
 	Ops      int      `json:"ops"`
 	Ms       int64    `json:"ms"`
 	Sessions []string `json:"sessions"`
 	Sample   string   `json:"sample"` // the longest op's command, clipped
 	sessions map[string]bool
+	sources  map[string]bool
 }
 
 type unknownOp struct {
 	Session string `json:"session"`
+	Source  string `json:"source"`
 	Lane    string `json:"lane"`
 	Op      string `json:"op"`
 	Head    string `json:"head"`
@@ -67,7 +71,9 @@ type unknownReport struct {
 func runUnknown(args []string) int {
 	fs := flag.NewFlagSet("todobem unknown", flag.ContinueOnError)
 	home, _ := os.UserHomeDir()
-	codexHome := fs.String("codex", filepath.Join(home, ".codex"), "Codex home directory (contains sessions/)")
+	codexHome := fs.String("codex", "", codexFlagHelp)
+	claudeHome := fs.String("claude", "", claudeFlagHelp)
+	settingsPath := fs.String("settings", settings.DefaultPath(), settingsFlagHelp)
 	rules := fs.String("rules", "", "user rules overlay (JSON); $TODOBEM_RULES and ~/.todobem/rules.json load anyway — the merged set is what classifies")
 	cacheDir := fs.String("cache", "", "parsed-session cache (default ~/.todobem/cache or $TODOBEM_CACHE; \"off\" re-parses everything)")
 	last := fs.Int("last", 20, "the newest N root sessions")
@@ -100,23 +106,28 @@ func runUnknown(args []string) int {
 		}
 		period = d
 	}
-	srv := server.NewWithCache(*codexHome, nil, resolveCacheDir(*cacheDir, home))
+	homes, err := resolveHomes(*codexHome, *claudeHome, *settingsPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "session folders:", err)
+		return 2
+	}
+	srv := server.NewWithCache(homes.Homes, nil, resolveCacheDir(*cacheDir, home))
 	srv.Scan()
 	roots := srv.Roots()
 	var ids []string
 	for _, fm := range roots {
 		switch {
 		case *session != "":
-			if fm.ThreadID == *session || strings.HasPrefix(fm.ThreadID, *session) {
-				ids = append(ids, fm.ThreadID)
+			if fm.ID == *session || strings.HasPrefix(fm.ID, *session) {
+				ids = append(ids, fm.ID)
 			}
 		case period > 0:
 			if time.Since(fm.ModTime) <= period {
-				ids = append(ids, fm.ThreadID)
+				ids = append(ids, fm.ID)
 			}
 		default:
 			if len(ids) < *last {
-				ids = append(ids, fm.ThreadID)
+				ids = append(ids, fm.ID)
 			}
 		}
 	}
@@ -169,18 +180,19 @@ func collectUnknown(srv *server.Server, ids []string, withOps bool) unknownRepor
 					rep.UnknownMs += ms
 					h := heads[head]
 					if h == nil {
-						h = &unknownHead{Head: head, sessions: map[string]bool{}}
+						h = &unknownHead{Head: head, sessions: map[string]bool{}, sources: map[string]bool{}}
 						heads[head] = h
 					}
 					h.Ops++
 					h.Ms += ms
 					h.sessions[id] = true
+					h.sources[m.Source] = true
 					if ms >= longest[head] {
 						longest[head] = ms
 						h.Sample = clipLine(cmd, 200)
 					}
 					if withOps {
-						rep.Ops = append(rep.Ops, unknownOp{Session: id, Lane: l.Path, Op: o.ID, Head: head, Ms: ms, Start: o.Start, Status: o.Status, Exit: o.Exit, Command: clipLine(cmd, 400)})
+						rep.Ops = append(rep.Ops, unknownOp{Session: id, Source: m.Source, Lane: l.Path, Op: o.ID, Head: head, Ms: ms, Start: o.Start, Status: o.Status, Exit: o.Exit, Command: clipLine(cmd, 400)})
 					}
 				}
 				for _, sg := range l.Segments {
@@ -207,6 +219,10 @@ func collectUnknown(srv *server.Server, ids []string, withOps bool) unknownRepor
 			h.Sessions = append(h.Sessions, s)
 		}
 		sort.Strings(h.Sessions)
+		for s := range h.sources {
+			h.Sources = append(h.Sources, s)
+		}
+		sort.Strings(h.Sources)
 		rep.Heads = append(rep.Heads, *h)
 	}
 	sort.Slice(rep.Heads, func(i, j int) bool {
@@ -230,9 +246,9 @@ func printUnknown(rep unknownReport, loaded []string, withOps bool) {
 	}
 	fmt.Printf("sessions: %d · unknown ops: %d · %s of %s tool time (%.1f%%) · %d heads\n", rep.Sessions, rep.UnknownOps, fmtDur(rep.UnknownMs), fmtDur(rep.ToolMs), share, len(rep.Heads))
 	if len(rep.Heads) > 0 {
-		fmt.Printf("\n%-34s %5s %8s %5s  %s\n", "HEAD", "OPS", "TIME", "SESS", "SAMPLE (longest op)")
+		fmt.Printf("\n%-34s %-7s %5s %8s %5s  %s\n", "HEAD", "SOURCE", "OPS", "TIME", "SESS", "SAMPLE (longest op)")
 		for _, h := range rep.Heads {
-			fmt.Printf("%-34s %5d %8s %5d  %s\n", clipLine(h.Head, 34), h.Ops, fmtDur(h.Ms), len(h.Sessions), h.Sample)
+			fmt.Printf("%-34s %-7s %5d %8s %5d  %s\n", clipLine(h.Head, 34), clipLine(strings.Join(h.Sources, ","), 7), h.Ops, fmtDur(h.Ms), len(h.Sessions), h.Sample)
 		}
 	}
 	if withOps && len(rep.Ops) > 0 {

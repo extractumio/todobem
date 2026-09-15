@@ -27,8 +27,9 @@ const (
 )
 
 // Priority decides (a) which segment wins when parallel commands in one lane overlap and
-// (b) which phase a multi-segment command gets. Higher wins. Code covers everything about
-// writing code: reading/searching sources, edits, local VCS, formatting.
+// (b) which phase a multi-segment command gets. Higher wins. Code (shown as Development) covers
+// every tool call around the code short of build, test and release: reading/searching sources,
+// edits, local VCS, formatting, lookups and probes — never model output.
 var Priority = map[Phase]int{
 	Release: 90, Test: 80, Build: 70, WaitWorker: 65, Infra: 60, Code: 50,
 	Compaction: 35, Unknown: 30, LLM: 20, WaitUser: 10, Idle: 10, NoTelemetry: 0,

@@ -71,3 +71,52 @@ followed by dev-loop `log show`; PR/MR work): both partitions balance on every l
 (`lifecycle partition mismatch` never printed); review session → `review 1h43m29s` (10.2 % of
 elapsed, 93 % of in-turn time); plan anchors → `plan 16s`; operations candidates before the
 first release → `implement` with the guard's rule text.
+
+## Amendment 2026-09-15 — sub-agent inheritance and the model-output tail
+
+Trigger: a `code-review-cc` run on a real Codex session (33 sub-agents spawned by the review
+turn). Main thread: 97.7 % review, correct. With "Include sub-agents": Implementation 39 m
+(45.7 %, "model 39 m · tools 1 s"), Code review 31 m, "Model output — no tool call followed"
+13 m (15.2 %). The review's own workers were shown as implementation (their reads are `code`
+phase → the `implement` default) and the findings they returned were the unattributed bucket.
+The user's reading was right: model output is part of whatever stage it serves, and the workers
+of a review turn do review.
+
+Two rules changed (`internal/model/lifecycle.go`), both literal, neither duration-based:
+
+1. **A sub-agent turn inherits the stage of the parent turn it ran inside.** The sub-agent is
+   that turn's tool call; the harness records both spans (Codex ≥ 0.153 even carries
+   `root_turn_id` on the sub-agent's usage records). A **recorded link** is required, never bare
+   time overlap (the review's condition 1): the harness's `root_turn_id`, else the spawn / message
+   marker for this lane, else an open worker-wait op window on the parent — no link, no
+   inheritance (rule 3). An agent re-used across parent turns is attributed turn by turn through
+   its later message marker. Precedence per turn: lane role → the turn's own signal → inherited →
+   op pin → phase default. The rule text names the origin lane through any depth (`inherited from
+   /root (skill code-review-cc)`). Downward only: the parent's `wait_worker` for that agent stays
+   a wait — condition 2 of the original review (no upward, cross-lane inference) is unchanged.
+2. **Model output takes the nearest tool call's stage, forward first, backward for the tail.**
+   Verdict item 4 above ("attributing trailing model output to the previous op is a guess in the
+   other direction") measured the bucket at 0–3.4 % on single-thread sessions; on a fan-out
+   session it was 15 %, all of it the sub-agents' final answers. The final answer of a turn
+   reports the work the turn did; that is the same convention as the forward bracket, mirrored.
+   A wait for workers keeps **closing** the bracket — a spawn, sleep or poll is a decision the
+   model made, so the output before it prepared that, not a later read across a ten-minute wait
+   (the review's condition 4, taken). Compactions and telemetry gaps are transparent (a harness
+   interruption, not a decision): skipped over, keeping their own name for their own duration. An
+   unknown command is not transparent (model output nearest to it is `unknown` — a wrong stage is
+   worse than an honest unknown). A turn with no tool call at all keeps `llm`, now named "Model
+   output — turn without tool calls".
+
+The follow-up review (same agent, against the landed code) confirmed both conditions and closed
+with one non-blocking residual: the worker-wait fallback matched any open wait op, so a re-used
+agent's later turn could grab the wrong parent turn's stage. Closed by restricting that fallback
+to the lane's first turn (its spawn); re-use must come from a message marker. Regression:
+`TestLifecycleInheritViaWaitOpWindow`. The reviewer's watch item is on record: if the backward
+tail misattributes a long final answer that followed an incidental last call, drop the tail and
+render unattributed model output as a remainder line rather than a stage row.
+
+Schema: `Turn.lc_rule` added; `RulesFingerprint` schema tag 2 → 3 (every cached session
+re-derives). Validation (`cmd/dump`, both partitions balance on every lane): the review session
+→ review 98.4 % of the main thread, 99.3 % across lanes, every sub-agent turn `inherited from
+/root (skill code-review-cc)`; three further Codex and three Claude Code sessions → no
+`partition mismatch`, `llm` at most 0.2 % of elapsed (text-only turns).

@@ -161,10 +161,11 @@ func ReviewSkillMatchers() []string { return matcherSources(lifecycleSkills)[LcR
 // RulesFingerprint hashes the effective classifier — the full rule table (built-in + user
 // overlay, lifecycle pins included) and every lifecycle matcher — so a session cache keyed by it
 // is invalidated whenever classification could change. The leading schema tag also invalidates it
-// across model changes (2: the lifecycle partition).
+// across model changes (2: the lifecycle partition; 3: sub-agent turns inherit the parent turn's
+// stage and model output takes the nearest tool call's stage).
 func RulesFingerprint() string {
 	h := sha1.New()
-	fmt.Fprint(h, "schema=2;")
+	fmt.Fprint(h, "schema=3;")
 	for _, r := range Rules {
 		fmt.Fprintf(h, "%s|%s|%s\n", r.Match, r.Phase, r.Kind)
 	}

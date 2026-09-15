@@ -358,8 +358,11 @@ file came 4 m later (median)."
 Measured after P0 (the current count is polluted by probe misses).
 
 **M1 · Model time by model, effort and stage.** The largest in-turn phase had no card in
-draft 1: `llm` is 27 % of in-turn on a real session while every delivery detector looks at the
-waits around it. Signal: `llm` segments × `Turn.Model` × `Turn.Effort` × lifecycle stage.
+draft 1: model output was 27 % of in-turn on a real session while every delivery detector looks
+at the waits around it. Since 2026-09-15 that time is distributed over the stages it served (the
+nearest tool call, or the turn's signal), so the card reports it per stage; the `llm` key now
+means only a turn that made no tool call at all. Signal: `llm` segments × `Turn.Model` ×
+`Turn.Effort` × lifecycle stage.
 Exposure: time and `Turn.Tokens` per cell (ms-weighted over the turn's segments). Measurement
 card; no substitution value is computed.
 *What happened:* "All 343 turns used gpt-6-astra at effort xhigh. Model time by stage:
@@ -518,9 +521,11 @@ and cancellable.
 
 **Server** (`internal/server/insights.go`, behind the auth gate):
 
-* `GET /api/insights/report?cwd=&period=30d|7d|90d|all|custom|session&from=&to=&session=`
+* `GET /api/insights/report?cwd=&sources=codex,claude&period=30d|7d|90d|all|custom|session&from=&to=&session=`
   → the cached `Report` for those parameters (`stale: true` when it no longer matches the disk),
-  or a freshly built one when none exists and every session in the period has facts.
+  or a freshly built one when none exists and every session in the period has facts. `sources`
+  narrows the scope to those session sources (absent = every source); a Claude Code
+  `AskUserQuestion` wait is a `wait_user` segment and therefore a gap like any other.
 * `POST /api/insights/report` (same parameters) → rebuild from facts now; returns the new
   report; `pending` lists the sessions in the period that have no facts yet (not parsed).
 * `POST /api/insights/scan` `{cwd, period…}` → parse the pending sessions in the background;
@@ -572,21 +577,24 @@ link "See the report for this project".
 
 1. **Page heading.** Eyebrow "Codex insights on this machine", H1 "Insights", subtitle in one
    sentence: "Where your sessions lose time and tokens, with the evidence."
-2. **Report bar** (sticky under the top bar; wraps to two rows on narrow screens):
-   - *Period control:* a `select` — **Last 7 days · Last 30 days (default) · Last 90 days ·
-     All time · Custom dates… · One session…** — followed by the controls it needs: two
-     `input type="date"` fields (from / to, inclusive) with **Apply** for custom dates; a
-     searchable session picker (title, id, date, project) for one session.
-   - *Project control:* `select` of `cwd`s with session counts in the chosen period, default =
-     the project of the last opened session (rule 5's fallback shows when it has < 3).
-   - *Report indicator chip:* "Report for **15 Aug – 14 Sep 2026** · 12 closed sessions ·
-     generated 14 Sep 11:42". When stale: an amber chip "3 sessions changed since this report —
-     **Regenerate**". When sessions are unparsed: "3 sessions not analyzed yet — **Analyze**"
-     with a progress bar and **Cancel** while it runs.
+2. **Report bar** (sticky under the top bar; two rows: the controls, then the status):
+   - *Period and project controls* are the app's shared filter widget (`filter.js`, also the
+     Sessions list's): a `select` — **Last 24 hours · Last 7 days · Last 30 days (default) ·
+     Last 90 days · All time · Custom dates…** plus this page's **One session…** — followed by
+     the controls it needs: two `input type="date"` fields (from / to, inclusive) with **Apply**
+     for custom dates; a session picker (title, date) for one session; then the `select` of
+     `cwd`s with session counts in the chosen period, default = the project of the last opened
+     session (rule 5's fallback shows when it has < 3), "All projects" once chosen stays chosen.
    - *Axis switch:* a two-button segmented control **Time · Tokens** (changes group and card
      order and which number leads each headline; both numbers stay visible).
    - *Regenerate* button (secondary style; primary while stale). Changing the period or the
      project regenerates automatically.
+   - *Status row* (full width under the controls, never squeezed between them): "Report for
+     **15 Aug – 14 Sep 2026** · 12 closed sessions · generated 14 Sep 11:42". When stale: an
+     amber chip "3 sessions changed since this report — **Regenerate**". When sessions are
+     unparsed: "3 sessions not analyzed yet — **Analyze**" with a progress bar and **Cancel**
+     while it runs. The chip states the period the report was built for (the server's resolved
+     dates); the period select keeps the reader's choice.
 3. **Summary strip:** four tiles in the existing `metrics-grid` style — Sessions in the period
    (closed / live excluded / not analyzed), Agent time in turns, Waiting for you, Tokens
    (uncached input + output, with cached and reasoning as the note). Then **Top findings**: three

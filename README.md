@@ -6,8 +6,9 @@ harness, not the agent.** *Check what your agents did while you were sleeping.*
 todobem is a local, single-binary tool that turns the session logs your AI coding agents
 already write into evidence about your **agent harness** — the prompts, reply habits,
 delegation, skills, rules, models and effort settings that decide how fast and how cheaply a
-task gets delivered. It reads OpenAI Codex CLI rollouts (`~/.codex/sessions/**/rollout-*.jsonl`),
-replays every thread as a lane on one timeline, accounts for every millisecond and every token,
+task gets delivered. It reads OpenAI Codex CLI rollouts (`~/.codex/sessions/**/rollout-*.jsonl`)
+and Claude Code session logs (`~/.claude/projects/**/*.jsonl`), replays every thread as a lane
+on one timeline, accounts for every millisecond and every token,
 and reports the patterns that cost you across sessions — with the evidence one click away.
 
 ## Why
@@ -30,7 +31,7 @@ asked, what the agent asked back, what it answered. A running session is followe
 (30 s – 5 min refresh, or on demand).
 
 **2. Profile — where the time and the tokens went.** Exclusive wall-clock partitions that add
-up to the elapsed time: model generation, coding, build, test, release, infrastructure,
+up to the elapsed time: model generation, development, build, test, release, infrastructure,
 waiting for workers, waiting for you, compaction, no telemetry. A second partition by lifecycle
 stage — planning, implementation, review, testing, release, operations — over the same
 minutes. Retry groups, failed attempts and the fixes between them, background processes,
@@ -67,7 +68,7 @@ Every command an agent runs is named by a rule table over its literal text: `go 
 has never seen — an in-house CI wrapper, a deploy script, a Python tool that captures device
 state — and todobem does the honest thing with them: it calls them **unknown**, counts their
 time, and shows it in every report and in the *Not measured* group of Insights. Unknown time
-is never silently folded into "coding" or guessed from how long it took.
+is never silently folded into "development" or guessed from how long it took.
 
 You do not have to leave it there. A **user overlay** (`~/.todobem/rules.json`) extends the
 table with your commands, your review and planning skill names, your reviewer agent roles and
@@ -110,20 +111,24 @@ report more complete, and the rules stay yours, in one inspectable JSON file.
   hours were — and what to say differently tomorrow.
 * **The lead standardising a harness for a team**: which skills, rules, effort levels and
   delegation patterns deliver, measured across a project's sessions — on one machine, or on
-  a collected rollout tree pointed at with `-codex`.
+  a collected rollout tree pointed at with `-codex` / `-claude`.
 * **The platform engineer** maintaining agent tooling: retry loops, failing wrappers,
   unmatched commands and telemetry gaps, with the rule table and overlay to fix them.
 
-The model is source-agnostic (`internal/model`); the Codex CLI adapter (0.134 → 0.154 verified)
-is the one that ships. Stack: Go 1.22, standard library only; vanilla JS + SVG embedded in the
-binary — no build step, no npm.
+The model is source-agnostic (`internal/model`); two adapters ship — Codex CLI (0.134 → 0.154
+verified) and Claude Code (2.1.226 → 2.1.270 verified) — and both kinds of session share one
+list, one timeline and one Insights report, each row marked with its source (purple Codex,
+brown Claude Code) and filtered by the source toggles. Stack: Go 1.22, standard library only;
+vanilla JS + SVG embedded in the binary — no build step, no npm.
 
 ## Quick start
 
 ```
 go build -o todobem ./cmd/todobem
 ./todobem            # opens http://127.0.0.1:7788, logged in
-./todobem -addr 127.0.0.1:9000 -codex ~/.codex -open=false
+./todobem -addr 127.0.0.1:9000 -open=false
+./todobem -codex /srv/rollouts/codex    # exactly this Codex folder, pinned for this run (Claude Code off)
+./todobem -codex ~/.codex -claude ~/.claude   # both, pinned
 ```
 
 ## Deploy on any host (one-liner)
@@ -143,7 +148,38 @@ host, tunnel it and open the URL locally:
 ssh -L 7788:127.0.0.1:7788 <host>     # then open http://127.0.0.1:7788/
 ```
 
-Override with env: `ADDR=127.0.0.1:9000 CODEX=~/.codex RULES=~/rules.json ./scripts/deploy.sh`.
+Override with env: `ADDR=127.0.0.1:9000 RULES=~/rules.json ./scripts/deploy.sh`
+(`CODEX=/path` / `CLAUDE=/path` pin the folders for the run, see Settings).
+
+## Settings: which folders hold the sessions
+
+By default todobem reads `~/.codex` — the Codex CLI's home, where `sessions/`,
+`archived_sessions/` and `session_index.jsonl` live — and `~/.claude`, the Claude Code home,
+where `projects/<project>/<session>.jsonl` and each session's `subagents/` live. **Settings** in
+the sidebar has one section per source and lets you point each at several folders at once: your
+own home, a tree copied from a laptop, a collected tree on a server. Every folder's sessions
+appear in one list; a session present in two folders is shown once, from the first folder listed
+(the session page names the file it was read from). The lists are saved to
+`~/.todobem/settings.json`
+
+```
+{"codex_homes": ["~/.codex", "/Volumes/work/codex-from-laptop"], "claude_homes": ["~/.claude"]}
+```
+
+and applied live — no restart. Without the file the defaults are `~/.codex` and `~/.claude`; a
+key that is absent means that source's default, an empty list turns the source off (at least
+one folder overall is needed). Each Codex entry must be a Codex home, the folder that *contains*
+`sessions/`; each Claude Code entry a Claude Code home, the folder that contains `projects/`; a
+folder that does not exist yet (an unmounted drive) is accepted and its sessions appear when it
+is back; only the session logs under those folders are read, and nothing is ever written there.
+A folder on a slow or removable volume slows every rescan (the list is rescanned every 20 s).
+
+`-codex <dir>` and `-claude <dir>` on the command line (or `CODEX=` / `CLAUDE=` for
+`deploy.sh`) pin this run to exactly the folders given — a source not named is off — and make
+the page read-only; `-settings <path>` (`$TODOBEM_SETTINGS`) picks another settings file. `todobem cache`, `todobem unknown` and `cmd/dump` read the same file, so they see the same
+sessions as the UI. The server prints the folders in effect and where they came from at start,
+and logs every change made from the page. With `-auth=off`, anyone who can reach the port can
+change these folders too — one more reason the gate is on by default.
 
 ## Access: the UI is locked
 
@@ -157,7 +193,7 @@ todobem token -ttl 12h        # the browser stays logged in for 12 h (default 30
 todobem token -revoke         # rotate the key: every session and token stops working now
 todobem unknown -since 7d     # unmatched commands and telemetry gaps across recent sessions
 todobem unknown -explain CMD  # what the rules say about one command (exit 1 = still unknown)
-todobem cache -prune          # drop cache entries of sessions this codex home does not list
+todobem cache -prune          # drop cache entries of sessions the configured folders do not list
 ```
 
 Open the link (or paste the token into the lock screen); the browser then stays logged in for
@@ -176,10 +212,15 @@ ports.
 
 ## What you see
 
-* **Sessions** — every main thread on this machine, newest first, described by the last answer
-  its agent gave (sub-agent threads are attached to their parent).
+* **Sessions** — every main thread of the configured folders, newest first, described by the
+  last answer its agent gave (sub-agent threads are attached to their parent); a period
+  (last 24 hours … all time, custom dates) and project filter — the same widget as the Insights
+  report — plus search and sort; a pulsing ? chip marks a session whose agent asked you a
+  question (or submitted a plan for approval) and is still waiting, with how long it has waited.
+  The session page names the
+  rollout file each thread was read from.
 * **Session** — the first user message and the last answer, verbatim; a live/closed status; the
-  whole-session totals: working time, tokens, LLM, tools (coding, build, test, release, infra),
+  whole-session totals: working time, tokens, LLM, tools (development, build, test, release, infra),
   known waiting (user / workers), context compaction, no telemetry, sub-agent time (parallel,
   reported separately), plus code review and planning time when the harness recorded them.
 * **Timeline** — overview strip with a brush; one row per agent (▶ spawn, ticks per message
@@ -248,7 +289,7 @@ rollout format, classification rules, incremental ingestion). Short version:
   includes the classifier, so a rule change or a grown file re-parses automatically — it never
   shows a stale number. **Refresh** forces a full re-parse. Disable with `-cache=off`. The server
   prints the cache size at start; `todobem cache` reports it and `todobem cache -prune` drops the
-  entries of sessions the current codex home does not list (another home, deleted rollouts).
+  entries of sessions the configured folders do not list (another home, deleted rollouts).
 
 ## Development
 

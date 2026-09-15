@@ -1,13 +1,15 @@
 # Normalized event schema
 
-Every source adapter emits the same structures. All times are Unix milliseconds (UTC).
+Every source adapter emits the same structures. All times are Unix milliseconds (UTC). Two
+adapters exist: `internal/codex` (OpenAI Codex CLI rollouts) and `internal/claude` (Claude Code
+session logs); both plug into `internal/source` (the index/joiner seam) and touch nothing below.
 
 ## Session
 ```
 Session {
-  id            string     // root thread id
-  source        string     // "codex"
-  title         string     // thread name from index, else first user message
+  id            string     // root thread / session id (a UUID in both sources; unprefixed)
+  source        string     // "codex" | "claude"
+  title         string     // the harness's own name (Codex thread_name, Claude Code ai-title), else first user message
   cwd, branch   string
   started, ended int64     // ms; ended = last event (or now while live)
   live          bool       // root file grew during the last refresh
@@ -17,15 +19,25 @@ Session {
   parallel      { agent_ms, wall_ms }  // sub-agent time, reported separately
   version       string     // changes when any file grew
 }
-SessionSummary (/api/sessions) { id, title, cwd, branch, started, updated, bytes, agents, live,
-  cli, model, last_answer, totals? }
+SessionSummary (/api/sessions) { id, source, title, cwd, branch, started, updated, bytes, agents,
+  live, cli, model, last_answer, question?, totals? }
 ```
-`last_answer` is the final message of the last completed root turn (`task_complete.
-last_agent_message`), verbatim and clipped, read from the file's tail by the index (no parse)
-and replaced by the parsed turn once the session is open. It is the only recorded description
+`last_answer` is the final message of the last completed root turn (Codex `task_complete.
+last_agent_message`; Claude Code the last `text` block of a message that stopped with
+`end_turn`), verbatim and clipped, read from the file's tail by the index (no parse) and
+replaced by the parsed turn once the session is open. It is the only recorded description
 of what a session ended on: the Codex TUI's "recap" is generated in a temporary thread and
 never written to the rollout, so there is nothing to extract and nothing is generated (rule 2).
 The UI shows its first paragraph under the title and in the session list, labelled "last answer".
+`question` is the time (ms) of a question the agent asked the user that nothing has answered yet:
+Claude Code an `AskUserQuestion` (a question) or `ExitPlanMode` (a plan awaiting approval) tool_use
+with no `tool_result` for its id, no later model output and no later typed prompt; Codex a
+`request_user_input` call with no `function_call_output` for
+its `call_id` and no user message after it. Read from the tail by the index like `last_answer`,
+refreshed whenever the file grows; absent when none is pending. The session list marks such a
+session with a pulsing ? chip next to "active" and the time since the question. A final answer
+that merely ends with a question mark is prose and carries no signal (rule 2); any other tool call
+still waiting for its result is indistinguishable from a long-running one and is not one either.
 
 
 ## Lane (= one agent thread)
@@ -39,7 +51,8 @@ Lane {
   file      string   // rollout path
   started, ended int64
   turns     Turn[]      // {id, start, end, status: completed|aborted|open|orphaned, trigger: user|system,
-                        //  skill, review, mode: "plan"|"", lc: turn-level lifecycle or ""}
+                        //  skill, review, mode: "plan"|"", lc: turn-level lifecycle or "",
+                        //  lc_rule: the signal that pinned it (the origin lane when inherited)}
   ops       Operation[] // may overlap (parallel commands)
   segments  Segment[]   // exclusive partition of [started, ended]
   stages    Stage[]     // coalesced view of segments (think attributed to next op)
@@ -83,9 +96,10 @@ Operation {
   open     bool      // no end recorded yet
   status   string    // completed | failed | aborted | running | recorded (the harness's word, verbatim)
   exit     *int      // exit code when known
-  query_miss bool    // status "failed" on a query kind (read, search, listing, probe, git diff/show/status/log,
-                     // read-only docker/gh/glab/kubectl queries; classify.queryKinds): the non-zero exit is an
-                     // answer, not a failed step. Derived; status and exit stay literal; not counted in failed_ops
+  query_miss bool    // status "failed" or a non-zero exit on a query kind (read, search, listing, probe, git
+                     // diff/show/status/log, read-only docker/gh/glab/kubectl queries; classify.queryKinds): the
+                     // failure is an answer, not a failed step. Derived; status and exit stay literal (Claude Code
+                     // records no exit code, only is_error); not counted in failed_ops
   title    string    // short human label (command head / file / tool)
   detail   string    // full command / file list (≤ 2 KB)
   identity string    // "<cwd>\n<normalized command>" for test/build/release ops and verdict-kind infra ops (classify.infraAttemptKinds); "" otherwise
@@ -106,17 +120,27 @@ the first real call after (measured: contexts 190–246 k, re-reads ~26 k of whi
 | phase | meaning | rule source |
 |---|---|---|
 | `llm` | the model generating: `Reasoning`/`AgentMessage` items (verified, `by_kind.llm_verified`) plus uncovered in-turn time (convention, `by_kind.llm_gap`); includes the generation of every patch | turn boundaries + item timestamps |
-| `code` | everything about writing code: reading/searching sources, listing, web/MCP lookups, file edits, local VCS, formatting, scripted reads/writes | Codex `parsed_cmd`, `FileChange`, `apply_patch`, command table |
+| `code` | shown as **Development**: every tool call around the code short of build, test and release — reading/searching sources, listing, web/MCP lookups, file edits, local VCS, formatting, probes, scripted reads/writes; never model output (the key stays `code`: overlays, caches and the API reference it) | Codex `parsed_cmd`, `FileChange`, `apply_patch`, command table |
 | `build` | compiling / bundling | command table |
 | `test` | running tests, simulators, UI automation | command table |
 | `release` | push, PR/MR, CI, deploy, device install, publish | command table |
 | `infra` | containers, remote hosts, processes, cleanup, packages | command table |
 | `wait_worker` | waiting for sub-agents, CI, remote leases, sleeps, process polls; also idle time before a harness-triggered turn (goal loop) | tool names, command table (`sleep` loops, `--watch`), `Turn.trigger` |
-| `wait_user` | outside a turn on the root lane, before a user-triggered turn | turn boundaries |
+| `wait_user` | outside a turn on the root lane, before a user-triggered turn; **and a turn blocked on a question to the user** (Claude Code `AskUserQuestion`, Codex `request_user_input`): an open op holds the wait, so on a live session the tail up to *now* is `wait_user`, not `no_telemetry` | turn boundaries; the question tool call |
 | `idle` | sub-agent outside a turn (waiting for the parent) | state machine |
 | `compaction` | context compaction by the harness | `ContextCompaction` |
-| `no_telemetry` | open turn with no events yet (`open_turn`), or turn never closed (`orphaned_turn`) | state machine |
-| `unknown` | command matched no rule, opaque scripts | classifier fallback |
+| `no_telemetry` | open turn with no events yet (`open_turn`), or turn never closed (`orphaned_turn`) — the agent is generating or the turn was interrupted, **not** blocked on the user (a question holds a `wait_user` op instead) | state machine |
+| `unknown` | command matched no rule, opaque scripts, a Claude Code tool without a mapping (`tool:<name>`) | classifier fallback |
+
+Claude Code tool calls map by name (`internal/claude/tools.go`): `Bash` through the command
+table like a Codex command; `Edit`/`Write`/`NotebookEdit` → `code/edit`; `Read`, `Grep`,
+`Glob` → `code/read`, `code/search`, `code/list_files` (query kinds); `WebSearch`/`WebFetch` →
+`code/web_search`; `mcp__*` → `code/mcp`; `Agent` → `wait_worker/agent` (the parent waiting for
+the sub-agent); `AskUserQuestion` → `wait_user/question` (the turn stays open while the user
+answers); `TaskOutput`/`Monitor` → `wait_worker/process`, or the background Bash op they poll;
+the Stop hooks → `wait_worker/hook`; `ExitPlanMode` → an instant `llm/plan` op pinned to the
+planning stage; `Skill` → the turn's skill (a `skill` marker); `TodoWrite`/`TaskCreate` → `plan`
+markers; bookkeeping tools (`ToolSearch`, `ListAgents`, `TaskList`, `SendMessage`, …) → nothing.
 
 ### Kinds used by the "inside testing" breakdown
 Attempts of a retry group: `first`, `retry_after_failure` (previous attempt failed), `rerun`
@@ -180,7 +204,14 @@ Marker { t, kind, lane, turn, text, ref }
 kind: user_message | system_message (harness-injected, ref = tag) | question | final_answer |
       agent_started | agent_interacted | agent_completed | agent_interrupted |
       result_returned | message_sent | message_received | plan | turn_start | turn_end |
-      compaction | interrupted | resumed | goal | skill (ref = skill name; a skill was actually invoked)
+      compaction | interrupted | resumed | goal | skill (ref = skill name; a skill was actually invoked) |
+      llm_error (an invalid tool call, an API error, a refusal)
+```
+`agent_started` / `agent_completed` carry the sub-agent's lane id in `ref` (Codex: the item's
+`agent_thread_id`; Claude Code: `agent-<agentId>` from the Agent tool's result), which is how the
+UI draws a lane's spawn and its dashed link to the parent. A `user_message` with an empty `turn`
+is a slash command the harness answered itself (`/clear`, `/cost`): the user's words, no turn.
+```
 ```
 
 ## Group
@@ -210,8 +241,8 @@ Every segment carries two labels. `phase` says **what** the tool call was (a tes
 a push); `lc` says **which stage of the software lifecycle** the time served. Both are exclusive
 partitions of the same segments, so each sums to the lane's elapsed time — but they are **not
 comparable per key**: the activity partition keeps model output in its own `llm` phase, the
-lifecycle partition attributes it to the stage of the tool call that followed (or to the turn's
-signal). A code-review hour includes its model time; the Coding row never does. The UI therefore
+lifecycle partition attributes it to the stage of the nearest tool call in the turn (or to the
+turn's signal). A code-review hour includes its model time; the Development row never does. The UI therefore
 shows every stage row with its model / tools split.
 
 | lifecycle | meaning | assigned from (literal signals only) |
@@ -220,20 +251,32 @@ shows every stage row with its model / tools split.
 | `requirements` | eliciting / specifying requirements | **no built-in detector** — overlay `lifecycle.skills` / `roles` / `paths` |
 | `design` | architecture and detailed design | **no built-in detector** — overlay |
 | `implement` | writing code, building, environment work | default for `code`, `build`, `infra` phases; operations candidates before this lane's first release op |
-| `review` | code review / cleanup | turn: an invoked skill matching the review matcher (`code-review`, `codereview`, `simplify`, overlay), Codex review mode (`EnteredReviewMode`); lane: a sub-agent whose spawn `agent_role` matches overlay `lifecycle.roles`; op: kinds `pr review`, `pr comment`, `mr note`, `mr approve` |
+| `review` | code review / cleanup | turn: an invoked skill matching the review matcher (`code-review`, `codereview`, `simplify`, overlay), Codex review mode (`EnteredReviewMode`), a sub-agent turn that ran inside such a turn (inherited, any depth); lane: a sub-agent whose spawn `agent_role` matches overlay `lifecycle.roles`; op: kinds `pr review`, `pr comment`, `mr note`, `mr approve` |
 | `test` | testing / QA | default for the `test` phase |
 | `release` | push, PR/MR create/merge, deploy, publish | default for the `release` phase |
 | `operate` | maintenance / operations on a running system | kinds `journalctl`, `systemctl`, `launchctl`, `diagnostics`, `docker logs`, `kubectl logs`, `kubectl describe` (and overlay rules with `"lifecycle": "operate"`) — **only after this lane's first release op** |
-| `llm` | model output no tool call followed in the turn (final answers, text-only turns) | the stage-bracket convention has nothing to attribute it to; only a harness signal can |
+| `llm` | model output of a turn that made no tool call at all (a text-only answer) | nothing in the turn says which stage it served; only a harness signal can |
 | `wait_user`, `wait_worker`, `idle`, `compaction`, `no_telemetry`, `unknown` | pass-through | their phase name |
 
-Precedence: lane role → turn signal (the **whole** turn: tests, waits, compaction and model
-output alike) → op-level pin (command kind, edited path) → phase default. Model output inside a
-turn with no turn signal takes the stage of the next tool call in the same turn — exactly the
-stage-bracket rule (`buildStages`); a non-work tool call (a wait, a compaction, an unknown
-command) or the turn's end closes the bracket. Segments are cut at turn boundaries first so a
-signal never leaks into the neighbouring turn. No cross-lane inference: the root's wait for a
-review sub-agent stays `wait_worker`.
+Precedence: lane role → the turn's own signal → the stage of the parent turn a sub-agent turn
+was **linked** to (inherited; `lc_rule` names the origin lane, through any depth) → op-level pin
+(command kind, edited path) → phase default. The link is a recorded harness signal, never bare
+time overlap: the harness's `root_turn_id` first, else the spawn / message marker for that lane
+(`agent_started` / `agent_interacted`), else, for the child's
+first turn only, an open `wait_worker` agent op on the parent whose window contains that turn's
+start (a bare wait cannot say which of several concurrent agents it is, so a re-used agent's
+later turn is not linked this way); no link → no inheritance. A turn-level stage covers the **whole** turn: tests,
+waits, compaction and model output alike. Model output inside a turn with no turn-level stage
+takes the stage of the nearest tool call in the same turn: the next one first (the call it
+prepared — the activity-bracket rule of `buildStages`), else the previous one (the answer that
+reported on it). Compactions and telemetry gaps inside the turn are transparent — skipped over,
+they keep their own name for their own duration — while a wait for workers (a spawn, sleep or
+poll the model chose), waiting for the user, idle time and the turn's end each close the bracket.
+An unknown command is not transparent either: model output nearest to it is `unknown`. A turn
+with no tool call at all keeps its model output as `llm`. Segments are cut at turn boundaries first so a signal never leaks into
+the neighbouring turn. Inheritance runs downward only: a sub-agent is its parent turn's tool
+call, so its work is that turn's work; nothing flows upward, and the root's wait for a review
+sub-agent stays `wait_worker`.
 
 The single **order-dependent** rule is the operations guard: an operations candidate that starts
 before the lane's first `release` op is `implement` ("nothing is after launch before anything
@@ -284,7 +327,7 @@ source of truth.
 
 ## Insights report (`/api/insights/report`)
 ```
-Report { generated_at, params: {cwd, period: {kind: 7d|30d|90d|all|custom|session, from, to, session}, include_live},
+Report { generated_at, params: {cwd, sources?: [codex|claude], period: {kind: 7d|30d|90d|all|custom|session, from, to, session}, include_live},
   scope: { sessions, live_excluded, pending: [{id, title, ended}], root_elapsed_ms, root_in_turn_ms, wait_user_ms, tokens, clis },
   top_time: [rule…], top_tokens: [rule…],
   groups: [ { id, cards: [Card], time_ms, tokens, order_time, order_tokens } ],   // not_measured last

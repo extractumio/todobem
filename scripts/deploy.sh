@@ -11,7 +11,10 @@
 #
 # It KEEPS the loopback bind (127.0.0.1) from the security model  nothing is exposed off-host.
 # For a remote host, tunnel it:  ssh -L 7788:127.0.0.1:7788 <host>   then open the URL locally.
-# Override with env: ADDR=127.0.0.1:9000  CODEX=~/.codex  RULES=/path/rules.json  AUTH=/path/auth.key
+# Override with env: ADDR=127.0.0.1:9000  RULES=/path/rules.json  AUTH=/path/auth.key
+# CODEX=/path/codex and CLAUDE=/path/claude pin this run to exactly those folders (a source not
+# named is off; the Settings page is then read-only); unset, the server reads the folders of
+# ~/.todobem/settings.json, else ~/.codex and ~/.claude.
 # (AUTH=off leaves the UI open)  todobem flags after --
 #
 # The UI is locked until a one-time token is used. `start` prints a login link (one use, 5 min);
@@ -22,7 +25,8 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 BINARY=${BINARY:-todobem}
 ADDR=${ADDR:-127.0.0.1:7788}
-CODEX=${CODEX:-$HOME/.codex}
+CODEX=${CODEX:-}
+CLAUDE=${CLAUDE:-}
 RULES=${RULES:-}
 AUTH=${AUTH:-}
 PIDFILE=${PIDFILE:-$ROOT/todobem.pid}
@@ -77,7 +81,9 @@ case "$CMD" in
   status) if running; then echo "running (pid $(cat "$PIDFILE"))  log: $LOGFILE"; else echo "not running"; fi ;;
   run)
     build; warn_addr
-    set -- -addr "$ADDR" -codex "$CODEX" -open=false "$@"
+    set -- -addr "$ADDR" -open=false "$@"
+    [ -n "$CODEX" ] && set -- "$@" -codex "$CODEX"
+    [ -n "$CLAUDE" ] && set -- "$@" -claude "$CLAUDE"
     [ -n "$RULES" ] && set -- "$@" -rules "$RULES"
     [ -n "$AUTH" ] && set -- "$@" -auth "$AUTH"
     echo "running in foreground: ./$BINARY $*"
@@ -86,7 +92,9 @@ case "$CMD" in
   start|"")
     build; warn_addr
     running && stop
-    set -- -addr "$ADDR" -codex "$CODEX" -open=false "$@"
+    set -- -addr "$ADDR" -open=false "$@"
+    [ -n "$CODEX" ] && set -- "$@" -codex "$CODEX"
+    [ -n "$CLAUDE" ] && set -- "$@" -claude "$CLAUDE"
     [ -n "$RULES" ] && set -- "$@" -rules "$RULES"
     [ -n "$AUTH" ] && set -- "$@" -auth "$AUTH"
     : >"$LOGFILE"; chmod 600 "$LOGFILE"   # the log names sessions; keep it to this user

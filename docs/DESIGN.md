@@ -48,6 +48,56 @@ Facts that shape the design:
 * A sub-agent is *long-lived*: one `started`, then many `interacted → completed` cycles over hours.
 * The same test/push command is re-run many times; `git push` here takes ~330 s every time (pre-push hook), a `while ! ssh buildhost test -d .remote-test-lease` loop waited 70 min for a remote worker, and 16 compactions cost ≈48 min. These are the things the tool must make visible.
 
+## 1b. What a Claude Code session log contains (research, 165 root + 11 agent files, CLI 2.1.226 → 2.1.270)
+
+Layout: `~/.claude/projects/<encoded cwd>/<session-id>.jsonl` is one root session; a sub-agent
+spawned by the Agent tool is `<session-id>/subagents/agent-<id>.jsonl` next to
+`agent-<id>.meta.json` (`agentType`, `name`, `description`, `model`, `spawnDepth`, `toolUseId`);
+`<session-id>/tool-results/` holds persisted tool outputs and is never read. Every agent file,
+a nested agent's too, sits directly under the root's `subagents/`: the lane tree is flat.
+Legacy interleaved `isSidechain` lines: none seen.
+
+There is no session header. Every *message* line (`user`, `assistant`, `system`, `attachment`)
+starts `{"parentUuid":…,"isSidechain":…` and carries `cwd`, `gitBranch`, `version`, `sessionId`,
+`timestamp` and `uuid` — for `assistant`/`attachment` lines **after** the payload, for `user`
+lines before a possibly multi-megabyte `toolUseResult`. Small metadata lines start
+`{"type":"…"` (`ai-title`, `last-prompt`, `mode`, `permission-mode`, `atis-latch`, `agent-name`,
+`queue-operation`, `cost-state`, `file-history-*`, `pr-link`) and are re-emitted every ~30 s.
+So the index types metadata lines by prefix and decodes message lines in full (an attachment's
+timestamp is read from its tail); the largest line seen is 2.8 MB.
+
+| line | what it is | used for |
+|---|---|---|
+| `user` with a string or `text`/`image` content | the prompt: the user's (`promptSource: typed\|queued`, `origin.kind: human` on CLI ≥ 2.1.26x), or the harness's (`<task-notification>`, `<teammate-message>`, `origin.kind: task-notification\|auto-continuation\|peer`, `promptSource: system`) | turn start (Trigger user / system), user_message / system_message markers |
+| `user` `<command-name>…</command-name>` | a slash command as typed; `<local-command-stdout>` or `system/local_command` follows when the harness answered it itself | a user_message; a turn only when the model ran |
+| `user` `[Request interrupted by user…]` | the user stopped the turn | turn aborted (a harness prompt the model never answered is dropped) |
+| `user` `isMeta`, `<local-command-caveat>`, `[Image: …]`, `isCompactSummary` | attachments and echoes | evidence only |
+| `assistant` | one line per streamed content block, all lines of a message carrying its `id`, `model`, `stop_reason` and the same `usage`; blocks `thinking`, `text`, `tool_use {id, name, input}` | tool-call ops (start), message ops, tokens (once per message id), turn end at the last `end_turn` block (deferred until the next line proves the message over; a tool_use in it keeps the turn open), `isApiErrorMessage` → llm_error |
+| `user` with `tool_result {tool_use_id, is_error, content}` (+ `toolUseResult`) | the tool's answer; Bash failure = `is_error` with content `Exit code N`; `returnCodeInterpretation: "No matches found"` for grep misses; `interrupted`, `timedOutAfterMs`, `backgroundTaskId`; Agent results carry `agentId`, `isAsync` | op end / exit / status; the sub-agent lane link; background polls |
+| `system/stop_hook_summary` | the Stop hooks (`hookInfos[].durationMs`) after the model's last message | a wait_worker/hook op inside the turn; the turn ends when they are done |
+| `system/turn_duration` (newer CLIs) | `durationMs` = turn wall clock (verified) | evidence only |
+| `system/compact_boundary` | `compactMetadata {trigger, preTokens, postTokens, durationMs}` | compaction op (start clamped to the last evidence), context = preTokens |
+| `system/local_command`, `away_summary`, `informational`, `agents_killed`, `model_refusal_*` | | evidence (refusals: llm_error) |
+| `attachment` (`hook_success`, `total_tokens_reminder`, `skill_listing`, …) | harness context | evidence only, never decoded |
+| `ai-title` | the harness's own title (one per file, first within the first exchange) | session title (else the first prompt) |
+
+Facts that shape the adapter:
+* Tool timing is call line → result line; there is no recorded exit code, only `is_error` and
+  the `Exit code N` text for Bash. A failed query tool (Read of a missing path) is therefore a
+  query miss by status, not by exit (model rule, both sources).
+* A message's block lines are written together once the message is complete (each with the
+  block's own timestamp), so a file ending on an `end_turn` line is a finished turn; the parser
+  closes it at end of file and re-opens it only if a later read brings another block of the same
+  message.
+* `AskUserQuestion` keeps the turn open while the user answers: the call → result span is a
+  wait_user/question op (Codex ends the turn instead). Background Bash returns at once with a
+  task id; `TaskOutput`/`Monitor` polls of that id extend the Bash op, as Codex polls do.
+* Queued prompts are stamped at delivery (tens of ms after the previous `end_turn`), so a prompt
+  line is always the start of its turn. A prompt delivered as the session is closed, followed at
+  once by the interrupt, never ran: it is not a turn.
+* 4 compactions in 165 files; `Artifact` and `ReportFindings` are the only tool names that stay
+  `unknown` (a classification decision, see `todobem unknown`).
+
 ## 2. Classification (deterministic, documented in SCHEMA.md)
 
 Two layers:
@@ -107,8 +157,12 @@ and a short list of operations kinds (logs, service control, diagnostics). Model
 `task_name`s (review 594×, design 63×) are prose and rejected as a source. Nothing in a Codex
 rollout marks requirements or design: those stages exist, the guide says "no built-in detector",
 and the overlay's `lifecycle.skills/roles/paths` can pin them. A turn signal covers the whole
-turn (tests, waits, model output); otherwise model output takes the stage of the next tool call
-in the turn (the stage-bracket rule) or stays an honest `llm` bucket. The one order-dependent
+turn (tests, waits, model output) and, because a sub-agent is its parent turn's tool call, the
+sub-agent turns that ran inside it (inherited downward, never upward); otherwise model output
+takes the stage of the nearest tool call in the turn — the next one, else the previous one —
+and only a turn without any tool call keeps an honest `llm` bucket (both amended 2026-09-15 after
+a code-review session showed 33 review sub-agents as "implementation" and their findings as
+unattributed model output; `docs/REVIEW-lifecycle.md`). The one order-dependent
 rule is the operations guard — an operations candidate before the lane's first release op is
 implementation — the user's "maintenance cannot precede coding" constraint, made a same-lane
 demotion rather than a detector after the design review (`docs/REVIEW-lifecycle.md`).
@@ -174,10 +228,27 @@ unknown commands) the user can run in their own agent from the card's list.
 
 ## 4. Incremental ingestion, low CPU
 
+Both sources share the joiner (`internal/source.Session`): one `LaneParser` per file, bytes
+consumed by offset, a rewritten or truncated file restarts its lane, one derive per change.
+
 * Go, single static binary, no deps. `todobem` serves `http://127.0.0.1:7788`.
 * Session list: `session_meta` is line 1 of every file → read only the first line (≤ 30 KB),
-  cache by (path,size,mtime). Names from `~/.codex/session_index.jsonl`. Root threads only;
+  cache by (path,size,mtime). Names from `<home>/session_index.jsonl`. Root threads only;
   sub-agent files are attached to their parent.
+* **Several Codex homes** (`internal/settings`, 2026-09-14): the index scans the `sessions/` and
+  `archived_sessions/` of every home in `~/.todobem/settings.json` (`{"codex_homes": [...]}`;
+  absent → `~/.codex`; `-codex` pins one home for the run and makes the Settings page
+  read-only). Only the Codex home layout is walked — a home pointed at `/` or `~` by mistake is
+  reported as "no sessions/ folder", never walked. The thread-id map is rebuilt after every scan,
+  homes in configured order, paths sorted, first valid file wins, and `Roots`/`Descendants`/`IDs`
+  read that map: a rollout copied into two homes is one session (from the first), not two rows
+  with doubled sub-agent counts; names follow the same order. `SetHomes` drops the files of a
+  removed home inside the index's critical section, the server then clears its in-memory pools
+  (a parser pins its path, and would keep serving a removed home until eviction), cancels a
+  running Insights scan, rescans synchronously and logs the change; the source reader accepts a
+  span only from a file under a current home's rollout directories (logical path with no `..`
+  and no symlink below the home). The disk cache is keyed by thread id with the file paths in
+  the fingerprint, so a session read from another folder misses and re-parses.
 * Open session: parse root + descendant files streaming line-by-line. The line type is read
   from the prefix (`"type":"…"`); skip-set lines (`compacted`, `world_state`,
   `inter_agent_communication_metadata`) are never JSON-decoded, and long skipped lines are
@@ -239,7 +310,11 @@ Design (`internal/auth`, `internal/server/auth.go`, `todobem token`):
 - **CSRF**: login/logout are JSON POSTs — a foreign page cannot send `application/json` without a
   preflight, and we answer no CORS; `mime.ParseMediaType` decides, so `text/plain` and form
   bodies are 415; non-POST is 405; a browser-declared `Sec-Fetch-Site: cross-site` is 403 on
-  every `/api/*`; the host check already closes DNS rebinding.
+  every `/api/*`; the host check already closes DNS rebinding. `POST /api/settings` (the Codex
+  homes) sits behind the same gate and guard: it is the first UI write that outlives the process,
+  and with `-auth=off` anyone on the port can re-point the server at another folder of
+  `rollout-*.jsonl` the server's user can read — the startup line and the per-change log line
+  are the audit trail, and the blast radius stays "rollouts served through this same gate".
 - **Static files stay open** (no data in them); the lock screen is the SPA on a 401. The
   token never reaches the server's stdout (a log file may be world-readable on a shared host):
   `deploy.sh` mints it to the terminal and chmods the log 600; `-open` passes it straight to the

@@ -1,6 +1,6 @@
 ---
 name: resolve-unknown
-description: Find the commands todobem could not classify (phase "unknown") and the telemetry gaps across recent Codex sessions, work out what each command does, and add user rules to ~/.todobem/rules.json so the next report names them. Use when a session report shows "unknown" time, when cmd/dump prints new unknown heads, or when asked to improve classification for a project.
+description: Find the commands todobem could not classify (phase "unknown") and the telemetry gaps across recent Codex and Claude Code sessions (the SOURCE column says which), work out what each command does, and add user rules to ~/.todobem/rules.json so the next report names them. Use when a session report shows "unknown" time, when cmd/dump prints new unknown heads, or when asked to improve classification for a project.
 ---
 
 # resolve-unknown
@@ -77,11 +77,15 @@ a regex rule can only raise the phase. A malformed file fails loudly at startup.
 ```
 $ todobem unknown -last 8
 sessions: 8 · unknown ops: 61 · 20m 23s of 17h 32m tool time (1.9%) · 10 heads
-HEAD                                 OPS     TIME  SESS  SAMPLE (longest op)
-python3                               15  17m 03s     5  python3 artifacts/ipad7-profile-reminder/capture-database.py before-complete
-apps/iquantize/scripts/xcodebuild…    24   3m 18s     1  IQ_XCB_SCHEME=iQuantize-iOS … xcodebuild-app.sh build-for-testing -only-testing …
-backend/cnc/scripts/new-migration…     2       0s     1  backend/cnc/scripts/new-migration.sh app_device_identity
+HEAD                                 SOURCE    OPS     TIME  SESS  SAMPLE (longest op)
+python3                              codex,c…   15  17m 03s     5  python3 artifacts/ipad7-profile-reminder/capture-database.py before-complete
+apps/demo/scripts/xcodebuild…   codex      24   3m 18s     1  APP_XCB_SCHEME=Demo-iOS … xcodebuild-app.sh build-for-testing -only-testing …
+backend/cnc/scripts/new-migration…   codex       2       0s     1  backend/cnc/scripts/new-migration.sh app_device_identity
+Artifact                             claude      3   1m 10s     2  {"file_path":"…/report.html","title":"…"}
 ```
+
+A head like `Artifact` or `ReportFindings` is a Claude Code tool name, not a shell command: the
+rule table cannot classify it (it holds no command text); leave it, it is an honest unknown.
 
 Evidence: `capture-database.py` dumps the app's database from a device before/after a step so
 a check can diff it (a test fixture step); `xcodebuild-app.sh` wraps `xcodebuild` and takes

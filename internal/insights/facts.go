@@ -13,13 +13,14 @@ import (
 )
 
 // FactsVersion is bumped whenever Extract's output for the same model changes; a cached facts
-// file with another version is a miss.
-const FactsVersion = 2
+// file with another version is a miss. 3: Source; query misses without an exit code.
+const FactsVersion = 3
 
 // Facts is everything the detectors need about one session, in a few KB.
 type Facts struct {
 	Version int    `json:"version"`
 	ID      string `json:"id"`
+	Source  string `json:"source,omitempty"` // "codex" | "claude"
 	Title   string `json:"title"`
 	CWD     string `json:"cwd"`
 	Branch  string `json:"branch,omitempty"`
@@ -206,7 +207,7 @@ type CellFacts struct {
 
 // Extract builds the Facts of a derived session. It never modifies the model.
 func Extract(s *model.Session) Facts {
-	f := Facts{Version: FactsVersion, ID: s.ID, Title: s.Title, CWD: s.CWD, Branch: s.Branch, Model: s.Model, CLI: s.CLI, Started: s.Started, Ended: s.Ended, Live: s.Live}
+	f := Facts{Version: FactsVersion, ID: s.ID, Source: s.Source, Title: s.Title, CWD: s.CWD, Branch: s.Branch, Model: s.Model, CLI: s.CLI, Started: s.Started, Ended: s.Ended, Live: s.Live}
 	if len(s.Lanes) == 0 {
 		return f
 	}

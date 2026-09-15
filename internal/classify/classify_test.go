@@ -387,7 +387,7 @@ func TestProbesAndQueryKinds(t *testing.T) {
 func TestHead(t *testing.T) {
 	for _, c := range []struct{ cmd, want string }{
 		{"python3 artifacts/x/capture.py before", "python3"},
-		{"IQ_XCB_SCHEME=iQuantize-iOS IQ_XCB_DESTINATION='platform=iOS Simulator,name=iPad' apps/iquantize/scripts/xcodebuild-app.sh build", "apps/iquantize/scripts/xcodebuild-app.sh"},
+		{"APP_XCB_SCHEME=Demo-iOS APP_XCB_DESTINATION='platform=iOS Simulator,name=iPad' apps/demo/scripts/xcodebuild-app.sh build", "apps/demo/scripts/xcodebuild-app.sh"},
 		{"native_path=\"$(skills/screencast/scripts/native/build.sh 2>/dev/null)\"; \"$native_path\" doctor", "$native_path"},
 		{"sudo -n timeout 30 ./deploy-thing --now", "./deploy-thing"},
 		{"env -u FOO bash -lc 'make'", "bash"},

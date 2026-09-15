@@ -10,17 +10,24 @@ classification or derivation.
 
 A local, single-binary viewer. It tails OpenAI Codex CLI rollouts (`~/.codex/sessions/` and
 `archived_sessions/**/rollout-*.jsonl`, CLI 0.134 → 0.154 verified; names from
-`session_index.jsonl`), lays every thread out as a lane on one timeline (root agent +
-sub-agents), classifies tool calls into phases, finds retry cycles, long waits and background
-processes, and shows where the wall-clock time went — live. A *turn* runs from `task_started`
-to `task_complete`; uncovered time inside it is `llm` (the model generating), time between turns
-on the root lane is `wait_user`, a turn that never closed is `no_telemetry`. `internal/model` is
-source-agnostic (a Claude Code adapter would not touch the UI), but the server is Codex-bound.
+`session_index.jsonl`) and Claude Code session logs (`~/.claude/projects/<project>/<id>.jsonl`
+plus `<id>/subagents/agent-*.jsonl`, CLI 2.1.226 → 2.1.270 verified; titles from `ai-title`
+lines), lays every thread out as a lane on one timeline (root agent + sub-agents), classifies
+tool calls into phases, finds retry cycles, long waits and background processes, and shows
+where the wall-clock time went — live. A *turn* runs from `task_started` to `task_complete`
+(Codex) or from a prompt line to the last `end_turn` block and the stop hooks after it (Claude
+Code); uncovered time inside it is `llm` (the model generating), time between turns on the
+root lane is `wait_user`, a turn that never closed is `no_telemetry`. `internal/model` is
+source-agnostic; the sources plug into `internal/source` and the server knows only that seam.
 Stack: Go 1.22, standard library only; vanilla JS + SVG embedded into the binary — no build
 step, no npm. Module `github.com/extractumio/todobem`; AGPL-3.0 (`LICENSE`) with a commercial
 option from Extractum (`LICENSING.md`). Run `go run ./cmd/todobem -open=false` →
-`http://127.0.0.1:7788` (flags `-addr`, `-codex`, `-open`, `-rules`, `-cache`, `-auth`); the UI is
-locked until a link from `todobem token` is used. A user rules overlay
+`http://127.0.0.1:7788` (flags `-addr`, `-codex`, `-claude`, `-settings`, `-open`, `-rules`,
+`-cache`, `-auth`); the UI is locked until a link from `todobem token` is used. The folders it
+reads come from `~/.todobem/settings.json` (`{"codex_homes": [...], "claude_homes": [...]}`,
+written by the Settings page, applied live; a key absent → that source's default `~/.codex` /
+`~/.claude`, `[]` → the source is off; `-codex`/`-claude` pin this run to exactly the folders
+given). A user rules overlay
 (`-rules`/`$TODOBEM_RULES`/`~/.todobem/rules.json`) adds project-specific commands and
 review/plan skill names, reviewer agent roles and document paths that pin a lifecycle stage; see
 `docs/SCHEMA.md`. Parsed sessions are cached to disk (`-cache`/`$TODOBEM_CACHE`, `off` to
@@ -28,19 +35,31 @@ disable). `make`/`scripts/deploy.sh` build and run it.
 
 ## Repository map — where to look, where to change
 
-Pipeline: `codex.Index.Scan` → `codex.Open`/`Refresh` → `laneParser` (one file → lane) →
-`model.Derive` → `server` JSON → `app.js`.
+Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `source.Session.Refresh`
+(the shared joiner: one `LaneParser` per file) → `model.Derive` → `server` JSON → `app.js`.
 - `cmd/todobem/main.go` — entry point, flags, subcommands (`token`, `cache`), embeds `web/`;
   `unknown.go` — `todobem unknown`: unmatched commands and telemetry gaps across sessions, the
   loop the `resolve-unknown` skill runs (`.claude/skills/resolve-unknown/`, symlinked from
   `.codex/skills/`) to grow the user overlay. `cmd/todobem/web/` — the SPA
-  (`index.html`, `app.js` timeline/breakdown/inspector, `app.css`); `cmd/todobem/app_test.js` —
-  its regressions (`node --test`, no dependencies).
+  (`index.html`, `app.js` timeline/breakdown/inspector, `app.css`, `filter.js` the period +
+  project + source filter shared by the session list and the Insights report, and `SOURCES` —
+  the source names and marks); `cmd/todobem/app_test.js` — its regressions (`node --test`, no
+  dependencies).
 - `cmd/dump/` — dev tool: totals, per-lane partition check, groups, longest and unknown ops.
+- `internal/source/` — the seam between the server and the formats: `Meta` (one session file
+  as the list and the cache see it), the `Source` interface (index of one format), the shared
+  `Session` joiner (root + sub-agent lanes, incremental refresh by byte offset, rewrite /
+  truncation restart, one derive per change) over `LaneParser`s, `Multi` (every source as one
+  index, ids global and unprefixed), `Summaries`, the `TailReader` and the text helpers.
 - `internal/codex/` — the Codex adapter. `index.go` reads first lines (`session_meta`) into an
-  in-memory index; `reader.go` types lines by prefix and skips multi-MB lines undecoded;
-  `lane.go` turns one rollout file into a lane (turns, ops, markers); `session.go` joins root +
-  sub-agents and refreshes incrementally by byte offset. Design: `docs/DESIGN.md` §1, §4.
+  in-memory index (the Codex `Source`); `reader.go` types lines by prefix and skips multi-MB
+  lines undecoded; `lane.go` turns one rollout file into a lane (turns, ops, markers);
+  `tokens.go` the per-call token accounting. Design: `docs/DESIGN.md` §1, §4.
+- `internal/claude/` — the Claude Code adapter. `index.go` walks `projects/<project>/` (a bounded
+  head scan for cwd / version / title, a tail scan for the last answer, `agent-*.meta.json` for
+  sub-agents); `lane.go` the turn state machine (prompt line → deferred close at the last
+  `end_turn` block, stop hooks inside the turn, interrupts, slash commands, tokens once per
+  message); `tools.go` the tool-name → operation mapping. Design: `docs/DESIGN.md` §1b.
 - `internal/classify/` — `Rules` in `classify.go` is the single source of truth for command →
   phase/kind (served at `/api/rules`), plus the heredoc and remote/queued regexes right below
   it; `shell.go` splits commands and masks heredocs; `Identity` normalizes commands for retry
@@ -68,6 +87,15 @@ Pipeline: `codex.Index.Scan` → `codex.Open`/`Refresh` → `laneParser` (one fi
   on demand through a `Loader`. `internal/server/insights.go` serves `/api/insights/{report,scan,
   status,rules}` and owns the facts sidecar (`store.LoadSidecar/SaveSidecar`, `<id>.facts.json.gz`).
   `cmd/todobem/web/insights.js` is the page; every visible string is in its `INSIGHT_TEXT`.
+- `internal/settings/` — `~/.todobem/settings.json`: load (a missing file or key is the
+  default, a malformed file fails loudly), atomic save (both keys always written), `Normalize`
+  per list (trim, `~`, absolute only, no folder twice — through a symlink either; empty = off)
+  and `Resolve` (both sources, at least one folder overall). `internal/server/settings.go`
+  serves `/api/settings` (GET one section per source with the homes as typed and what the index
+  found; JSON POST saves and calls `Server.SetHomes`); `cmd/todobem/web/settings.js` is the
+  page (a draft per source, add/remove/save, read-only when pinned); `resolveHomes` in
+  `cmd/todobem/main.go` is the one precedence rule (flags > file > defaults) the server, `cache`
+  and `unknown` share.
 - `internal/store/` — the derived-session cache (gzipped JSON per session). A default open serves
   the cache when its fingerprint (source files + a hash of the effective classifier) still matches;
   a grown file or a rule change auto-invalidates it; the Refresh button forces a full re-parse.
@@ -76,11 +104,16 @@ Pipeline: `codex.Index.Scan` → `codex.Open`/`Refresh` → `laneParser` (one fi
 - `docs/` — `DESIGN.md` (format research, design, review outcomes), `SCHEMA.md` (schema, phases,
   kinds), `VALIDATION-PROTOCOL.md` + `VALIDATION.md` (ground-truth checks), `REVIEW*` (history).
 - A new rule: a row in `Rules`, a case in `classify_test.go`, `SCHEMA.md` if a phase or kind
-  changes; a stage pin goes in `LifecyclePins` with a case in `userconfig_test.go`. A new insight:
+  changes; a stage pin goes in `LifecyclePins` with a case in `userconfig_test.go`. A new Claude
+  Code tool: a case in `internal/claude/tools.go` with a fixture in `lane_test.go` and a row in
+  `SCHEMA.md` (an unmapped tool is `unknown/tool:<name>`, which is honest). A new insight:
   a `Detector` in `internal/insights/detect_*.go` (a literal signal, no duration threshold that
   explains anything, no estimate), a positive and a negative fixture, a text entry in
-  `INSIGHT_TEXT` written in plain English, a row in `docs/INSIGHTS-SPEC.md` §5. A new source: a package under `internal/` emitting `model.*` only. A schema change:
-  `model.go`, `SCHEMA.md`, `app.js` and `cmd/dump` together.
+  `INSIGHT_TEXT` written in plain English, a row in `docs/INSIGHTS-SPEC.md` §5. A new source: a
+  package under `internal/` emitting `model.*` only, implementing `source.Source` with a
+  `LaneParser` per file, registered in `server.NewWithCache` and `cmd/dump`, with a name and mark
+  in `filter.js` `SOURCES` and a section in `settings.js`. A schema change: `model.go`,
+  `SCHEMA.md`, `app.js` and `cmd/dump` together.
 
 ## Product rules — every number's credibility rests on these
 
@@ -96,17 +129,19 @@ Pipeline: `codex.Index.Scan` → `codex.Open`/`Refresh` → `laneParser` (one fi
    added to root totals. Background ops (outlived their turn) leave the partition: thin bars.
 7. Lane fills and every activity number use the raw partition; LLM time is its own phase. The
    lifecycle (SDLC stage) partition is a *second* exclusive partition of the same segments —
-   `sum(by_lifecycle) == sum(by_phase)` — that attributes model output to the stage of the tool
-   call that followed it, or to the turn's harness signal; model output nothing followed stays
-   `llm`. It is always shown with its model/tools split and never compared per key with the
-   activity partition. Stage brackets are a grouping view, never a total. Raw op-sum is shown
-   next to exclusive time.
+   `sum(by_lifecycle) == sum(by_phase)` — that attributes model output to the stage of the
+   nearest tool call in its turn (the next one, else the previous one), or to the turn's harness
+   signal, which the sub-agent turns that ran inside that turn inherit (downward only, never
+   upward); only a turn with no tool call at all keeps its model output as `llm`. It is always
+   shown with its model/tools split and never compared per key with the activity partition.
+   Activity brackets are a grouping view, never a total. Raw op-sum is shown next to exclusive
+   time.
 8. Nothing leaves the machine, and nothing is shown to a stranger. Loopback bind **and** a
    token-locked UI: every `/api/*` route needs a session opened with a one-time `todobem token`
    (key file `~/.todobem/auth.key`, 0600, the root of trust; `-auth=off` is an explicit choice
    the server announces). Read-only access to the rollout tree, `/api/event` serves only recorded
-   source spans, the only writes are under `~/.todobem/` (cache, key), no telemetry, no outbound
-   calls. Ever.
+   source spans, the only writes are under `~/.todobem/` (cache, key, settings), no telemetry, no
+   outbound calls. Ever.
 
 ## Engineering rules
 
@@ -131,8 +166,9 @@ Pipeline: `codex.Index.Scan` → `codex.Open`/`Refresh` → `laneParser` (one fi
 
 ## Privacy and security
 
-- Rollout files are private conversations. Never commit, upload or quote them. Test fixtures are
-  synthetic, built in `t.TempDir()`, with fake hosts (`buildhost`), env names, paths and commands.
+- Rollout and session-log files are private conversations. Never commit, upload or quote them.
+  Test fixtures are synthetic, built in `t.TempDir()`, with fake hosts (`buildhost`), env names,
+  paths and commands.
 - No secrets, tokens, private hostnames, project names or customer data in source, fixtures,
   docs or commits. Inspect every diff before committing; rotate any leaked secret — deleting it
   is not enough. `cmd/dump` exports and validation reports stay local (see `.gitignore`).
@@ -142,8 +178,9 @@ Pipeline: `codex.Index.Scan` → `codex.Open`/`Refresh` → `laneParser` (one fi
 ## Definition of done
 
 - `gofmt -l .` empty, `go vet ./...`, `go test ./...`, `node --test cmd/todobem/app_test.js`
-  green; then `go run ./cmd/dump <root-thread-id>` on several recent sessions: no `partition
-  mismatch`, no new `unknown` heads. Classifier changes also pass `docs/VALIDATION-PROTOCOL.md`.
+  green; then `go run ./cmd/dump <root-thread-id>` on several recent sessions of both sources:
+  no `partition mismatch`, no new `unknown` heads. Classifier changes also pass
+  `docs/VALIDATION-PROTOCOL.md`.
 - UI changes: exercise the real page in a browser (session list, timeline, brush, inspector,
   Follow mode) and check the console. Tests and source reading do not replace this.
 - Report what changed, why, how it was verified, what was excluded and **Noticed, not fixed** —

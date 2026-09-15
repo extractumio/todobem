@@ -102,11 +102,15 @@ async function inspectLane(id) {
     ['Tokens', l.tokens ? fmtTok(l.tokens.total) : '—'],
     ['Parent', parent ? parent.path : '—'],
     ['Status', l.live ? 'live' : last ? 'last turn ' + last.status : 'no turns'],
+    ['Log file', l.file || '—'],
   ];
-  const promptHead = !l.depth ? 'First user message' : prompt && prompt.task ? 'Prompt from the parent' : 'First message in this thread';
-  const promptNote = !prompt ? 'No starting message is recorded in this rollout.'
+  // a Claude Code sub-agent's file always starts with the parent's prompt as a user-role message
+  const claude = sourceOf(current()) === 'claude';
+  const promptHead = !l.depth ? 'First user message' : (prompt && prompt.task) || claude ? 'Prompt from the parent' : 'First message in this thread';
+  const promptNote = !prompt ? 'No starting message is recorded in this log.'
     : prompt.headerOnly ? 'Only the message header is stored as text; checking the source event for the payload…'
-    : l.depth && !prompt.task ? `User-role message · ${prompt.marker.text.length} chars. Before Codex CLI 0.144 this is how the parent's task reached a sub-agent.`
+    : l.depth && !prompt.task && !claude ? `User-role message · ${prompt.marker.text.length} chars. Before Codex CLI 0.144 this is how the parent's task reached a sub-agent.`
+    : l.depth && claude ? `The Agent tool's prompt · ${prompt.marker.text.length} chars.`
     : '';
   const dlg = $('#inspector');
   dlg.innerHTML = `<div class="dialog-head"><span class="eyebrow">${l.depth ? 'Sub-agent' : 'Mother agent'}</span><button class="btn icon-only ghost" data-action="close-inspector" aria-label="Close" autofocus>${icon('close')}</button></div>`

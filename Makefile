@@ -1,7 +1,11 @@
 # todobem — build/run/test. Single Go binary, stdlib only, web/ embedded (no build step).
 BINARY ?= todobem
 ADDR   ?= 127.0.0.1:7788
-CODEX  ?= $(HOME)/.codex
+# CODEX / CLAUDE pin this run to exactly those folders (a source not named is off; the Settings
+# page is then read-only); unset, the server reads the folders of ~/.todobem/settings.json, else
+# ~/.codex and ~/.claude.
+CODEX  ?=
+CLAUDE ?=
 
 .PHONY: build run token install test fmt vet clean deploy stop
 
@@ -9,7 +13,7 @@ build: ## compile the single binary (embeds web/)
 	go build -o $(BINARY) ./cmd/todobem
 
 run: build ## build then run in the foreground (loopback by default); the UI is token-locked
-	./$(BINARY) -addr $(ADDR) -codex $(CODEX)
+	./$(BINARY) -addr $(ADDR) $(if $(CODEX),-codex $(CODEX)) $(if $(CLAUDE),-claude $(CLAUDE))
 
 token: build ## print a one-time login link for the UI (see also: ./todobem token -revoke)
 	./$(BINARY) token -addr $(ADDR)

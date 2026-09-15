@@ -41,6 +41,9 @@ func TestPeriodMembershipAndResolution(t *testing.T) {
 	if !one.InPeriod("x", 0, true) || one.InPeriod("y", now, false) {
 		t.Fatal("one-session period selects that id only, live or not")
 	}
+	if d := (Period{Kind: "1d"}).Resolve(now); d.From != now-day || d.To != now {
+		t.Fatalf("1d: %+v", d)
+	}
 	if (Period{Kind: "bogus"}).Resolve(now).Kind != "30d" {
 		t.Fatal("unknown kinds fall back to 30 days")
 	}

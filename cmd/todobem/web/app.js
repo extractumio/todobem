@@ -16,7 +16,7 @@ const MAIN_THREAD = 'main thread';
 const MOTHER_AGENT = 'mother agent';
 const overlap = (s, e, a, b) => Math.max(0, Math.min(e, b) - Math.max(s, a));
 
-const paths = { grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>', timeline: '<path d="M3 6h8M15 6h6M3 12h4M11 12h10M3 18h12M19 18h2"/>', help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 8.5a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1.5-1.5 2.5m0 3h.01"/>', right: '<path d="m9 5 7 7-7 7"/>', left: '<path d="m15 5-7 7 7 7"/>', loop: '<path d="M19 7h-8a6 6 0 1 0 0 12h2M16 3l4 4-4 4M5 17h8a6 6 0 1 0 0-12h-2M8 21l-4-4 4-4"/>', repo: '<path d="M5 3h14v18H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2M4 17h15M8 7h6"/>', target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="m15 9 6-6m-4 0h4v4"/>', clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>', code: '<path d="m8 6-6 6 6 6m8-12 6 6-6 6m-3-15-2 18"/>', wait: '<path d="M7 3h10M7 21h10M8 3v5l8 8v5M16 3v5l-8 8v5"/>', gap: '<path d="M4 5v14m16-14v14M8 12h2m4 0h2"/>', expand: '<path d="M8 3H3v5m18 0V3h-5M3 16v5h5m8 0h5v-5"/>', latest: '<path d="M3 12h14m-5-5 5 5-5 5m9-13v16"/>', close: '<path d="m6 6 12 12M6 18 18 6"/>', info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h.01"/>', shield: '<path d="m12 2 9 4v6c0 5-9 10-9 10S3 17 3 12V6z"/><path d="m8 11 3 3 5-6"/>', search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>', check: '<path d="m5 12 4 4L19 6"/>', brain: '<path d="M12 4a3 3 0 0 0-3 3v10a3 3 0 0 0 6 0V7a3 3 0 0 0-3-3zM6 9a3 3 0 0 0 0 6M18 9a3 3 0 0 1 0 6"/>', refresh: '<path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/>', agents: '<circle cx="7" cy="7" r="3"/><circle cx="17" cy="7" r="3"/><circle cx="12" cy="17" r="3"/><path d="M9 9l2 5M15 9l-2 5"/>', copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/>' };
+const paths = { grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>', timeline: '<path d="M3 6h8M15 6h6M3 12h4M11 12h10M3 18h12M19 18h2"/>', help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 8.5a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1.5-1.5 2.5m0 3h.01"/>', right: '<path d="m9 5 7 7-7 7"/>', left: '<path d="m15 5-7 7 7 7"/>', loop: '<path d="M19 7h-8a6 6 0 1 0 0 12h2M16 3l4 4-4 4M5 17h8a6 6 0 1 0 0-12h-2M8 21l-4-4 4-4"/>', repo: '<path d="M5 3h14v18H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2M4 17h15M8 7h6"/>', target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="m15 9 6-6m-4 0h4v4"/>', clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>', code: '<path d="m8 6-6 6 6 6m8-12 6 6-6 6m-3-15-2 18"/>', wait: '<path d="M7 3h10M7 21h10M8 3v5l8 8v5M16 3v5l-8 8v5"/>', gap: '<path d="M4 5v14m16-14v14M8 12h2m4 0h2"/>', expand: '<path d="M8 3H3v5m18 0V3h-5M3 16v5h5m8 0h5v-5"/>', latest: '<path d="M3 12h14m-5-5 5 5-5 5m9-13v16"/>', close: '<path d="m6 6 12 12M6 18 18 6"/>', info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h.01"/>', shield: '<path d="m12 2 9 4v6c0 5-9 10-9 10S3 17 3 12V6z"/><path d="m8 11 3 3 5-6"/>', search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>', check: '<path d="m5 12 4 4L19 6"/>', brain: '<path d="M12 4a3 3 0 0 0-3 3v10a3 3 0 0 0 6 0V7a3 3 0 0 0-3-3zM6 9a3 3 0 0 0 0 6M18 9a3 3 0 0 1 0 6"/>', refresh: '<path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/>', agents: '<circle cx="7" cy="7" r="3"/><circle cx="17" cy="7" r="3"/><circle cx="12" cy="17" r="3"/><path d="M9 9l2 5M15 9l-2 5"/>', copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/>', gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9l2.1 2.1m10 10 2.1 2.1M4.9 19.1 7 17m10-10 2.1-2.1"/>' };
 // userGlyph draws the user-message marker: a person (head and shoulders) 13 px tall at (cx, top).
 function userGlyph(cx, top, color, scale = 1) {
   const r = 2.7 * scale;
@@ -25,9 +25,27 @@ function userGlyph(cx, top, color, scale = 1) {
 }
 const icon = (name, small = false) => `<svg class="ico ${small ? 'small-ico' : ''}" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.info}</svg>`;
 
+// prefGet / prefSet persist a small UI preference (e.g. the sessions-list period) in a cookie,
+// so the choice survives a reload. Client-side only; the loopback server ignores these cookies.
+// Every access is guarded: a locked-down browser can make document.cookie throw.
+function prefGet(key) {
+  try {
+    const m = document.cookie.match(new RegExp('(?:^|; )' + key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '=([^;]*)'));
+    return m ? decodeURIComponent(m[1]) : '';
+  } catch (e) { return ''; }
+}
+function prefSet(key, val) {
+  try { document.cookie = `${key}=${encodeURIComponent(val)}; path=/; max-age=31536000; samesite=lax`; } catch (e) { }
+}
+// hourglass marks a live tail whose telemetry has not arrived yet — the agent is generating and
+// nothing has been recorded since the last event. It flips slowly so it reads as "in progress".
+function hourglass(cx, cy, color) {
+  return `<g><path d="M${cx - 4} ${cy - 5.5}h8M${cx - 4} ${cy + 5.5}h8" stroke="${color}" stroke-width="1.4" stroke-linecap="round"/><path d="M${cx - 3.3} ${cy - 4.6}L${cx} ${cy}L${cx + 3.3} ${cy - 4.6}Z" fill="${color}"/><path d="M${cx - 3.3} ${cy + 4.6}L${cx} ${cy}L${cx + 3.3} ${cy + 4.6}Z" fill="${color}" opacity=".5"/><animateTransform attributeName="transform" type="rotate" from="0 ${cx} ${cy}" to="180 ${cx} ${cy}" dur="2.6s" repeatCount="indefinite"/></g>`;
+}
+
 const PHASES = {
   llm: { name: 'LLM', short: 'LLM', color: '#348989', kind: 'model' },
-  code: { name: 'Coding', short: 'Code', color: '#4690ce', kind: 'work' },
+  code: { name: 'Development', short: 'Dev', color: '#4690ce', kind: 'work' }, // the JSON key stays `code`: overlays, caches and the API reference it
   build: { name: 'Build', short: 'Build', color: '#a889fc', kind: 'work' },
   test: { name: 'Testing', short: 'Test', color: '#d9bc3d', kind: 'work' },
   release: { name: 'Release & deploy', short: 'Release', color: '#4aa65f', kind: 'work' },
@@ -44,16 +62,21 @@ const PHASE_ORDER = Object.keys(PHASES);
 // "Lifecycle"). Phase says what a tool call was; lifecycle says which stage of the software
 // lifecycle it served. The eight work stages come first in lifecycle order; non-work time
 // passes through under its phase name and reuses that phase's colour.
+// Colour = concept, shape = partition: a stage that is the default home of an activity shares
+// its hue (implement = Development, test = Testing, release = Release, operate = Infrastructure);
+// the four stages no activity maps to (plan, requirements, design, review) take hues no fill
+// uses. Activity is drawn as a solid fill / square, a stage as a thin rail / dash — so purple
+// is only ever Build and the rail under a fill is never read as an activity.
 const LIFECYCLES = {
-  plan: { name: 'Planning', short: 'Plan', color: '#d98cc4', work: true },
-  requirements: { name: 'Requirements', short: 'Reqs', color: '#e7a1a1', work: true },
-  design: { name: 'Design', short: 'Design', color: '#f0a35e', work: true },
+  plan: { name: 'Planning', short: 'Plan', color: '#7fcbe6', work: true },
+  requirements: { name: 'Requirements', short: 'Reqs', color: '#f0a0c9', work: true },
+  design: { name: 'Design', short: 'Design', color: '#e77f68', work: true },
   implement: { name: 'Implementation', short: 'Implement', color: '#4690ce', work: true },
-  review: { name: 'Code review', short: 'Review', color: '#8f7bd8', work: true },
+  review: { name: 'Code review', short: 'Review', color: '#cf5e9e', work: true },
   test: { name: 'Testing / QA', short: 'Test', color: '#d9bc3d', work: true },
   release: { name: 'Deployment / release', short: 'Release', color: '#4aa65f', work: true },
   operate: { name: 'Maintenance / operations', short: 'Operate', color: '#c4956e', work: true },
-  llm: { name: 'Model output — no tool call followed', short: 'Model', color: PHASES.llm.color },
+  llm: { name: 'Model output — turn without tool calls', short: 'Model', color: PHASES.llm.color },
   wait_user: { name: PHASES.wait_user.name, short: PHASES.wait_user.short, color: PHASES.wait_user.color },
   wait_worker: { name: PHASES.wait_worker.name, short: PHASES.wait_worker.short, color: PHASES.wait_worker.color },
   idle: { name: PHASES.idle.name, short: PHASES.idle.short, color: PHASES.idle.color },
@@ -67,11 +90,17 @@ const LIFECYCLE_ORDER = Object.keys(LIFECYCLES);
 const lifecycleOf = o => o.lc || o.p || o.phase;
 const alphaOf = p => 1;
 const swatch = p => p === 'no_telemetry' ? `<i class="color-square hatch" style="background:#22313d"></i>` : `<i class="color-square" style="background:${PHASES[p].color}"></i>`;
+// railSwatch is the legend mark of a lifecycle stage: the rail drawn under a lane's fill, so the
+// breakdown, the filter chip and the guide show a stage the way the timeline does.
+const railSwatch = color => `<i class="color-rail" style="background:${color}"></i>`;
+// swatchFor picks the mark of a breakdown row from its definition: a rail for a work stage, a
+// square for an activity or a pass-through (which is its activity).
+const swatchFor = def => def.work ? railSwatch(def.color) : `<i class="color-square" style="background:${def.color}"></i>`;
 const ROLES = { background: { name: 'Background process', color: '#8a6d3b' }, parallel: { name: 'Parallel runs (same command)', color: '#7fa6c9' }, first: { name: 'First runs', color: '#d9bc3d' }, retry_after_failure: { name: 'Retry after failure', color: '#d77729' }, rerun: { name: 'Reruns (after pass)', color: '#e2cf6a' }, fix: { name: 'Fix between attempts', color: '#b22998' }, infra_recovery: { name: 'Infra recovery', color: '#c4956e' }, worker_queue: { name: 'Worker queue', color: '#48aa8c' }, single: { name: 'Single runs', color: '#b3a04a' }, remote: { name: 'On remote runner', color: '#8fb8d8' } };
 const ROLE_ORDER = ['first', 'retry_after_failure', 'rerun', 'parallel', 'fix', 'infra_recovery', 'worker_queue', 'single', 'remote'];
-const MARKS = { llm_error: { glyph: 'x', color: '#f0a742', name: 'LLM failure (invalid tool call)' }, system_message: { glyph: 'sys', color: '#7d8fa1', name: 'Harness message' }, user_message: { glyph: 'user', color: '#f3f6f8', name: 'User message' }, question: { glyph: 'q', color: '#f2a7b2', name: 'Question to user' }, final_answer: { glyph: 'check', color: '#4aa65f', name: 'Final answer' }, interrupted: { glyph: 'x', color: '#d76368', name: 'Interrupted' }, compaction: { glyph: 'diamond', color: '#c08a45', name: 'Context compaction' }, plan: { glyph: 'plan', color: '#c9b2ff', name: 'Plan update' }, skill: { glyph: 'skill', color: '#8f7bd8', name: 'Skill invoked' }, result_returned: { glyph: 'result', color: '#48aa8c', name: 'Sub-agent result' }, agent_started: { glyph: 'spawn', color: '#86d0b9', name: 'Sub-agent spawned' }, agent_interacted: { glyph: 'tick', color: '#86d0b9', name: 'Message to sub-agent' }, agent_completed: { glyph: 'done', color: '#86d0b9', name: 'Sub-agent turn completed' }, agent_interrupted: { glyph: 'x', color: '#d76368', name: 'Sub-agent interrupted' } };
+const MARKS = { llm_error: { glyph: 'x', color: '#f0a742', name: 'LLM failure (invalid tool call)' }, system_message: { glyph: 'sys', color: '#7d8fa1', name: 'Harness message' }, user_message: { glyph: 'user', color: '#f3f6f8', name: 'User message' }, question: { glyph: 'q', color: '#f2a7b2', name: 'Question to user' }, final_answer: { glyph: 'check', color: '#4aa65f', name: 'Final answer' }, interrupted: { glyph: 'x', color: '#d76368', name: 'Interrupted' }, compaction: { glyph: 'diamond', color: '#c08a45', name: 'Context compaction' }, plan: { glyph: 'plan', color: '#c9b2ff', name: 'Plan update' }, skill: { glyph: 'skill', color: LIFECYCLES.review.color, name: 'Skill invoked' }, result_returned: { glyph: 'result', color: '#48aa8c', name: 'Sub-agent result' }, agent_started: { glyph: 'spawn', color: '#86d0b9', name: 'Sub-agent spawned' }, agent_interacted: { glyph: 'tick', color: '#86d0b9', name: 'Message to sub-agent' }, agent_completed: { glyph: 'done', color: '#86d0b9', name: 'Sub-agent turn completed' }, agent_interrupted: { glyph: 'x', color: '#d76368', name: 'Sub-agent interrupted' } };
 
-const state = { locked: false, authEnabled: false, page: 'sessions', id: null, model: null, sessions: [], a: 0, b: 0, follow: false, interval: 60, expanded: new Set(), hiddenLanes: new Set(), phase: 'all', role: 'all', lifecycle: 'all', lane: 'all', sort: 'longest', listShown: 60, metricsOpen: false, openRuns: new Set(), search: '', fleetSort: 'updated', selected: null, groups: true, inTurn: false, allLanes: false, failedOnly: false, breakdownSort: 'longest', convOpen: new Set(), version: null, lastRefresh: 0, pollTimer: null, tick: null, focus: null, insights: null, pendingFocus: null };
+const state = { locked: false, authEnabled: false, page: 'sessions', id: null, model: null, sessions: [], a: 0, b: 0, follow: false, interval: 60, expanded: new Set(), hiddenLanes: new Set(), phase: 'all', role: 'all', lifecycle: 'all', lane: 'all', sort: 'longest', listShown: 60, metricsOpen: false, openRuns: new Set(), search: '', fleetSort: 'updated', fleetFilter: { kind: '30d', from: '', to: '', cwd: '', sources: {} }, selected: null, groups: true, inTurn: false, allLanes: false, failedOnly: false, breakdownSort: 'longest', convOpen: new Set(), version: null, lastRefresh: 0, pollTimer: null, tick: null, focus: null, insights: null, pendingFocus: null };
 let geometry = null, overviewDrag = null, plotDrag = null, lastDragTime = 0, toastTimer, resizeTimer, tipTimer, focusTimer;
 // Async work may finish after navigation, another selection, or a newer refresh.
 let navigationRequest = 0, sessionRequest = 0, sessionsRequest = 0, inspectorRequest = 0, pollSchedule = 0, pollBusy = false;
@@ -133,13 +162,14 @@ async function api(path) {
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
   return r.json();
 }
-// apiPost: the only writes the UI ever makes are login and logout; both are JSON POSTs (the
-// server refuses anything a foreign page could send without a preflight).
+// apiPost: every write the UI makes (login, logout, an Insights scan, the settings) is a JSON
+// POST — the server refuses anything a foreign page could send without a preflight. payload is
+// the decoded JSON answer when there is one; text the raw body (an error line, say).
 async function apiPost(path, body) {
   const r = await fetch(path, { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
-  let payload = null;
-  try { payload = r.status === 204 ? null : await r.json(); } catch (e) { payload = null; }
-  return { status: r.status, ok: r.ok, payload };
+  let payload = null, text = '';
+  try { text = r.status === 204 ? '' : await r.text(); payload = text ? JSON.parse(text) : null; } catch (e) { payload = null; }
+  return { status: r.status, ok: r.ok, payload, text };
 }
 function current() { return state.model; }
 function root() { return state.model?.lanes[0]; }
@@ -259,10 +289,11 @@ function nav() {
   $('#navSessions').classList.toggle('active', state.page === 'sessions'); $('#navSession').classList.toggle('active', state.page === 'session');
   $('#mobileSessions').classList.toggle('active', state.page === 'sessions'); $('#mobileSession').classList.toggle('active', state.page === 'session');
   $('#navInsights').classList.toggle('active', state.page === 'insights'); $('#mobileInsights').classList.toggle('active', state.page === 'insights');
+  $('#navSettings').classList.toggle('active', state.page === 'settings');
   $('#navSession').disabled = !m; $('#mobileSession').disabled = !m;
-  $('#breadcrumb').innerHTML = `<span>Codex</span><span class="slash">/</span><button data-action="sessions">Sessions</button>${state.page === 'session' && m ? `<span class="slash">/</span><span class="mono">${esc(m.id.slice(0, 8))}</span>` : ''}${state.page === 'insights' ? '<span class="slash">/</span><span>Insights</span>' : ''}`;
+  $('#breadcrumb').innerHTML = `<span>Agent sessions</span><span class="slash">/</span><button data-action="sessions">Sessions</button>${state.page === 'session' && m ? `<span class="slash">/</span><span class="mono">${esc(m.id.slice(0, 8))}</span>` : ''}${state.page === 'insights' ? '<span class="slash">/</span><span>Insights</span>' : ''}${state.page === 'settings' ? '<span class="slash">/</span><span>Settings</span>' : ''}`;
   $('#focusCard').innerHTML = m ? `<button class="current-card" data-action="session"><span class="row"><i class="dot" style="background:${m.live ? '#5fe0a0' : 'var(--accent)'}"></i><span class="mono">${esc(m.id.slice(0, 8))}</span></span><strong>${esc(m.title)}</strong><span>${fmt(m.ended - m.started)} · ${m.lanes.length - 1} sub-agents</span></button>` : '<div class="current-card"><span>No session open</span></div>';
-  document.title = `${state.page === 'session' && m ? m.title : state.page === 'insights' ? 'Insights' : 'Sessions'} · todobem`;
+  document.title = `${state.page === 'session' && m ? m.title : state.page === 'insights' ? 'Insights' : state.page === 'settings' ? 'Settings' : 'Sessions'} · todobem`;
   liveLabel();
 }
 function liveLabel() {
@@ -286,6 +317,13 @@ function go(page, id) {
     window.scrollTo(0, 0);
     return;
   }
+  if (page === 'settings') {
+    setHash('#settings');
+    render();
+    loadSettings();
+    window.scrollTo(0, 0);
+    return;
+  }
   if (page === 'session' && id && id !== state.id) {
     setHash('#session/' + encodeURIComponent(id)); $('#main').innerHTML = '<div class="loading">Parsing session…</div>';
     loadSession(id).then(applied => { if (applied && navigation === navigationRequest) { render(); schedulePoll(); applyPendingFocus(); } }).catch(e => {
@@ -303,7 +341,27 @@ function go(page, id) {
   }
   render(); schedulePoll(); window.scrollTo(0, 0);
 }
-function render() { nav(); if (state.page === 'sessions') { $('#main').innerHTML = fleetPage(); renderFleetRows(); } else if (state.page === 'insights') { renderInsights(); return; } else if (current()) { $('#main').innerHTML = sessionPage(); renderOverview(); renderTimeline(); renderLower(); renderSessionInsights(); } $$('[data-icon]').forEach(el => el.innerHTML = icon(el.dataset.icon)); }
+// A live update rebuilds the whole page. Without this the reader loses their place: the window
+// jumps, a focused control drops focus and every scrolled list snaps back to the top. The visible
+// time window (and with it the timeline's L/R handles), the filters, the expanded lanes and the
+// selection all live in `state` and survive on their own; only what the DOM itself owns has to be
+// carried across.
+function keepPlace(paint) {
+  const y = window.scrollY || 0, x = window.scrollX || 0;
+  const active = document.activeElement;
+  const focusID = active && active.id ? active.id : '';
+  const range = focusID && active.selectionStart != null ? [active.selectionStart, active.selectionEnd] : null;
+  const scrolled = $$('.scroll-fade').map(el => [el.scrollTop || 0, el.scrollLeft || 0]);
+  paint();
+  const after = $$('.scroll-fade');
+  if (after.length === scrolled.length) after.forEach((el, i) => { if (scrolled[i][0] || scrolled[i][1]) { el.scrollTop = scrolled[i][0]; el.scrollLeft = scrolled[i][1]; } });
+  if (focusID) {
+    const el = $('#' + focusID);
+    if (el && el.focus) { try { el.focus({ preventScroll: true }); if (range && el.setSelectionRange) el.setSelectionRange(range[0], range[1]); } catch (e) { } }
+  }
+  if (window.scrollTo) window.scrollTo(x, y);
+}
+function render() { nav(); if (state.page === 'sessions') { $('#main').innerHTML = fleetPage(); renderFleetRows(); } else if (state.page === 'insights') { renderInsights(); return; } else if (state.page === 'settings') { renderSettings(); return; } else if (current()) { $('#main').innerHTML = sessionPage(); renderOverview(); renderTimeline(); renderLower(); renderSessionInsights(); } $$('[data-icon]').forEach(el => el.innerHTML = icon(el.dataset.icon)); }
 // applyPendingFocus honours a `#session/<id>?focus=<a>-<b>` link (an Insights evidence row):
 // the session opens and the timeline highlights that interval.
 function applyPendingFocus() {
@@ -338,7 +396,7 @@ function schedulePoll() {
         request = sessionRequest;
         const applied = await loading;
         if (!applied || !ownsPoll()) return;
-        render(); toast(current().live ? 'Live update applied.' : 'Session updated.');
+        keepPlace(render); toast(current().live ? 'Live update applied.' : 'Session updated.');
       } else { state.lastRefresh = Date.now(); liveLabel(); }
     } catch (e) { if (ownsPoll() && request === sessionRequest) console.warn(e); }
     finally { pollBusy = false; }
@@ -347,19 +405,99 @@ function schedulePoll() {
 }
 
 /* ---------- fleet page ---------- */
+const FLEET_TEXT = {
+  eyebrow: 'Agent sessions on this machine',
+  title: 'Sessions',
+  subtitle: 'Main threads of the configured Codex and Claude Code folders. Open one to see where the time went.',
+  search: 'Search title, path, branch…',
+  sort: { updated: 'Recently updated', size: 'Largest logs', agents: 'Most sub-agents', started: 'Started first' },
+  columns: ['Session', 'Started', 'Updated', 'Elapsed', 'Sub-agents', 'Log size'],
+  summary: { sessions: 'Sessions in view', agents: 'Sub-agent threads', logs: 'Session logs', recent: 'Written in the last 10 min' },
+  active: 'active',
+  awaiting: 'waiting',
+  awaitingNote: 'The agent asked you a question and is still waiting for the answer. Open the session to read it.',
+  elapsedNote: 'from file timestamps; open to parse',
+  empty: { title: 'No sessions match.', body: 'Try another search, period, project or source.' },
+};
+// fleetPage: the heading, one bar with the shared period + project + source filter (filter.js)
+// persistFleetPeriod / restoreFleetPeriod keep the sessions-list period across reloads (cookie).
+// Only the period (kind + custom dates) is remembered; project, source and search reset per visit.
+function persistFleetPeriod() {
+  const f = state.fleetFilter;
+  prefSet('todobem_fleet_period', JSON.stringify({ kind: f.kind, from: f.from, to: f.to }));
+}
+function restoreFleetPeriod() {
+  try {
+    const v = JSON.parse(prefGet('todobem_fleet_period') || 'null');
+    if (v && FILTER_KINDS.includes(v.kind)) {
+      state.fleetFilter.kind = v.kind;
+      state.fleetFilter.from = v.from || '';
+      state.fleetFilter.to = v.to || '';
+    }
+  } catch (e) { }
+}
+// next to the search and the sort, the summary tiles of the sessions in view, then the rows.
 function fleetPage() {
-  return `<section class="page-heading"><div><div class="eyebrow">Codex sessions on this machine</div><h1>Sessions</h1><p class="subtitle">Main threads under ~/.codex/sessions. Open one to see where the time went.</p></div><span class="chip">${state.sessions.length} sessions</span></section>
+  const T = FLEET_TEXT;
+  const filter = filterBarHTML('fleet', state.fleetFilter, { projects: filterProjects(state.fleetFilter, state.sessions), sessions: state.sessions });
+  const search = `<label class="search-box">${icon('search', true)}<input id="sessionSearch" type="search" value="${esc(state.search)}" placeholder="${esc(T.search)}" aria-label="Search sessions"></label>`;
+  const sortOptions = Object.entries(T.sort).map(([k, label]) => `<option value="${k}" ${state.fleetSort === k ? 'selected' : ''}>${esc(label)}</option>`).join('');
+  const sort = `<label class="sr-only" for="fleetSort">Sort sessions</label><select class="select" id="fleetSort">${sortOptions}</select>`;
+  return `<section class="page-heading"><div><div class="eyebrow">${esc(T.eyebrow)}</div><h1>${esc(T.title)}</h1><p class="subtitle">${esc(T.subtitle)}</p></div><span class="chip" id="fleetCount">${state.sessions.length} sessions</span></section>
+<section class="report-bar" aria-label="Sessions period, project, source, search and sort">${filter}<div class="bar-actions bar-fill">${search}${sort}</div></section>
 <section class="fleet-summary" id="fleetSummary"></section>
-<section class="card"><div class="fleet-toolbar"><label class="search-box">${icon('search', true)}<input id="sessionSearch" type="search" value="${esc(state.search)}" placeholder="Search title, path, branch…" aria-label="Search sessions"></label><label class="sr-only" for="fleetSort">Sort sessions</label><select class="select" id="fleetSort"><option value="updated" ${state.fleetSort === 'updated' ? 'selected' : ''}>Recently updated</option><option value="size" ${state.fleetSort === 'size' ? 'selected' : ''}>Largest logs</option><option value="agents" ${state.fleetSort === 'agents' ? 'selected' : ''}>Most sub-agents</option><option value="started" ${state.fleetSort === 'started' ? 'selected' : ''}>Started first</option></select></div><div id="fleetRows"></div></section>${footer()}`;
+<section class="card"><div id="fleetRows"></div></section>${footer()}`;
+}
+// fleetCompare orders the rows for the chosen sort.
+function fleetCompare(a, b) {
+  switch (state.fleetSort) {
+    case 'size': return b.bytes - a.bytes;
+    case 'agents': return b.agents - a.agents;
+    case 'started': return a.started - b.started;
+    default: return b.updated - a.updated;
+  }
+}
+// sessionLink: the row's first cell — the source mark, the title, the last answer and the meta
+// line (project, branch, model, harness version).
+function sessionLink(s) {
+  const desc = s.last_answer ? `<em class="desc" title="${esc(descriptionOf(s.last_answer, 400))}">${esc(descriptionOf(s.last_answer, 160))}</em>` : '';
+  const meta = [shortPath(s.cwd), s.branch, s.model, s.cli ? `${sourceName(s)} ${s.cli}` : sourceName(s)].filter(Boolean).map(esc).join(' · ');
+  return `<button class="session-link" data-action="session" data-id="${esc(s.id)}"><strong>${sourceMark(s)}${esc(s.title)}</strong>${desc}<span>${meta}</span></button>`;
+}
+// askChip: a question (or a plan awaiting approval) the harness recorded and nothing answered —
+// a chip with a pulsing ? next to the "active" chip, and the time it has waited so far.
+function askChip(s, now) {
+  if (!s.question) {
+    return '';
+  }
+  const T = FLEET_TEXT;
+  return ` <span class="chip ask" title="${esc(T.awaitingNote)}"><i class="qmark" aria-hidden="true">?</i>${esc(T.awaiting)} ${fmt(now - s.question)}</span>`;
 }
 function renderFleetRows() {
-  const q = state.search.toLowerCase();
-  const rows = state.sessions.filter(s => `${s.title} ${s.cwd} ${s.branch || ''} ${s.id}`.toLowerCase().includes(q)).sort((a, b) => state.fleetSort === 'size' ? b.bytes - a.bytes : state.fleetSort === 'agents' ? b.agents - a.agents : state.fleetSort === 'started' ? a.started - b.started : b.updated - a.updated);
-  const live = state.sessions.filter(s => Date.now() - s.updated < 10 * 60e3).length;
-  $('#fleetSummary').innerHTML = `<div><strong class="num">${rows.length}</strong><span>Sessions in view</span></div><div><strong class="num">${sum(rows.map(s => s.agents))}</strong><span>Sub-agent threads</span></div><div><strong class="num">${(sum(rows.map(s => s.bytes)) / 1e6).toFixed(0)} MB</strong><span>Rollout logs</span></div><div><strong class="num">${live}</strong><span>Written in the last 10 min</span></div>`;
-  const link = s => `<button class="session-link" data-action="session" data-id="${esc(s.id)}"><strong>${esc(s.title)}</strong>${s.last_answer ? `<em class="desc" title="${esc(descriptionOf(s.last_answer, 400))}">${esc(descriptionOf(s.last_answer, 160))}</em>` : ''}<span>${esc(shortPath(s.cwd))}${s.branch ? ' · ' + esc(s.branch) : ''} · ${esc(s.model || '')}${s.cli ? ' · cli ' + esc(s.cli) : ''}</span></button>`;
-  const stat = s => s.totals ? `<span class="mono">${fmt(s.totals.elapsed_ms)}</span>` : `<span class="mono note" title="from file timestamps; open to parse">≈ ${fmt(Math.max(0, s.updated - s.started))}</span>`;
-  $('#fleetRows').innerHTML = rows.length ? `<table class="fleet-table"><thead><tr><th>Session</th><th>Started</th><th>Updated</th><th>Elapsed</th><th>Sub-agents</th><th>Log size</th></tr></thead><tbody>${rows.map(s => `<tr><td>${link(s)}</td><td class="mono">${stamp(s.started)}</td><td class="mono">${stamp(s.updated)}${Date.now() - s.updated < 10 * 60e3 ? ' <span class="chip live" style="padding:2px 6px"><i class="dot"></i>active</span>' : ''}</td><td>${stat(s)}</td><td class="mono">${s.agents}</td><td class="mono">${(s.bytes / 1e6).toFixed(1)} MB</td></tr>`).join('')}</tbody></table><div class="mobile-fleet">${rows.map(s => `<article class="session-tile">${link(s)}<div class="session-tile-metrics"><div><strong class="mono">${stamp(s.updated)}</strong><small>Updated</small></div><div><strong class="mono">${s.agents}</strong><small>Sub-agents</small></div><div><strong class="mono">${(s.bytes / 1e6).toFixed(0)} MB</strong><small>Log</small></div></div></article>`).join('')}</div>` : `<div class="empty"><h3>No sessions match.</h3><p>Try another search.</p></div>`;
+  const T = FLEET_TEXT;
+  const q = state.search.toLowerCase(), f = state.fleetFilter, now = Date.now();
+  const matches = s => filterKeeps(f, s, now) && `${s.title} ${s.cwd} ${s.branch || ''} ${s.id} ${sourceName(s)}`.toLowerCase().includes(q);
+  const rows = state.sessions.filter(matches).sort(fleetCompare);
+  const recent = s => now - s.updated < 10 * 60e3;
+  const count = $('#fleetCount');
+  if (count) count.textContent = rows.length === state.sessions.length ? plural(rows.length, 'session') : `${rows.length} of ${plural(state.sessions.length, 'session')}`;
+  const tiles = [
+    [rows.length, T.summary.sessions],
+    [sum(rows.map(s => s.agents)), T.summary.agents],
+    [`${(sum(rows.map(s => s.bytes)) / 1e6).toFixed(0)} MB`, T.summary.logs],
+    [rows.filter(recent).length, T.summary.recent],
+  ];
+  $('#fleetSummary').innerHTML = tiles.map(([v, label]) => `<div><strong class="num">${v}</strong><span>${esc(label)}</span></div>`).join('');
+  if (!rows.length) {
+    $('#fleetRows').innerHTML = `<div class="empty"><h3>${esc(T.empty.title)}</h3><p>${esc(T.empty.body)}</p></div>`;
+    return;
+  }
+  const stat = s => s.totals ? `<span class="mono">${fmt(s.totals.elapsed_ms)}</span>` : `<span class="mono note" title="${esc(T.elapsedNote)}">≈ ${fmt(Math.max(0, s.updated - s.started))}</span>`;
+  const activeChip = s => recent(s) ? ` <span class="chip live" style="padding:2px 6px"><i class="dot"></i>${esc(T.active)}</span>` : '';
+  const tableRow = s => `<tr><td>${sessionLink(s)}</td><td class="mono">${stamp(s.started)}</td><td class="mono">${stamp(s.updated)}${activeChip(s)}${askChip(s, now)}</td><td>${stat(s)}</td><td class="mono">${s.agents}</td><td class="mono">${(s.bytes / 1e6).toFixed(1)} MB</td></tr>`;
+  const tile = s => `<article class="session-tile">${sessionLink(s)}${askChip(s, now)}<div class="session-tile-metrics"><div><strong class="mono">${stamp(s.updated)}</strong><small>Updated</small></div><div><strong class="mono">${s.agents}</strong><small>Sub-agents</small></div><div><strong class="mono">${(s.bytes / 1e6).toFixed(0)} MB</strong><small>Log</small></div></div></article>`;
+  const head = `<thead><tr>${T.columns.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead>`;
+  $('#fleetRows').innerHTML = `<table class="fleet-table">${head}<tbody>${rows.map(tableRow).join('')}</tbody></table><div class="mobile-fleet">${rows.map(tile).join('')}</div>`;
 }
 function footer() { return `<footer class="page-footer"><span class="row">${icon('shield', true)}Local files only. Nothing leaves this machine.</span><span>Times shown in ${esc(TZ)} · todobem / 0.1</span></footer>`; }
 
@@ -375,7 +513,7 @@ function metricsHTML() {
     ['Working time', fmt(working), `wall clock minus waiting for user input · ${fmt(t.inTurn)} inside turns`, 'code'],
     ['Tokens', fmtTok(tk.total), tk.total ? `in ${fmtTok(tk.input)} (cached ${fmtTok(tk.cached)}) · out ${fmtTok(tk.output)} · reasoning ${fmtTok(tk.reasoning)} · all lanes` : 'no token_count events', 'brain'],
     ['LLM', fmt(A.llm), `all lanes · ${sub(t.by.llm, S.llm)}`, 'brain'],
-    ['Tools', fmt(t.allWork), `code, build, test, release, infra · all lanes · ${sub(t.work, t.subWork)}`, 'code'],
+    ['Tools', fmt(t.allWork), `development, build, test, release, infra · all lanes · ${sub(t.work, t.subWork)}`, 'code'],
     ['Known waiting', fmt(t.by.wait_user + A.wait_worker), `user ${fmt(t.by.wait_user)} · workers/harness ${fmt(A.wait_worker)} (all lanes)`, 'wait'],
     ['Context compaction', fmt(rootComp.ms + subComp.ms), `${rootComp.n + subComp.n}× the harness re-summarized a context window (${MAIN_THREAD} ${rootComp.n}× ${fmt(rootComp.ms)} · sub-agents ${subComp.n}× ${fmt(subComp.ms)}) · ${fmt(A.compaction)} of it not overlapping other work${m.totals.background_ops ? ` · ${m.totals.background_ops} background proc. ${fmt(m.totals.background_ms)} not counted` : ''}`, 'loop'],
     ['No telemetry / unattributed', fmt(A.no_telemetry + A.unknown), `no events ${fmt(A.no_telemetry)} · unmatched events ${fmt(A.unknown)} · all lanes`, 'gap'],
@@ -386,14 +524,66 @@ function metricsHTML() {
   if (lcTotals.plan) cells.push(['Planning', fmt(lcTotals.plan), `lifecycle stage on the ${MAIN_THREAD}: plan-mode turns and the model output before each plan it wrote (update_plan)`, 'brain']);
   // collapsed (default): label + value per tile, four per row; expanded: the notes and the caveat
   const open = state.metricsOpen;
-  return `<section class="metrics ${open ? 'open' : ''}" aria-label="Whole-session accounting"><div class="metrics-head"><span class="eyebrow">Whole-session totals</span><button class="text-btn small" data-action="metrics-toggle" aria-expanded="${open}">${open ? 'Hide details' : 'Details'}</button></div><div class="metrics-grid">${cells.map(([label, v, note, ic]) => `<div class="metric" title="${esc(note)}"><span class="metric-label">${icon(ic, true)}${label}</span><strong class="metric-value num">${v}</strong>${open ? `<span class="metric-note">${esc(note)}</span>` : ''}</div>`).join('')}</div>${open ? `<p class="metrics-note">LLM, Tools, waiting, compaction and telemetry sum agent time over all lanes (sub-agents run in parallel, so they can exceed the wall clock). Elapsed and Working time are wall clock of the ${MAIN_THREAD}.</p>` : ''}</section>`;
+  return `<section class="metrics ${open ? 'open' : ''}" aria-label="Whole-session accounting"><div class="metrics-head"><span class="eyebrow">Whole-session totals</span><button class="text-btn small" data-action="metrics-toggle" aria-expanded="${open}">${open ? 'Hide details' : 'Details'}</button></div><div class="metrics-grid">${cells.map(([label, v, note, ic]) => `<div class="metric" title="${esc(note)}"><span class="metric-label">${icon(ic, true)}${label}</span><strong class="metric-value num">${v}</strong>${open ? `<span class="metric-note">${esc(note)}</span>` : ''}</div>`).join('')}</div>${open ? `<p class="metrics-note">LLM, Tools, waiting, compaction and telemetry sum agent time over all lanes (sub-agents run in parallel, so they can exceed the wall clock). Elapsed and Working time are wall clock of the ${MAIN_THREAD}. The SDLC ring is the ${MAIN_THREAD}'s lifecycle partition: each stage's share of the whole session, model time attributed to the stage it served.</p>` : ''}</section>`;
+}
+// lifecycleRingHTML draws the eight SDLC stages as a connected cycle: a ring of circles joined by
+// arrows in lifecycle order, each circle carrying its share of the whole session (the main
+// thread's by_lifecycle over elapsed — the same partition the lane rails and the breakdown use,
+// so model time counts under the stage it served). A stage with no time is pale grey outlined in
+// its stage colour; a stage with time is filled in that colour with the % inside. metricsHTML
+// rebuilds on every session update, so the ring is redrawn then.
+function lifecycleRingHTML(m) {
+  const total = (m.totals && m.totals.elapsed_ms) || (m.ended - m.started) || 1;
+  const lc = (m.totals && m.totals.by_lifecycle) || {};
+  const stages = LIFECYCLE_ORDER.filter(k => LIFECYCLES[k].work); // the eight, in lifecycle order
+  const abbr = { plan: 'Plan', requirements: 'Reqs', design: 'Design', implement: 'Impl', review: 'Review', test: 'Test', release: 'Rel', operate: 'Ops' };
+  const cx = 118, cy = 100, R = 70, r = 18, N = stages.length;
+  const base = i => -Math.PI / 2 + i * 2 * Math.PI / N;
+  const at = (a, rad) => [cx + rad * Math.cos(a), cy + rad * Math.sin(a)];
+  const gap = (r + 7) / R;
+  let arcs = '', nodes = '';
+  for (let i = 0; i < N; i++) {
+    const [sx, sy] = at(base(i) + gap, R), [ex, ey] = at(base(i + 1) - gap, R);
+    arcs += `<path d="M${sx.toFixed(1)} ${sy.toFixed(1)} A ${R} ${R} 0 0 1 ${ex.toFixed(1)} ${ey.toFixed(1)}" fill="none" stroke="var(--line)" stroke-width="1.4" marker-end="url(#lcArrow)"/>`;
+  }
+  for (let i = 0; i < N; i++) {
+    const k = stages[i], def = LIFECYCLES[k], ms = lc[k] || 0, pct = ms / total * 100, on = ms > 0;
+    const [x, y] = at(base(i), R);
+    const label = !on ? '0' : pct < 1 ? '<1%' : Math.round(pct) + '%';
+    const [lx, ly] = at(base(i), R + 21);
+    const anchor = lx < cx - 4 ? 'end' : lx > cx + 4 ? 'start' : 'middle';
+    const dy = ly < cy - R + 2 ? -1 : ly > cy + R - 2 ? 8 : 3;
+    const title = `${def.name} · ${on ? fmt(ms) + ' · ' + pct.toFixed(1) + '%' : 'not used'}`;
+    // the disc fills from the bottom up in proportion to the stage's share, like a filling
+    // glass: the level is that share, the pale remainder the session it is a share of
+    let disc;
+    if (!on) disc = `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" fill="var(--raised)" stroke="${def.color}" stroke-width="1.8" stroke-dasharray="3 2"/>`;
+    else if (pct >= 99.9) disc = `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" fill="${def.color}"/>`;
+    else {
+      // the level rises with the share, like liquid in a glass: the filled part is the disc
+      // below the waterline, so half the circle is exactly half the session
+      const h = 2 * r * pct / 100, wy = y + r - h, dy = wy - y, dx = Math.sqrt(Math.max(0, r * r - dy * dy));
+      disc = `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" fill="${def.color}" fill-opacity=".18" stroke="${def.color}" stroke-width="1.5"/>`
+        + `<path class="lc-fill" d="M${(x - dx).toFixed(1)} ${wy.toFixed(1)}A${r} ${r} 0 ${h > r ? 1 : 0} 0 ${(x + dx).toFixed(1)} ${wy.toFixed(1)}Z" fill="${def.color}"/>`;
+    }
+    nodes += `<g><title>${esc(title)}</title>${disc}` +
+      `<text x="${x.toFixed(1)}" y="${(y + 3.5).toFixed(1)}" text-anchor="middle" class="lc-pct${on ? '' : ' off'}">${label}</text>` +
+      `<text x="${lx.toFixed(1)}" y="${(ly + dy).toFixed(1)}" text-anchor="${anchor}" class="lc-name">${abbr[k]}</text></g>`;
+  }
+  return `<figure class="lifecycle-ring" aria-label="SDLC lifecycle: each stage's share of session time"><svg viewBox="0 0 236 200" preserveAspectRatio="xMidYMid meet" role="img"><defs><marker id="lcArrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto"><path d="M0 1L9 5L0 9z" fill="var(--line)"/></marker></defs><circle cx="${cx}" cy="${cy}" r="${R}" fill="none" stroke="var(--line-soft)" stroke-width="1"/>${arcs}${nodes}<text x="${cx}" y="${cy - 4}" text-anchor="middle" class="lc-hub">SDLC</text><text x="${cx}" y="${cy + 9}" text-anchor="middle" class="lc-hub-sub">lifecycle</text></svg><figcaption>Share of session by stage</figcaption></figure>`;
 }
 function sessionSummary() {
   const m = current(), r = root(), last = r.turns[r.turns.length - 1];
   const status = m.live ? { cls: 'live', text: 'In progress · turn open' } : last?.status === 'aborted' ? { cls: 'failed', text: 'Interrupted' } : last?.status === 'orphaned' ? { cls: '', text: 'Ended without closing the last turn' } : { cls: 'passed', text: 'Completed' };
-  const firstMsg = r.markers.find(k => k.kind === 'user_message');
+  const firstMsg = firstRequest(r);
   const cells = [['Created', stampS(m.started)], ['First message', firstMsg ? stampS(firstMsg.t) + (firstMsg.t - m.started > 60e3 ? ` (+${fmt(firstMsg.t - m.started)})` : '') : '—'], [m.live ? 'Last event' : 'Ended', stampS(m.ended)], ['Duration', fmt(m.ended - m.started, true) + (m.live ? ' so far' : '')], ['Status', `<span class="chip ${status.cls}">${status.cls === 'live' ? '<i class="dot"></i>' : ''}${status.text}</span> <span class="mono note">${r.turns.length} turns · ${m.totals.user_messages} user messages</span>`]];
   return `<dl class="session-summary">${cells.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}</dl>`;
+}
+// firstRequest: the first user message that started a turn — a slash command the harness
+// answered by itself (/clear, /cost) is the user's input but not a request to the agent; it
+// stays in the conversation panel and is the fallback when nothing started a turn.
+function firstRequest(lane) {
+  return lane.markers.find(k => k.kind === 'user_message' && k.turn) || lane.markers.find(k => k.kind === 'user_message');
 }
 // descriptionOf: the first paragraph of a recorded answer, markdown stripped, clipped, for the
 // session list. It is the only description of a session that is on record (the final message of
@@ -436,22 +626,29 @@ function lastState() {
   }
   return html;
 }
+// rolloutPath is the root session file on disk — which folder (and which copy) this session is read
+// from — as the request card's last row, full width under both columns.
+function rolloutPath() {
+  const r = root();
+  return `<dl class="session-summary rollout-path"><div><dt>Log file</dt><dd><span class="path" title="${esc(r.file || '')}">${esc(r.file || '—')}</span></dd></div></dl>`;
+}
 function sessionPage() {
-  const m = current(), r = root(), firstUser = r.markers.find(k => k.kind === 'user_message');
+  const m = current(), r = root(), firstUser = firstRequest(r);
   const status = m.live ? `<span class="chip live"><i class="dot"></i>Live · turn in progress</span>` : `<span class="chip">${icon('check', true)}Completed · ${r.turns.length} turns</span>`;
   // the phase legend in two rows by kind: what the agent did, then waiting, overhead and gaps
   const legend = kinds => PHASE_ORDER.filter(k => k !== 'idle' && kinds.includes(PHASES[k].kind)).map(k => `<span class="row">${swatch(k)}${PHASES[k].name}</span>`).join('');
-  return `<section class="page-heading"><div><div class="eyebrow"><span class="source-tag">${esc(m.source || 'codex')}</span> Session ${esc(m.id.slice(0, 8))} · ${esc(m.model || '?')} · cli ${esc(m.cli || '?')}</div><h1>${esc(m.title)}</h1><p class="subtitle">${icon('repo', true)}${esc(m.cwd)}${m.branch ? `<span>·</span>${esc(m.branch)}` : ''}<span>·</span>${stamp(m.started)} — ${stamp(m.ended)} ${esc(TZ)}</p></div><div class="heading-actions">${status}<label class="chip">Refresh <select class="select compact" id="intervalSelect">${[[30, '30s'], [60, '1 min'], [120, '2 min'], [300, '5 min']].map(([v, l]) => `<option value="${v}" ${state.interval === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label><button class="btn" data-action="refresh">${icon('refresh', true)}Refresh now</button></div></section>
-<section class="request-card" aria-label="Recorded user request"><div class="request-icon">${icon('target')}</div><div class="request-copy"><div class="answer-head"><span class="eyebrow">First user message · ${firstUser ? stamp(firstUser.t) : 'not recorded'}</span></div><p class="prose-block scroll-fade">${esc(firstUser?.text || '—')}</p>${sessionSummary()}</div><div class="recorded-state"><div id="lastRecorded">${lastState()}</div></div></section>
-<div id="sessionMetrics">${metricsHTML()}</div>
-<section class="card" aria-labelledby="siTitle"><div class="card-head"><div><h2 id="siTitle">${esc(INSIGHT_TEXT.sessionCard.title)}</h2><p>${esc(INSIGHT_TEXT.sessionCard.subtitle)}</p></div><span class="scope">${esc(INSIGHT_TEXT.page.title)}</span></div><div id="sessionInsights" class="session-insights"><p class="muted-note">${esc(INSIGHT_TEXT.states.loading)}</p></div></section>
+  const railLegend = LIFECYCLE_ORDER.filter(k => LIFECYCLES[k].work).map(k => `<span class="row">${railSwatch(LIFECYCLES[k].color)}${LIFECYCLES[k].name}</span>`).join('');
+  return `<section class="page-heading"><div><div class="eyebrow"><span class="source-tag source-${sourceOf(m)}">${esc(sourceName(m))}</span> Session ${esc(m.id.slice(0, 8))} · ${esc(m.model || '?')} · ${esc(sourceName(m))} ${esc(m.cli || '?')}</div><h1>${esc(m.title)}</h1><p class="subtitle">${icon('repo', true)}${esc(m.cwd)}${m.branch ? `<span>·</span>${esc(m.branch)}` : ''}<span>·</span>${stamp(m.started)} — ${stamp(m.ended)} ${esc(TZ)}</p></div><div class="heading-actions">${status}<label class="chip">Refresh <select class="select compact" id="intervalSelect">${[[30, '30s'], [60, '1 min'], [120, '2 min'], [300, '5 min']].map(([v, l]) => `<option value="${v}" ${state.interval === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label><button class="btn" data-action="refresh">${icon('refresh', true)}Refresh now</button></div></section>
+<section class="request-card" aria-label="Recorded user request"><div class="request-icon">${icon('target')}</div><div class="request-copy"><div class="answer-head"><span class="eyebrow">First user message · ${firstUser ? stamp(firstUser.t) : 'not recorded'}</span></div><p class="prose-block scroll-fade">${esc(firstUser?.text || '—')}</p>${sessionSummary()}</div><div class="recorded-state"><div id="lastRecorded">${lastState()}</div></div>${rolloutPath()}</section>
+<div class="metrics-body"><div id="sessionMetrics">${metricsHTML()}</div>
+<section class="card" aria-labelledby="siTitle"><div class="card-head"><div><h2 id="siTitle">${esc(INSIGHT_TEXT.sessionCard.title)}</h2><p>${esc(INSIGHT_TEXT.sessionCard.subtitle)}</p></div><span class="scope">${esc(INSIGHT_TEXT.page.title)}</span></div><div id="sessionInsights" class="session-insights"><p class="muted-note">${esc(INSIGHT_TEXT.states.loading)}</p></div></section>${lifecycleRingHTML(m)}</div>
 <section class="card timeline-card" aria-labelledby="timelineTitle"><div class="card-head"><div><h2 id="timelineTitle">Session timeline</h2><p><span id="totalOps">${m.totals.ops}</span> operations · ${m.groups.length} retry groups · <span id="laneCount">${m.lanes.length - 1} sub-agent lanes</span> · ${m.totals.user_messages} user messages${m.totals.failed_ops ? ` · <span title="failed steps: tests, builds, releases, infra, edits and scripts with a non-zero exit">${m.totals.failed_ops} failed</span>` : ''}${m.totals.query_misses ? ` · <span title="reads, searches, listings and probes that answered with a non-zero exit; recorded as failed by the harness, not counted as failures">${m.totals.query_misses} query misses</span>` : ''}</p></div><div class="actions"><button class="btn ghost" data-action="fit" title="Show the entire session">${icon('expand', true)}Fit all</button><button class="btn ghost ${state.follow ? 'active' : ''}" data-action="follow" id="followBtn" aria-pressed="${state.follow}">${icon('latest', true)}Follow latest</button></div></div>
-<div class="overview-section"><div class="overview-heading"><strong id="overviewDuration">${fmt(m.ended - m.started)} overview · ${MAIN_THREAD}${m.lanes.length > 1 ? ' · sub-agent activity' : ''} · errors (red = tools, orange = LLM) below</strong><span>Drag to select a window · handles resize it</span><span class="mono" id="overviewRange"></span></div><div id="overview" class="overview" aria-label="Session overview. Drag to select a time window."><svg id="overviewSvg" aria-hidden="true"></svg><div class="brush-shade" id="shadeLeft"></div><div class="brush-shade" id="shadeRight"></div><div class="brush" id="brush"><div class="brush-handle left" data-handle="start" tabindex="0" role="slider" aria-label="Visible window start"></div><div class="brush-handle right" data-handle="end" tabindex="0" role="slider" aria-label="Visible window end"></div></div></div><div class="overview-axis" id="overviewAxis"></div><div class="legend legend-phases" id="legend"><div class="legend-group">${legend(['model', 'work'])}</div><div class="legend-group">${legend(['wait', 'overhead', 'unknown'])}</div></div></div>
+<div class="overview-section"><div class="overview-heading"><strong id="overviewDuration">${fmt(m.ended - m.started)} overview · ${MAIN_THREAD}${m.lanes.length > 1 ? ' · sub-agent activity' : ''} · errors below · SDLC stages at the foot</strong><span>Drag to select a window · handles resize it</span><span class="mono" id="overviewRange"></span></div><div id="overview" class="overview" aria-label="Session overview. Drag to select a time window."><svg id="overviewSvg" aria-hidden="true"></svg><div class="brush-shade" id="shadeLeft"></div><div class="brush-shade" id="shadeRight"></div><div class="brush" id="brush"><div class="brush-handle left" data-handle="start" tabindex="0" role="slider" aria-label="Visible window start"></div><div class="brush-handle right" data-handle="end" tabindex="0" role="slider" aria-label="Visible window end"></div></div></div><div class="overview-lc" id="overviewLc" aria-label="SDLC stage over time"></div><div class="overview-axis" id="overviewAxis"></div><div class="legend legend-phases" id="legend"><div class="legend-group"><span class="row legend-caption">Activity · fill</span>${legend(['model', 'work'])}</div><div class="legend-group">${legend(['wait', 'overhead', 'unknown'])}</div><div class="legend-group" id="legendLifecycle"><span class="row legend-caption">Lifecycle stage · band below, rail on lanes</span>${railLegend}</div></div></div>
 <div class="timeline-toolbar"><div class="zoom-group"><div class="zoom-presets" aria-label="Visible time window">${[[0, 'All'], [86400000, '24h'], [21600000, '6h'], [3600000, '1h'], [900000, '15m'], [300000, '5m']].map(([n, l]) => `<button data-action="preset" data-span="${n}">${l}</button>`).join('')}</div><div class="zoom-step" aria-label="Zoom controls"><button data-action="zoom" data-dir="-1" aria-label="Zoom out">−</button><span class="zoom-caption" id="zoomCaption"></span><button data-action="zoom" data-dir="1" aria-label="Zoom in">+</button></div></div><div class="toolbar-right"><label><input id="showGroups" type="checkbox" ${state.groups ? 'checked' : ''}>Retry groups</label><button class="btn small ghost" data-action="expand-all">Expand all lanes</button><button class="btn small ghost" data-action="collapse-all">Collapse</button></div></div>
 <div class="range-bar"><span class="range-label" id="rangeLabel"></span><div class="nav-arrows"><button class="btn icon-only" data-action="pan" data-dir="-1" aria-label="Move to earlier time">${icon('left', true)}</button><button class="btn icon-only" data-action="pan" data-dir="1" aria-label="Move to later time">${icon('right', true)}</button></div></div>
 <div class="timeline-plot" id="plot" tabindex="0" role="group" aria-label="Interactive session timeline"><svg id="chartSvg" aria-hidden="true"></svg><div class="agent-scroll" id="agentScroll" hidden><svg id="agentSvg" aria-hidden="true"></svg></div></div>
 
-<div class="chart-footer"><span class="chart-note" id="chartNote"></span><span class="chart-shortcuts"><kbd>+</kbd> <kbd>−</kbd> zoom · <kbd>←</kbd> <kbd>→</kbd> pan · <kbd>Home</kbd> fit · drag to pan</span></div><div class="legend legend-marks" id="legendMarks"><span class="row"><svg width="12" height="12">${userGlyph(6, 0, MARKS.user_message.color, .85)}</svg>User message</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="#4aa65f"/></svg>Final answer</span><span class="row"><svg width="14" height="12"><rect x="0" y="5" width="14" height="3" rx="1.5" fill="#c9a15c"/></svg>Background process</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5.5" fill="#4aa65f"/><path d="M3 6l2 2 4-4" stroke="#0f1b23" stroke-width="1.6" fill="none"/></svg>Turn completed</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5.5" fill="#d76368"/><path d="M3.5 3.5l5 5m0-5l-5 5" stroke="#0f1b23" stroke-width="1.6"/></svg>Interrupted</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="#22313d" stroke="#7d8fa1" stroke-width="1.5"/><path d="M2.5 9.5l7-7" stroke="#7d8fa1" stroke-width="1.5"/></svg>Never closed</span><span class="row"><svg width="14" height="12"><path d="M1 8v-3h12v3" fill="none" stroke="#4690ce" stroke-width="1.5"/></svg>Stage bracket (tool calls + LLM time before them)</span><span class="row"><svg width="14" height="12"><rect x="0" y="4" width="14" height="4" rx="1" fill="#22313d"/><rect x="0" y="9" width="14" height="3" fill="#8f7bd8"/></svg>Lifecycle strip (SDLC stage the time served)</span><span class="row"><svg width="12" height="12"><path d="M2 2l8 8m0-8l-8 8" stroke="#e5484d" stroke-width="2.4" stroke-linecap="round"/></svg>Tool failure (non-zero exit)</span><span class="row"><svg width="12" height="12"><path d="M2 2l8 8m0-8l-8 8" stroke="#f0a742" stroke-width="2.4" stroke-linecap="round"/></svg>LLM failure: invalid tool call / broken exec script</span></div></section>
+<div class="chart-footer"><span class="chart-note" id="chartNote"></span><span class="chart-shortcuts"><kbd>+</kbd> <kbd>−</kbd> zoom · <kbd>←</kbd> <kbd>→</kbd> pan · <kbd>Home</kbd> fit · drag to pan</span></div><div class="legend legend-marks" id="legendMarks"><span class="row"><svg width="12" height="12">${userGlyph(6, 0, MARKS.user_message.color, .85)}</svg>User message</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="#4aa65f"/></svg>Final answer</span><span class="row"><svg width="14" height="12"><rect x="0" y="5" width="14" height="3" rx="1.5" fill="#c9a15c"/></svg>Background process</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5.5" fill="#4aa65f"/><path d="M3 6l2 2 4-4" stroke="#0f1b23" stroke-width="1.6" fill="none"/></svg>Turn completed</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5.5" fill="#d76368"/><path d="M3.5 3.5l5 5m0-5l-5 5" stroke="#0f1b23" stroke-width="1.6"/></svg>Interrupted</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="#22313d" stroke="#7d8fa1" stroke-width="1.5"/><path d="M2.5 9.5l7-7" stroke="#7d8fa1" stroke-width="1.5"/></svg>Never closed</span><span class="row"><svg width="14" height="12"><path d="M1 8v-3h12v3" fill="none" stroke="#4690ce" stroke-width="1.5"/></svg>Activity bracket (a run of tool calls of one activity, with the LLM time before each)</span><span class="row"><svg width="14" height="12"><rect x="0" y="4" width="14" height="4" rx="1" fill="#22313d"/><rect x="0" y="9" width="14" height="3" fill="${LIFECYCLES.review.color}"/></svg>Lifecycle rail (the SDLC stage the time served; colours above)</span><span class="row"><svg width="12" height="12"><path d="M2 2l8 8m0-8l-8 8" stroke="#e5484d" stroke-width="2.4" stroke-linecap="round"/></svg>Tool failure (non-zero exit)</span><span class="row"><svg width="12" height="12"><path d="M2 2l8 8m0-8l-8 8" stroke="#f0a742" stroke-width="2.4" stroke-linecap="round"/></svg>LLM failure: invalid tool call / broken exec script</span></div></section>
 <div class="analysis-grid"><section class="card" id="breakdownCard" aria-labelledby="breakdownTitle"><div class="card-head"><div><h2 id="breakdownTitle">Time in this window</h2><p id="breakdownScope"></p></div><span class="scope" id="breakdownScopeChip">Main thread · exclusive</span></div><div id="breakdownBody" class="breakdown-body"></div><div class="panel-foot">${icon('info', true)}Sub-agent time runs in parallel and is listed separately. Gaps are unknown, not idle.</div></section>
 <section class="card fill" id="operationsCard" aria-labelledby="operationsTitle"><div class="card-head"><div><h2 id="operationsTitle">Operations in view</h2><p id="operationCount"></p></div><span class="scope">All lanes</span></div><div class="operation-tools"><select class="select" id="phaseSelect" aria-label="Filter by phase"><option value="all">All phases</option>${PHASE_ORDER.map(k => `<option value="${k}">${PHASES[k].name}</option>`).join('')}</select><select class="select" id="laneSelect" aria-label="Filter by lane"><option value="all">All lanes</option>${m.lanes.map(l => `<option value="${esc(l.id)}">${esc(l.path)}</option>`).join('')}</select><select class="select" id="sortSelect" aria-label="Sort operations"><option value="longest">Longest in window</option><option value="latest">Latest first</option><option value="earliest">Earliest first</option><option value="failed">Failed first</option></select><label class="row chip" style="cursor:pointer"><input type="checkbox" id="failedOnly" ${state.failedOnly ? 'checked' : ''}>Failures only</label></div><div id="roleFilter"></div><div class="operation-list scroll-fade" id="operationList"></div></section></div>
 <div class="analysis-grid"><section class="card" aria-labelledby="convTitle"><div class="card-head"><div><h2 id="convTitle">Conversation</h2><p>User messages, questions and final answers, verbatim. Select one to jump there.</p></div><span class="scope">${m.totals.user_messages} inputs</span></div><div class="conv scroll-fade" id="conversation"></div></section>
@@ -494,8 +691,33 @@ function renderOverview() {
   html += `<rect x="0" y="${y0}" width="${W}" height="${ERR}" fill="#1a1f2a"/>`;
   for (let i = 0; i < N; i++) { const t = tool[i], u = llm[i]; if (!t && !u) continue; const ht = t ? Math.max(3, Math.min(ERR - 1, 3 + 2 * t)) : 0, hu = u ? Math.max(3, Math.min(ERR - 1, 3 + 2 * u)) : 0; const tip = `<title>${esc(`${t} tool failure${t === 1 ? '' : 's'}, ${u} LLM failure${u === 1 ? '' : 's'}\n` + names[i].join('\n'))}</title>`; if (t) html += `<rect x="${(i * 4).toFixed(1)}" y="${(y0 + ERR - ht).toFixed(1)}" width="4.05" height="${ht}" fill="#e05252" opacity="${(.6 + .4 * Math.min(1, t / 4)).toFixed(2)}">${tip}</rect>`; if (u) html += `<rect x="${(i * 4).toFixed(1)}" y="${(y0 + ERR - ht - hu).toFixed(1)}" width="4.05" height="${hu}" fill="#f0a742" opacity=".95">${tip}</rect>`; }
   el.setAttribute('viewBox', `0 0 ${W} ${H + SUB + ERR}`); el.setAttribute('preserveAspectRatio', 'none'); el.innerHTML = html;
+  const lcEl = $('#overviewLc'); if (lcEl) lcEl.innerHTML = overviewLcHTML(m, r);
   $('#overviewAxis').innerHTML = [0, 1 / 3, 2 / 3, 1].map(n => `<span>${stamp(m.started + span * n)}</span>`).join('');
   updateBrush();
+}
+// overviewLcHTML builds the SDLC-stage band under the overview: the main thread's lifecycle
+// partition across the whole session as one 20px strip. A work stage is drawn in its colour with
+// its name (or first letter, where it fits) in white; user-input time (waiting for the user) is
+// grey; other pass-through (model output, worker waits, gaps) is a dim neutral. HTML segments,
+// not a stretched SVG, so the labels stay crisp. Rebuilt whenever renderOverview runs.
+function overviewLcHTML(m, r) {
+  const span = (m.ended - m.started) || 1;
+  const runs = [];
+  for (const sg of r.segments) { const lc = lifecycleOf(sg); const last = runs[runs.length - 1]; if (last && last.lc === lc && Math.abs(last.e - sg.s) < 2) last.e = sg.e; else runs.push({ lc, s: sg.s, e: sg.e }); }
+  let out = '';
+  for (const run of runs) {
+    const left = (run.s - m.started) / span * 100, w = (run.e - run.s) / span * 100;
+    if (w <= 0) continue;
+    const def = LIFECYCLES[run.lc], work = def && def.work, user = run.lc === 'wait_user';
+    const fill = work ? def.color : user ? '#8a97a2' : '#22323f';
+    const name = work ? def.short : user ? 'user' : '';
+    // pick the widest label that fits this run (≈12px per 1% of a ~1200px band); else a letter
+    const text = name ? (w >= (name.length + 1) * 0.6 ? name : w >= 1.1 ? name[0] : '') : '';
+    const cls = 'lc-band-seg' + (work ? ' work' : user ? ' user' : ' idle');
+    const title = def ? `${def.name} · ${fmt(run.e - run.s)}` : '';
+    out += `<div class="${cls}" style="left:${left.toFixed(3)}%;width:${w.toFixed(3)}%;${work ? 'background:' + fill : 'background:' + fill}" data-lc="${run.lc}" title="${esc(title)}">${text ? `<span>${esc(text)}</span>` : ''}</div>`;
+  }
+  return out;
 }
 function updateBrush() {
   const m = current(); if (!$('#brush')) return; const span = m.ended - m.started, left = (state.a - m.started) / span * 100, width = (state.b - state.a) / span * 100;
@@ -592,21 +814,29 @@ function renderTimeline() {
         }
         for (const iv of l.active || []) { if (iv.e <= state.a || iv.s >= state.b) continue; html += `<rect x="${x(Math.max(iv.s, state.a))}" y="${y + BAND}" width="${Math.max(1, x(Math.min(iv.e, state.b)) - x(Math.max(iv.s, state.a)))}" height="${rh - BAND - 4}" fill="#2e4655" rx="3"/>`; }
       }
-      // Fill = the raw exclusive partition (purple is real model time). Stage brackets above the
-      // fill name the run of tool calls (Explore / Code / Test …) as a grouping, not as time.
+      // Fill = the raw exclusive partition (teal is real model time). Activity brackets above the
+      // fill name the run of tool calls (Dev / Test / Release …) as a grouping, not as time.
       const top0 = y + BAND + 1, fh = rh - BAND - 6; // fill box under the bracket band
       const segsVis = l.segments.filter(sg => sg.e > state.a && sg.s < state.b && !(l.depth > 0 && sg.p === 'idle'));
       const { runs, per } = bucketRuns(segsVis, state.a, state.b, P, bw, it => it.p);
+      const lastRun = runs[runs.length - 1];
       for (const run of runs) {
         const xa = L + run.start * bw, ww = Math.max(1, (run.end - run.start) * bw - (run.end - run.start > 1 ? .6 : 0)), p = run.key;
         const ta = state.a + run.start * per, tb = state.a + run.end * per;
-        html += `<g class="mark" data-stage="1" data-lane="${esc(l.id)}" data-ta="${Math.round(ta)}" data-tb="${Math.round(tb)}" data-phase="${p}"><rect x="${xa.toFixed(1)}" y="${top0}" width="${ww.toFixed(1)}" height="${fh}" rx="${ww > 4 ? 2 : 0}" fill="${fillFor(p)}"/>`;
-        if (ww > 52 && p !== 'wait_user' && p !== 'idle' && p !== 'llm') { const label = `${PHASES[p].short} ${fmt(tb - ta)}`; html += `<text class="op-label ${p === 'code' || p === 'compaction' ? 'light' : ''}" x="${xa + 5}" y="${top0 + fh / 2 + 3.5}">${esc(label.slice(0, Math.floor((ww - 8) / 5.8)))}</text>`; }
+        // the last block of a live lane with no telemetry yet: the agent is generating and nothing
+        // has been recorded since the last event — an in-progress wait, not an orphaned gap
+        const pending = l.live && p === 'no_telemetry' && run === lastRun;
+        html += `<g class="mark" data-stage="1" data-lane="${esc(l.id)}" data-ta="${Math.round(ta)}" data-tb="${Math.round(tb)}" data-phase="${p}"${pending ? ' data-pending="1"' : ''}><rect x="${xa.toFixed(1)}" y="${top0}" width="${ww.toFixed(1)}" height="${fh}" rx="${ww > 4 ? 2 : 0}" fill="${fillFor(p)}"/>`;
+        if (pending) {
+          if (ww > 15) html += hourglass(xa + 9, top0 + fh / 2, '#dbe6ee');
+          if (ww > 120) { const label = `No telemetry yet (in progress) · ${fmt(tb - ta)}`; html += `<text class="op-label light" x="${xa + 19}" y="${top0 + fh / 2 + 3.5}">${esc(label.slice(0, Math.floor((ww - 26) / 5.8)))}</text>`; }
+        } else if (ww > 52 && p !== 'wait_user' && p !== 'idle' && p !== 'llm') { const label = `${PHASES[p].short} ${fmt(tb - ta)}`; html += `<text class="op-label ${p === 'code' || p === 'compaction' ? 'light' : ''}" x="${xa + 5}" y="${top0 + fh / 2 + 3.5}">${esc(label.slice(0, Math.floor((ww - 8) / 5.8)))}</text>`; }
         html += `</g>`;
       }
-      // lifecycle strip: a thin band under the fill showing the SDLC stage the time served
-      // (the second partition); the fill above keeps the raw llm/code/wait split. Pass-through
-      // stages (waits, gaps, unattributed model output) draw nothing.
+      // lifecycle rail: a thin band along the bottom of the fill showing the SDLC stage the time
+      // served (the second partition), separated from the fill by a dark seam; the fill above
+      // keeps the raw llm/code/wait split. Pass-through stages (waits, gaps, unattributed model
+      // output) draw nothing.
       const lcRuns = bucketRuns(segsVis, state.a, state.b, P, bw, it => lifecycleOf(it)).runs;
       for (const run of lcRuns) {
         const def = LIFECYCLES[run.key];
@@ -615,6 +845,7 @@ function renderTimeline() {
         const ww = Math.max(1, (run.end - run.start) * bw - (run.end - run.start > 1 ? .6 : 0));
         const ta = state.a + run.start * per;
         const tb = state.a + run.end * per;
+        html += `<rect x="${xa.toFixed(1)}" y="${top0 + fh - 4}" width="${ww.toFixed(1)}" height="1" fill="#0f1b23"/>`;
         html += `<rect class="lc-strip" x="${xa.toFixed(1)}" y="${top0 + fh - 3}" width="${ww.toFixed(1)}" height="3" fill="${def.color}" data-lc="${run.key}"><title>${def.name} · ${fmt(tb - ta)}</title></rect>`;
       }
       // stage brackets (tool-call runs of one phase, thinking before each call included)
@@ -737,7 +968,7 @@ function renderTimeline() {
   const agentsTotal = m.lanes.length - 1;
   const agentsShown = rows.filter(r => r.kind === 'lane' && r.lane.depth > 0 && laneInWindow(r.lane)).length;
   if ($('#laneCount')) $('#laneCount').textContent = `${agentsTotal} sub-agent lanes` + (agentsShown < agentsTotal ? ` · ${agentsShown} in this window` : '');
-  $('#chartNote').innerHTML = icon('info', true) + (span / P >= 800 ? `${fmt(bucketRuns([], state.a, state.b, P, bw, () => 0).per)} per column: fill = dominant phase (teal is LLM time), brackets above = stages; in expanded rows bar height = coverage. Select a block to frame it (again to zoom in); a turn's end glyph highlights the turn.` : `Fine zoom: expanded rows show individual operations. Select one to inspect the source event.`);
+  $('#chartNote').innerHTML = icon('info', true) + (span / P >= 800 ? `${fmt(bucketRuns([], state.a, state.b, P, bw, () => 0).per)} per column: fill = dominant phase (teal is LLM time), brackets above = activity runs, rail below = lifecycle stage; in expanded rows bar height = coverage. Select a block to frame it (again to zoom in); a turn's end glyph highlights the turn.` : `Fine zoom: expanded rows show individual operations. Select one to inspect the source event.`);
   $$('[data-action="preset"]').forEach(el => { const v = Number(el.dataset.span) || (m.ended - m.started); el.classList.toggle('active', Math.abs(span - v) < 1000); el.disabled = Number(el.dataset.span) > m.ended - m.started; });
   $('[data-action="zoom"][data-dir="-1"]').disabled = span >= m.ended - m.started - 500; $('[data-action="zoom"][data-dir="1"]').disabled = span <= 60500;
   $('[data-action="pan"][data-dir="-1"]').disabled = state.a <= m.started + 1; $('[data-action="pan"][data-dir="1"]').disabled = state.b >= m.ended - 1;
@@ -796,13 +1027,13 @@ function renderLower() {
   // share = the row's part of its section's total (the same denominator as the bar), so the
   // rows of a section add up to 100 %; the two sub-agent rows are not a partition and show none
   const pct = (n, total) => (total ? n / total * 100 : 0).toFixed(1) + '%';
-  const stageOf = k => PHASES[k]?.kind === 'work' ? t.stageBy[k] || 0 : 0;
-  const rows = (entries, total) => entries.filter(([, n, , , , count]) => n > 0 || count == null || count > 0).map(([k, n, def, sel, data, count, sub]) => { const stg = def === PHASES[k] ? stageOf(k) : 0; return `<button class="breakdown-item ${sel ? 'active' : ''}" ${data} title="${esc(def.name)}: ${fmt(n, true)}${sub ? ' · ' + esc(sub) : ' of tool time'}${stg ? ` · stage ${fmt(stg, true)} including LLM time before each call` : ''}${count == null ? '' : ` · ${plural(count, INTERVAL_PHASES.has(k) ? 'interval' : 'operation')} in the list · ${pct(n, total)} of this section`}"><span class="name"><i class="color-square" style="background:${def.color}"></i><span class="label">${def.name}</span>${sub ? `<small class="row-sub">${esc(sub)}</small>` : ''}</span><span class="bar-track"><span class="bar-fill" style="width:${total ? clamp(n / total * 100, 0, 100) : 0}%;background:${def.color}"></span>${stg ? `<span class="bar-stage" style="width:${total ? clamp(stg / total * 100, 0, 100) : 0}%;border-color:${def.color}"></span>` : ''}</span><span class="count num">${count == null ? '' : count}</span><span class="share num">${count == null ? '' : pct(n, total)}</span><span class="time num">${fmt(n)}${stg ? `<small>stage ${fmt(stg)}</small>` : ''}</span></button>`; }).join('');
+  const stageOf = k => PHASES[k]?.kind === 'work' ? t.stageBy[k] || 0 : 0; // the activity bracket: the calls plus the LLM time before each
+  const rows = (entries, total) => entries.filter(([, n, , , , count]) => n > 0 || count == null || count > 0).map(([k, n, def, sel, data, count, sub]) => { const stg = def === PHASES[k] ? stageOf(k) : 0; return `<button class="breakdown-item ${sel ? 'active' : ''}" ${data} title="${esc(def.name)}: ${fmt(n, true)}${sub ? ' · ' + esc(sub) : ' of tool time'}${stg ? ` · bracket ${fmt(stg, true)}: the calls plus the LLM time before each` : ''}${count == null ? '' : ` · ${plural(count, INTERVAL_PHASES.has(k) ? 'interval' : 'operation')} in the list · ${pct(n, total)} of this section`}"><span class="name">${swatchFor(def)}<span class="label">${def.name}</span>${sub ? `<small class="row-sub">${esc(sub)}</small>` : ''}</span><span class="bar-track"><span class="bar-fill" style="width:${total ? clamp(n / total * 100, 0, 100) : 0}%;background:${def.color}"></span>${stg ? `<span class="bar-stage" style="width:${total ? clamp(stg / total * 100, 0, 100) : 0}%;border-color:${def.color}"></span>` : ''}</span><span class="count num">${count == null ? '' : count}</span><span class="share num">${count == null ? '' : pct(n, total)}</span><span class="time num">${fmt(n)}${stg ? `<small>bracket ${fmt(stg)}</small>` : ''}</span></button>`; }).join('');
   const inWindow = opsInWindow(state.a, state.b);
   const countOf = (phase, role) => INTERVAL_PHASES.has(phase) ? intervalRecords(phase).length : inWindow.filter(o => opMatches(o, phase, role, 'all')).length;
   const countOfLc = lc => INTERVAL_PHASES.has(lc) ? intervalRecords(lc).length : inWindow.filter(o => opMatches(o, 'all', 'all', lc)).length;
   if ($('#breakdownScopeChip')) $('#breakdownScopeChip').textContent = state.allLanes ? 'All lanes · agent time' : 'Main thread · exclusive';
-  $('#breakdownScope').textContent = `${fmt(t.duration)} selected · ${fmt(t.inTurn)} inside turns · sub-agents ${fmt(t.agentMs)} in parallel · "stage" = tool calls + LLM time before them`;
+  $('#breakdownScope').textContent = `${fmt(t.duration)} selected · ${fmt(t.inTurn)} inside turns · sub-agents ${fmt(t.agentMs)} in parallel · "bracket" = tool calls + LLM time before them`;
   const testTotal = Math.max(1, ROLE_ORDER.filter(k => k !== 'remote').reduce((n, k) => n + t.roles[k], 0));
   const src = state.allLanes ? t.allBy : t.by;
   const denom = state.allLanes ? Math.max(1, PHASE_ORDER.reduce((n, k) => n + (k === 'idle' ? 0 : src[k]), 0)) : state.inTurn ? Math.max(1, t.inTurn) : t.duration;
@@ -812,7 +1043,7 @@ function renderLower() {
   const phaseRows = PHASE_ORDER.filter(k => k !== 'idle' && !(state.inTurn && k === 'wait_user'));
   // Lifecycle rows: the same time keyed by SDLC stage, each with its LLM / tools split so the
   // two partitions are never read as comparable per key (a review hour includes its model time,
-  // the Coding row never does). A work stage with no time in the window is still listed when it
+  // the Development row never does). A work stage with no time in the window is still listed when it
   // has no built-in detector, so the empty slot is visible rather than silently missing.
   const lcSrc = state.allLanes ? t.allByLc : t.byLc;
   const lcSplitSrc = state.allLanes ? t.allLcSplit : t.lcSplit;
@@ -828,13 +1059,13 @@ function renderLower() {
   const lcSection = `<div class="mini-heading"><h3>Lifecycle stage</h3><span class="mini-note">same time, by SDLC stage</span></div>` + rows(order(lcEntries), denom) + `<div class="mini-heading"><h3>Activity</h3><span class="mini-note">what each tool call was</span></div>`;
   const roleRows = rows(order(ROLE_ORDER.map(k => [k, t.roles[k], ROLES[k], state.role === k, `data-action="filter-role" data-role="${k}"`, countOf('all', k)])), testTotal);
   const roleSection = roleRows ? `<div class="mini-heading"><h3>Attempts &amp; retries</h3><span class="mini-note">test · build · release · infra · op time, ${MAIN_THREAD}</span></div>` + roleRows : '';
-  const sortOptions = [['longest', 'by time (%)'], ['stage', 'by stage'], ['records', 'by records']].map(([v, l]) => `<option value="${v}" ${state.breakdownSort === v ? 'selected' : ''}>${l}</option>`).join('');
+  const sortOptions = [['longest', 'by time (%)'], ['stage', 'by bracket'], ['records', 'by records']].map(([v, l]) => `<option value="${v}" ${state.breakdownSort === v ? 'selected' : ''}>${l}</option>`).join('');
   const tools = `<div class="mini-heading breakdown-tools">`
     + `<label class="row"><input type="checkbox" id="inTurnToggle" ${state.inTurn ? 'checked' : ''}>Inside turns only</label>`
     + `<label class="row"><input type="checkbox" id="allLanesToggle" ${state.allLanes ? 'checked' : ''}>Include sub-agents</label>`
     + `<span class="row note">sort <select class="select compact" id="breakdownSort">${sortOptions}</select></span>`
     + `<span class="mini-note">${fmt(t.raw)} op time in ${fmt(t.inTurn)}</span></div>`;
-  $('#breakdownBody').innerHTML = tools + lcSection + rows(order(phaseRows.map(k => [k, src[k], PHASES[k], state.phase === k, `data-action="filter" data-phase="${k}"`, countOf(k, 'all')])), denom) + roleSection + (t.bg ? `<div class="mini-heading"><h3>Background processes</h3><span class="mini-note">${t.bgOps} · not in totals</span></div>${rows([['bg', t.bg, { name: 'Outlived their turn (servers, watchers)', color: '#8a6d3b' }, state.role === 'background', 'data-action="filter-role" data-role="background"', countOf('all', 'background')]], Math.max(t.bg, t.duration))}` : '') + (t.agentMs ? `<div class="mini-heading"><h3>Sub-agents in window</h3><span class="mini-note">${t.agentLanes} lanes</span></div>${rows([['agents', t.agentMs, { name: 'Agent time (sum)', color: '#86d0b9' }, false, 'data-action="noop"', null], ['wall', t.agentWall, { name: 'Wall clock (union)', color: '#5f8f86' }, false, 'data-action="noop"', null]], Math.max(t.agentMs, 1))}` : '');
+  $('#breakdownBody').innerHTML = tools + lcSection + rows(order(phaseRows.map(k => [k, src[k], PHASES[k], state.phase === k, `data-action="filter" data-phase="${k}"`, countOf(k, 'all'), PHASES[k].kind === 'work' ? 'tool calls only' : ''])), denom) + roleSection + (t.bg ? `<div class="mini-heading"><h3>Background processes</h3><span class="mini-note">${t.bgOps} · not in totals</span></div>${rows([['bg', t.bg, { name: 'Outlived their turn (servers, watchers)', color: '#8a6d3b' }, state.role === 'background', 'data-action="filter-role" data-role="background"', countOf('all', 'background')]], Math.max(t.bg, t.duration))}` : '') + (t.agentMs ? `<div class="mini-heading"><h3>Sub-agents in window</h3><span class="mini-note">${t.agentLanes} lanes</span></div>${rows([['agents', t.agentMs, { name: 'Agent time (sum)', color: '#86d0b9' }, false, 'data-action="noop"', null], ['wall', t.agentWall, { name: 'Wall clock (union)', color: '#5f8f86' }, false, 'data-action="noop"', null]], Math.max(t.agentMs, 1))}` : '');
   renderOperations(); renderConversation(); renderAgents();
 }
 // Interval phases have no operations behind them: waiting for the user (root) or the parent
@@ -914,7 +1145,7 @@ function renderOperations() {
   $('#operationCount').textContent = `${plural(ops.length, noun)}${state.failedOnly ? ' · failures only' : ''}${folded ? ` · ${rows.length} rows, ${folded} run${folded > 1 ? 's' : ''} of identical calls folded` : ''} · durations clipped to the window`;
   const chips = [];
   if (state.role !== 'all') chips.push(`<button class="chip" data-action="clear-role">${ROLES[state.role].name} ${icon('close', true)}</button>`);
-  if (state.lifecycle !== 'all') chips.push(`<button class="chip" data-action="clear-lifecycle"><i class="color-square" style="background:${LIFECYCLES[state.lifecycle]?.color}"></i>${LIFECYCLES[state.lifecycle]?.name || state.lifecycle} ${icon('close', true)}</button>`);
+  if (state.lifecycle !== 'all') chips.push(`<button class="chip" data-action="clear-lifecycle">${swatchFor(LIFECYCLES[state.lifecycle] || LIFECYCLES.unknown)}${LIFECYCLES[state.lifecycle]?.name || state.lifecycle} ${icon('close', true)}</button>`);
   $('#roleFilter').innerHTML = chips.length ? `<div style="padding:0 22px 10px;display:flex;gap:8px;flex-wrap:wrap">${chips.join('')}</div>` : '';
   const intervalItem = (o, i) => {
     const l = m.laneById.get(o.lane);
@@ -969,7 +1200,7 @@ function renderAgents() {
   $('#agentsTable').innerHTML = `<thead><tr><th>Lane</th><th>Start / end</th><th>Active</th><th>Turns</th><th>Ops</th><th>Tool work</th><th>Tokens</th><th></th></tr></thead><tbody>${m.lanes.map(row).join('')}</tbody>`;
 }
 // filterPhase / filterRole are the breakdown's quick filters. Only one is active at a time: a
-// role already implies its phase (retries ⊂ test/build/release, fix ⊂ coding, …), so combining
+// role already implies its phase (retries ⊂ test/build/release, fix ⊂ development, …), so combining
 // them is either redundant or empty.
 function filterPhase(phase) {
   state.phase = phase;
@@ -1009,13 +1240,13 @@ function filterLifecycle(lc) {
 
 async function guide() {
   const dlg = $('#guide');
-  dlg.innerHTML = `<div class="dialog-head"><h2 id="guideTitle">Reading the timeline</h2><button class="btn icon-only ghost" data-action="close-guide" aria-label="Close" autofocus>${icon('close')}</button></div><div class="dialog-body"><section class="guide-section"><h3>One row per agent</h3><p>The ${MAIN_THREAD} (the ${MOTHER_AGENT}'s) is the first lane; every sub-agent thread is its own lane, indented by depth, with a ▶ at spawn, ticks at each message from the parent, and a bar at each completed turn. A dashed line connects spawn time to the parent. Only lanes alive inside the visible window are drawn. Click a lane to expand it into phase rows (and, at fine zoom, individual operations); the ⓘ at the right of its name opens the agent card: nickname, model, the prompt it was spawned with and its final answer.</p></section><section class="guide-section"><h3>Stages, not tool calls</h3><p>A lane's fill is the real exclusive time split: teal is LLM time (the model generating — reasoning, answers and the code of every patch), colours are tool phases, pink is waiting for the user, hatched is missing telemetry. Coding covers everything about writing code: reading and searching sources, edits, local git, formatting. Above the fill, thin <em>stage brackets</em> name runs of tool calls of one phase (Code, Test, Release …) — a grouping that includes the LLM time before each call, so a bracket can be long while its coloured fill is thin. Turn ends carry ✓ (completed), ✕ (interrupted) or ⊘ (never closed); a pulsing dot means the turn is still open. Dashed pink verticals are turn starts.</p></section><section class="guide-section"><h3>What is inferred and what is not</h3><p>Phases come from a rule table over the command text (below). Turn boundaries give waiting-for-user time; a turn that never closed becomes "No telemetry". Retry groups only join operations with an identical normalized command. A failure is a test, build, release, infra step, edit or script that exited non-zero; a read, search, listing or probe that exited non-zero is a <em>query miss</em> (the exit was its answer) — kept verbatim with its exit code, not counted. Token totals sum each thread's per-call usage, so a resumed thread whose counter restarted still adds up. Nothing is derived from how long something took, and no "goal reached" score exists — read the conversation panel.</p></section><section class="guide-section"><h3>Parallel time</h3><p>Session totals are the ${MAIN_THREAD}'s exclusive wall clock. Sub-agent time is summed separately and its union shown as "wall".</p></section><section class="guide-section"><h3>Code review</h3><p>A bookmark glyph marks where a review or cleanup skill (for example <code>code-review-cc</code> or <code>simplify</code>) was <em>actually invoked</em> — detected from the harness's skill-instruction injection, not from the words in a prompt. A thin purple strip under the fill spans each turn a review skill ran in, and the whole-session card totals that wall clock; it is a span, not a phase, so the fill still shows the real LLM/code/wait split underneath. Turns that reuse the skill later without re-invoking it are not counted. Detection has two sources: a built-in set of tools and skills, and an optional user overlay (project commands and review-skill names); both are listed below.</p></section><section class="guide-section"><h3>Keyboard</h3><p><kbd>+</kbd>/<kbd>−</kbd> zoom, <kbd>←</kbd>/<kbd>→</kbd> pan, <kbd>Home</kbd> fit, <kbd>Esc</kbd> close. Drag the plot to pan; drag on the overview to select.</p></section><section class="guide-section"><h3>Lifecycle stages (SDLC)</h3><p>Every millisecond of a lane also belongs to exactly one <em>lifecycle stage</em>: the stage of the software lifecycle the time served. It is a second partition next to the activity phases (same total), never a replacement: a code review still runs tests, and those minutes stay Testing in the activity list while they are Code review here. Each stage row shows its model / tools split because the two partitions attribute model output differently. Every assignment comes from a literal, harness-level signal — a collaboration mode, a skill the harness actually injected, an agent's spawn role, an edited path, a command kind — never from words in a message and never from a duration. Requirements and design have no built-in detector: nothing in a Codex rollout marks them; add skill names, agent roles or document paths in your overlay. Model output with no tool call after it in the turn stays <em>Model output</em>: only a harness signal (plan mode, a skill, a plan written with <code>update_plan</code>) can attribute it.</p><div style="overflow:auto;max-height:340px"><table class="rules-table" id="lifecycleTable"></table></div></section><section class="guide-section"><h3>Classification rules</h3><p id="rulesNote">loading…</p><div style="overflow:auto;max-height:340px"><table class="rules-table" id="rulesTable"></table></div></section>${insightsGuideHTML()}</div>`;
+  dlg.innerHTML = `<div class="dialog-head"><h2 id="guideTitle">Reading the timeline</h2><button class="btn icon-only ghost" data-action="close-guide" aria-label="Close" autofocus>${icon('close')}</button></div><div class="dialog-body"><section class="guide-section"><h3>One row per agent</h3><p>The ${MAIN_THREAD} (the ${MOTHER_AGENT}'s) is the first lane; every sub-agent thread is its own lane, indented by depth, with a ▶ at spawn, ticks at each message from the parent, and a bar at each completed turn. A dashed line connects spawn time to the parent. Only lanes alive inside the visible window are drawn. Click a lane to expand it into phase rows (and, at fine zoom, individual operations); the ⓘ at the right of its name opens the agent card: nickname, model, the prompt it was spawned with and its final answer.</p></section><section class="guide-section"><h3>Activity brackets, not tool calls</h3><p>A lane's fill is the real exclusive time split: teal is LLM time (the model generating — reasoning, answers and the code of every patch), colours are tool phases, pink is waiting for the user, hatched is missing telemetry. Development is every tool call around the code short of building, testing and shipping: reading and searching sources, edits, local git, formatting, lookups and probes. The model's time writing a patch is LLM, not Development: the activity split never moves model output into a tool phase. Above the fill, thin <em>activity brackets</em> name runs of tool calls of one phase (Dev, Test, Release …) — a grouping that includes the LLM time before each call, so a bracket can be long while its coloured fill is thin. Under the fill, a thin <em>rail</em> carries the lifecycle stage (below): a bracket says what the calls were, the rail says which stage they served, and the two use different shapes on purpose. Turn ends carry ✓ (completed), ✕ (interrupted) or ⊘ (never closed); a pulsing dot means the turn is still open. Dashed pink verticals are turn starts.</p></section><section class="guide-section"><h3>What is inferred and what is not</h3><p>Phases come from a rule table over the command text (below). Turn boundaries give waiting-for-user time; a turn that never closed becomes "No telemetry". Retry groups only join operations with an identical normalized command. A failure is a test, build, release, infra step, edit or script that exited non-zero; a read, search, listing or probe that exited non-zero is a <em>query miss</em> (the exit was its answer) — kept verbatim with its exit code, not counted. Token totals sum each thread's per-call usage, so a resumed thread whose counter restarted still adds up. Nothing is derived from how long something took, and no "goal reached" score exists — read the conversation panel.</p></section><section class="guide-section"><h3>Parallel time</h3><p>Session totals are the ${MAIN_THREAD}'s exclusive wall clock. Sub-agent time is summed separately and its union shown as "wall".</p></section><section class="guide-section"><h3>Code review</h3><p>A bookmark glyph marks where a review or cleanup skill (for example <code>code-review-cc</code> or <code>simplify</code>) was <em>actually invoked</em> — detected from the harness's skill-instruction injection, not from the words in a prompt. The lifecycle rail under the fill takes the Code review colour for each turn a review skill ran in — and for the sub-agent turns spawned inside it, which work for that review — and the whole-session card totals the ${MAIN_THREAD}'s wall clock; it is a stage, not an activity, so the fill still shows the real LLM/development/wait split above it. Turns that reuse the skill later without re-invoking it are not counted. Detection has two sources: a built-in set of tools and skills, and an optional user overlay (project commands and review-skill names); both are listed below.</p></section><section class="guide-section"><h3>Keyboard</h3><p><kbd>+</kbd>/<kbd>−</kbd> zoom, <kbd>←</kbd>/<kbd>→</kbd> pan, <kbd>Home</kbd> fit, <kbd>Esc</kbd> close. Drag the plot to pan; drag on the overview to select.</p></section><section class="guide-section"><h3>Lifecycle stages (SDLC)</h3><p>Every millisecond of a lane also belongs to exactly one <em>lifecycle stage</em>: the stage of the software lifecycle the time served. It is a second partition next to the activity phases (same total), never a replacement: a code review still runs tests, and those minutes stay Testing in the activity list while they are Code review here. Each stage row shows its model / tools split because the two partitions attribute model output differently. Every assignment comes from a literal, harness-level signal — a collaboration mode, a skill the harness actually injected, an agent's spawn role, an edited path, a command kind — never from words in a message and never from a duration. Requirements and design have no built-in detector: nothing in a Codex rollout or a Claude Code log marks them; add skill names, agent roles or document paths in your overlay. Model output takes the stage of the nearest tool call in its turn — the next one (the call it prepared), else the previous one (the answer that reported on it); a compaction or a telemetry gap in between is skipped over, while a wait for a worker or the user closes the bracket. Only a turn that made no tool call at all keeps its model output as <em>Model output</em>: nothing in it says which stage it served, and only a harness signal (plan mode, a skill, a plan written with <code>update_plan</code> or <code>ExitPlanMode</code>) could. A sub-agent's turn is a tool call of the parent turn it ran inside, so it takes that turn's stage when it has no signal of its own; the inspector names the origin.</p><div style="overflow:auto;max-height:340px"><table class="rules-table" id="lifecycleTable"></table></div></section><section class="guide-section"><h3>Classification rules</h3><p id="rulesNote">loading…</p><div style="overflow:auto;max-height:340px"><table class="rules-table" id="rulesTable"></table></div></section>${insightsGuideHTML()}</div>`;
   dlg.showModal();
   try {
     const d = await api('/api/rules');
     const nUser = d.rules.length - (d.builtin_rules ?? d.rules.length);
     const reviewNote = (d.review_skills && d.review_skills.length) ? ` Review skills (name matches, one per invocation): ${d.review_skills.map(esc).join(', ')}.` : '';
-    $('#rulesNote').innerHTML = `${d.rules.length} rules (${d.builtin_rules ?? d.rules.length} built-in${nUser > 0 ? `, ${nUser} from your overlay` : ''}). A command takes the highest-priority phase among its segments (release &gt; test &gt; build &gt; workers &gt; infra &gt; develop &gt; explore). Unmatched commands stay Unknown. Add project-specific commands (optionally pinned to a lifecycle stage) and the skill names, agent roles and document paths that pin a stage in a user rules file (<code>--rules</code>, <code>$TODOBEM_RULES</code>, or <code>~/.todobem/rules.json</code>).${reviewNote}`;
+    $('#rulesNote').innerHTML = `${d.rules.length} rules (${d.builtin_rules ?? d.rules.length} built-in${nUser > 0 ? `, ${nUser} from your overlay` : ''}). A command takes the highest-priority phase among its segments (release &gt; test &gt; build &gt; workers &gt; infra &gt; development). Unmatched commands stay Unknown. Add project-specific commands (optionally pinned to a lifecycle stage) and the skill names, agent roles and document paths that pin a stage in a user rules file (<code>--rules</code>, <code>$TODOBEM_RULES</code>, or <code>~/.todobem/rules.json</code>).${reviewNote}`;
     const builtin = d.builtin_rules ?? d.rules.length;
     $('#lifecycleTable').innerHTML = lifecycleGuideRows(d.lifecycle || {});
     $('#rulesTable').innerHTML = `<thead><tr><th>Match</th><th>Phase</th><th>Kind</th><th>Note</th></tr></thead><tbody>${d.rules.map((r, i) => `<tr><td><code>${esc(r.match)}</code>${i >= builtin ? ' <span class="chip" style="padding:1px 5px">user</span>' : ''}</td><td><span class="row"><i class="color-square" style="background:${PHASES[r.phase]?.color}"></i>${esc(r.phase)}</span></td><td>${esc(r.kind)}</td><td class="note">${esc(r.note || '')}</td></tr>`).join('')}</tbody>`;
@@ -1030,11 +1261,11 @@ function lifecycleGuideRows(lc) {
   const matchers = lc.matchers || {};
   const list = (obj, stage) => (obj && obj[stage] ? obj[stage] : []);
   const sources = {
-    plan: ['Codex plan collaboration mode (whole turn)', 'a plan written with update_plan: the model output before it'],
+    plan: ['plan mode — Codex collaboration mode, Claude Code permission mode (whole turn)', 'a plan written with update_plan or ExitPlanMode: the model output before it', 'sub-agent turns that ran inside a plan-mode turn (inherited)'],
     requirements: ['no built-in detector'],
     design: ['no built-in detector'],
     implement: ['default for ' + Object.keys(defaults).filter(p => defaults[p] === 'implement').sort().join(', ') + ' commands', 'operations commands before this lane\'s first release'],
-    review: ['skill invoked in the turn (whole turn)', 'Codex review mode (whole turn)'],
+    review: ['skill invoked in the turn (whole turn)', 'Codex review mode (whole turn)', 'sub-agent turns that ran inside such a turn (inherited)'],
     test: ['default for test commands'],
     release: ['default for release commands'],
     operate: ['after this lane\'s first release only'],
@@ -1047,9 +1278,9 @@ function lifecycleGuideRows(lc) {
       const pats = list(matchers[what], stage);
       if (pats.length) parts.push(`${label}: ${pats.map(x => `<code>${esc(x)}</code>`).join(', ')}`);
     }
-    return `<tr><td><span class="row"><i class="color-square" style="background:${LIFECYCLES[stage].color}"></i>${LIFECYCLES[stage].name}</span></td><td>${parts.join('<br>')}</td></tr>`;
+    return `<tr><td><span class="row">${railSwatch(LIFECYCLES[stage].color)}${LIFECYCLES[stage].name}</span></td><td>${parts.join('<br>')}</td></tr>`;
   });
-  return `<thead><tr><th>Stage</th><th>Assigned from</th></tr></thead><tbody>${rows.join('')}<tr><td><span class="row"><i class="color-square" style="background:${LIFECYCLES.llm.color}"></i>${LIFECYCLES.llm.name}</span></td><td>model output inside a turn with no later tool call in that turn (final answers, text-only turns)</td></tr><tr><td>Waiting, idle, compaction, no telemetry, unknown</td><td>pass through under their activity name</td></tr></tbody>`;
+  return `<thead><tr><th>Stage</th><th>Assigned from</th></tr></thead><tbody>${rows.join('')}<tr><td><span class="row"><i class="color-square" style="background:${LIFECYCLES.llm.color}"></i>${LIFECYCLES.llm.name}</span></td><td>model output of a turn that made no tool call at all (a text-only answer)</td></tr><tr><td>Waiting, idle, compaction, no telemetry, unknown</td><td>pass through under their activity name</td></tr></tbody>`;
 }
 
 /* ---------- tooltip ---------- */
@@ -1084,6 +1315,7 @@ function tooltip(event) {
     body = `<strong>Stage: ${PHASES[p].name} · ${fmt(tb - ta)}</strong><span>${spanLabel(ta, tb)}</span><span>tools ${fmt(tools, true)} · model output before them ${fmt(model, true)}</span><span>${ops} ${PHASES[p].short.toLowerCase()} operation${ops === 1 ? '' : 's'} plus the LLM time before each. The fill below shows the real split.</span>`;
   }
   else if (target.dataset.phase === 'cluster') { const ta = Number(target.dataset.ta), tb = Number(target.dataset.tb), l = m.laneById.get(target.dataset.lane); const items = l.markers.filter(k => k.t >= ta && k.t < tb && MARKS[k.kind] && !k.kind.startsWith('agent_')); body = `<strong>${items.length} markers · ${spanLabel(ta, tb)}</strong>` + items.slice(0, 8).map(k => `<span>${stamp(k.t, false)} ${esc(MARKS[k.kind].name)}: ${esc((k.text || '').slice(0, 70))}</span>`).join('') + (items.length > 8 ? `<span>…</span>` : '') + `<span>Select to zoom in.</span>`; }
+  else if (target.dataset.pending) { const ta = Number(target.dataset.ta), tb = Number(target.dataset.tb); body = `<strong>No telemetry yet (in progress) · ${fmt(tb - ta)}</strong><span>${spanLabel(ta, tb)}</span><span>The turn is still open: the agent is generating and nothing has been recorded since the last event.</span><span>It resolves to a phase as soon as the next event lands.</span>`; }
   else { const ta = Number(target.dataset.ta), tb = Number(target.dataset.tb), p = target.dataset.phase, l = m.laneById.get(target.dataset.lane); const ops = l ? l.ops.filter(o => o.end > ta && o.start < tb && (target.dataset.phaseRow ? o.phase === p : true)).length : 0; body = `<strong>${PHASES[p].name} · ${fmt(tb - ta)}</strong><span>${spanLabel(ta, tb)}</span><span>${esc(l ? l.path : '')} · ${ops} operations inside</span><span>Select to zoom in.</span>`; }
   tip.innerHTML = body; tip.style.display = 'block'; const r = tip.getBoundingClientRect(); tip.style.left = clamp(event.clientX + 13, 8, window.innerWidth - r.width - 8) + 'px'; tip.style.top = clamp(event.clientY + 17, 8, window.innerHeight - r.height - 8) + 'px';
 }
@@ -1092,12 +1324,18 @@ function tooltip(event) {
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-action]'); if (!el || el.disabled) return; const a = el.dataset.action, m = current();
   if (a === 'insights' || a.startsWith('ins-')) return insightsAction(a, el);
+  if (a === 'settings' || a.startsWith('set-')) return settingsAction(a, el);
+  if (a === 'filter-apply') { // custom dates of the shared filter: the Insights report, or the session list
+    if (el.dataset.prefix === 'ins') { if (filterApply('ins', insightsState().params)) loadInsights(); }
+    else if (filterApply('fleet', state.fleetFilter)) { persistFleetPeriod(); render(); }
+    return;
+  }
   if (a === 'sessions') return go('sessions'); if (a === 'session') return go('session', el.dataset.id || state.id);
   if (a === 'lock') return lockNow();
   if (a === 'guide') return guide(); if (a === 'close-guide') return $('#guide').close(); if (a === 'close-inspector') return $('#inspector').close();
   if (a === 'refresh') {
     const navigation = navigationRequest;
-    loadSession(state.id, { keepWindow: true, refresh: true }).then(applied => { if (applied) { render(); toast('Re-parsed from the rollout files.'); } }).catch(e => {
+    loadSession(state.id, { keepWindow: true, refresh: true }).then(applied => { if (applied) { keepPlace(render); toast('Re-parsed from the session files.'); } }).catch(e => {
       if (navigation === navigationRequest) toast('Could not refresh session: ' + e.message);
     });
     return;
@@ -1151,9 +1389,16 @@ document.addEventListener('submit', e => {
     e.preventDefault();
     unlock($('#lockToken') ? $('#lockToken').value : '').catch(err => renderLock(err.message));
   }
+  if (e.target && e.target.id === 'settingsForm') {
+    e.preventDefault();
+    saveSettings();
+  }
 });
-document.addEventListener('change', e => { const id = e.target.id, v = e.target.value; if (id === 'showGroups') { state.groups = e.target.checked; renderTimeline(); } else if (id === 'inTurnToggle') { state.inTurn = e.target.checked; renderLower(); } else if (id === 'allLanesToggle') { state.allLanes = e.target.checked; renderLower(); } else if (id === 'failedOnly') { state.failedOnly = e.target.checked; state.listShown = LIST_CHUNK; renderOperations(); } else if (id === 'breakdownSort') { state.breakdownSort = v; renderLower(); } else if (id === 'phaseSelect') filterPhase(v); else if (id === 'laneSelect') { state.lane = v; state.listShown = LIST_CHUNK; renderTimeline(); renderOperations(); renderAgents(); } else if (id === 'sortSelect') { state.sort = v; state.listShown = LIST_CHUNK; renderOperations(); } else if (id === 'fleetSort') { state.fleetSort = v; renderFleetRows(); } else if (id === 'intervalSelect') { state.interval = Number(v); schedulePoll(); toast(`Refreshing every ${v}s.`); } else if (id === 'insPeriod' || id === 'insProject' || id === 'insSession') insightsChange(id, v); else if (id === 'insLive') insightsChange(id, e.target.checked); });
-document.addEventListener('input', e => { if (e.target.id === 'sessionSearch') { state.search = e.target.value; renderFleetRows(); } });
+document.addEventListener('change', e => { const id = e.target.id, v = e.target.type === 'checkbox' ? e.target.checked : e.target.value; if (id === 'showGroups') { state.groups = e.target.checked; renderTimeline(); } else if (id === 'inTurnToggle') { state.inTurn = e.target.checked; renderLower(); } else if (id === 'allLanesToggle') { state.allLanes = e.target.checked; renderLower(); } else if (id === 'failedOnly') { state.failedOnly = e.target.checked; state.listShown = LIST_CHUNK; renderOperations(); } else if (id === 'breakdownSort') { state.breakdownSort = v; renderLower(); } else if (id === 'phaseSelect') filterPhase(v); else if (id === 'laneSelect') { state.lane = v; state.listShown = LIST_CHUNK; renderTimeline(); renderOperations(); renderAgents(); } else if (id === 'sortSelect') { state.sort = v; state.listShown = LIST_CHUNK; renderOperations(); } else if (id === 'fleetSort') { state.fleetSort = v; renderFleetRows(); } else if (id === 'intervalSelect') { state.interval = Number(v); schedulePoll(); toast(`Refreshing every ${v}s.`); } else if (id.startsWith('ins')) insightsChange(id, v); else if (filterField('fleet', id)) { const fld = filterField('fleet', id); const refresh = filterChange(state.fleetFilter, fld, v); if (fld === 'Period') persistFleetPeriod(); if (refresh) render(); } });
+document.addEventListener('input', e => {
+  if (e.target.id === 'sessionSearch') { state.search = e.target.value; renderFleetRows(); }
+  else if (e.target.dataset && e.target.dataset.homeIndex !== undefined) settingsInput(e.target.dataset.source, Number(e.target.dataset.homeIndex), e.target.value);
+});
 // overview brush
 document.addEventListener('pointerdown', e => { const ov = e.target.closest('#overview'); if (!ov || e.button !== 0) return; const m = current(), rect = ov.getBoundingClientRect(), total = m.ended - m.started, xx = clamp(e.clientX - rect.left, 0, rect.width), time = m.started + xx / rect.width * total, handle = e.target.closest('[data-handle]'); const mode = handle ? handle.dataset.handle : e.target.closest('#brush') && state.b - state.a < total - 1000 ? 'move' : 'draw'; overviewDrag = { id: e.pointerId, x: e.clientX, a: state.a, b: state.b, time, rect, mode, moved: false, total }; ov.setPointerCapture(e.pointerId); hideTooltip(); });
 document.addEventListener('pointermove', e => {
@@ -1201,6 +1446,10 @@ function route() {
   }
   if (h === '#insights' || h.startsWith('#insights?')) {
     if (state.page !== 'insights') go('insights');
+    return;
+  }
+  if (h === '#settings') {
+    if (state.page !== 'settings') go('settings');
     return;
   }
   if (h.startsWith('#session/')) {
@@ -1280,9 +1529,10 @@ async function boot() {
     state.authEnabled = !!st.enabled;
     $('#lockBtn').hidden = !state.authEnabled;
   } catch (e) { if (!(e instanceof AuthError)) console.warn(e); }
+  restoreFleetPeriod();
   const applied = await loadSessions();
   if (!applied) return;
-  if (location.hash.startsWith('#session/') || location.hash.startsWith('#insights')) route();
+  if (location.hash.startsWith('#session/') || location.hash.startsWith('#insights') || location.hash === '#settings') route();
   else go('sessions');
 }
 (async () => {

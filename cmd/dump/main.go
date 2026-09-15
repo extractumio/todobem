@@ -11,9 +11,12 @@ import (
 	"time"
 
 	"github.com/extractumio/todobem/internal/classify"
+	"github.com/extractumio/todobem/internal/claude"
 	"github.com/extractumio/todobem/internal/codex"
 	"github.com/extractumio/todobem/internal/insights"
 	"github.com/extractumio/todobem/internal/model"
+	"github.com/extractumio/todobem/internal/settings"
+	"github.com/extractumio/todobem/internal/source"
 )
 
 func fmtd(ms int64) string {
@@ -46,13 +49,25 @@ func main() {
 		os.Exit(2)
 	}
 	id := flag.Arg(0)
-	ix := codex.NewIndex(os.Getenv("HOME") + "/.codex")
+	// the same folders the server reads: the settings file when it exists, else the defaults
+	cfg, _, err := settings.Load(settings.DefaultPath())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "settings:", err)
+		os.Exit(2)
+	}
+	_, homes, err := settings.Resolve(cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "settings:", err)
+		os.Exit(2)
+	}
+	ix := source.NewMulti(codex.NewIndex(homes.Codex...), claude.NewIndex(homes.Claude...))
 	t0 := time.Now()
 	ix.Scan()
 	scanTime := time.Since(t0)
-	s, err := codex.Open(ix, id)
+	s, err := ix.Open(id)
 	if err != nil {
-		panic(err)
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
 	}
 	t1 := time.Now()
 	if _, err := s.Refresh(); err != nil {
@@ -133,7 +148,12 @@ func main() {
 	for _, l := range m.Lanes {
 		for _, o := range l.Ops {
 			if o.Phase == "unknown" {
+				// the command word as `todobem unknown` names it: env assignments and wrappers stripped;
+				// an unmapped tool (kind tool:<name>) has JSON in Detail, its title is the name
 				h := o.Title
+				if !strings.HasPrefix(o.Kind, "tool:") {
+					h = classify.Head(o.Detail)
+				}
 				if i := strings.IndexAny(h, " \n"); i > 0 {
 					h = h[:i]
 				}
@@ -191,7 +211,7 @@ func main() {
 	for _, l := range m.Lanes {
 		for _, t := range l.Turns {
 			if t.Lifecycle != "" {
-				fmt.Printf("  TURN-LC %s %-10s %-8s skill=%q mode=%q\n", time.UnixMilli(t.Start).UTC().Format("01-02 15:04"), l.Path, t.Lifecycle, t.Skill, t.Mode)
+				fmt.Printf("  TURN-LC %s %-10s %-8s skill=%q mode=%q rule=%q\n", time.UnixMilli(t.Start).UTC().Format("01-02 15:04"), l.Path, t.Lifecycle, t.Skill, t.Mode, t.LifecycleRule)
 			}
 		}
 	}

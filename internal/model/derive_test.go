@@ -254,20 +254,27 @@ func TestQueryMissesAreNotFailures(t *testing.T) {
 	edit.Kind, edit.Exit = "sed -i", &one
 	probe := mkOp("p1", classify.Code, 150, 152, "failed", "")
 	probe.Kind, probe.Exit = "probe", &one
-	l.Ops = append(l.Ops, miss, missing, edit, probe)
+	// a harness that records no exit code (Claude Code's is_error): a failed read is still a
+	// query miss, a failed edit is still a failure
+	noExitRead := mkOp("q3", classify.Code, 154, 156, "failed", "")
+	noExitRead.Kind = "read"
+	noExitEdit := mkOp("e2", classify.Code, 158, 160, "failed", "")
+	noExitEdit.Kind = "edit"
+	l.Ops = append(l.Ops, miss, missing, edit, probe, noExitRead, noExitEdit)
 	Derive(s, 2000)
-	if !miss.QueryMiss || !missing.QueryMiss || edit.QueryMiss {
-		t.Fatalf("query_miss: search=%v read=%v sed -i=%v", miss.QueryMiss, missing.QueryMiss, edit.QueryMiss)
+	if !miss.QueryMiss || !missing.QueryMiss || edit.QueryMiss || !noExitRead.QueryMiss || noExitEdit.QueryMiss {
+		t.Fatalf("query_miss: search=%v read=%v sed -i=%v read(no exit)=%v edit(no exit)=%v", miss.QueryMiss, missing.QueryMiss, edit.QueryMiss, noExitRead.QueryMiss, noExitEdit.QueryMiss)
 	}
 	if miss.Status != "failed" || *miss.Exit != 1 {
 		t.Fatalf("the literal record changed: %+v", miss)
 	}
-	// c1 (test, failed) + e1 (edit, exit 1) are failures; the three query misses are counted apart
-	if s.Totals.Failed != 2 || s.Totals.QueryMisses != 3 {
+	// c1 (test, failed) + e1 (edit, exit 1) + e2 (edit, no exit) are failures; the four query
+	// misses are counted apart
+	if s.Totals.Failed != 3 || s.Totals.QueryMisses != 4 {
 		t.Fatalf("failed=%d query_misses=%d", s.Totals.Failed, s.Totals.QueryMisses)
 	}
-	if probe.Failure() || !edit.Failure() {
-		t.Fatalf("Failure: probe=%v edit=%v", probe.Failure(), edit.Failure())
+	if probe.Failure() || !edit.Failure() || noExitRead.Failure() || !noExitEdit.Failure() {
+		t.Fatalf("Failure: probe=%v edit=%v read(no exit)=%v edit(no exit)=%v", probe.Failure(), edit.Failure(), noExitRead.Failure(), noExitEdit.Failure())
 	}
 }
 
@@ -281,5 +288,38 @@ func TestTotalsTokensSumLanes(t *testing.T) {
 	want := TokenUsage{Input: 130, Cached: 40, Output: 13, Reasoning: 5, Total: 143}
 	if s.Totals.Tokens != want {
 		t.Fatalf("tokens %+v, want %+v", s.Totals.Tokens, want)
+	}
+}
+
+// TestPendingUserQuestionLiveTailIsWaitUser: when the agent has handed control to the user (an
+// open wait_user op — Claude Code AskUserQuestion, Codex request_user_input), the live tail of
+// the open turn up to now reads "waiting for user", never "no telemetry". This is the shared
+// derive guarantee both adapters rely on; the alternative (an open turn with no covering op)
+// stays no_telemetry, because then nothing was recorded and nothing is inferred.
+func TestPendingUserQuestionLiveTailIsWaitUser(t *testing.T) {
+	mk := func(op *Operation) *Session {
+		l := &Lane{ID: "L", Path: "/root", Started: 0, Ended: 1000, Live: true}
+		l.Turns = []*Turn{{ID: "t1", Start: 100, End: 500, Status: "open"}}
+		if op != nil {
+			l.Ops = []*Operation{op}
+		}
+		return &Session{ID: "s", Lanes: []*Lane{l}}
+	}
+	q := &Operation{ID: "q", Lane: "L", Turn: "t1", Phase: classify.WaitUser, Kind: "question", Start: 500, End: 500, Status: "running", Open: true}
+	s := mk(q)
+	Derive(s, 100000)
+	l := s.Lanes[0]
+	if l.ByPhase[classify.NoTelemetry] != 0 {
+		t.Fatalf("a pending user question must not read as no telemetry: %v", l.ByPhase)
+	}
+	tail := l.Segments[len(l.Segments)-1]
+	if tail.Phase != classify.WaitUser || tail.End != 100000 {
+		t.Fatalf("live tail = %+v; want wait_user to now", tail)
+	}
+	// control: an open turn with no covering op is honestly no_telemetry
+	s = mk(nil)
+	Derive(s, 100000)
+	if got := s.Lanes[0].ByPhase[classify.NoTelemetry]; got == 0 {
+		t.Fatal("an open turn with no recorded activity should stay no_telemetry")
 	}
 }

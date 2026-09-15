@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/extractumio/todobem/internal/auth"
+	"github.com/extractumio/todobem/internal/settings"
 )
 
 func authFixture(t *testing.T) (*Server, http.Handler, []byte) {
@@ -18,7 +19,7 @@ func authFixture(t *testing.T) (*Server, http.Handler, []byte) {
 	for i := range key {
 		key[i] = byte(200 - i)
 	}
-	s := New(t.TempDir(), fstest.MapFS{"index.html": {Data: []byte("<html>shell</html>")}})
+	s := New(settings.Homes{Codex: []string{t.TempDir()}}, fstest.MapFS{"index.html": {Data: []byte("<html>shell</html>")}})
 	s.SetAuth(auth.NewVerifier(key, time.Now().Add(-time.Minute)))
 	return s, s.Handler("127.0.0.1:7788"), key
 }
@@ -159,7 +160,7 @@ func TestAuthGateRejectsCrossSiteShapes(t *testing.T) {
 }
 
 func TestAuthOffLeavesRoutesOpen(t *testing.T) {
-	s := New(t.TempDir(), fstest.MapFS{})
+	s := New(settings.Homes{Codex: []string{t.TempDir()}}, fstest.MapFS{})
 	h := s.Handler("127.0.0.1:7788")
 	if w := call(h, http.MethodGet, "/api/sessions", "", ""); w.Code != http.StatusOK {
 		t.Fatalf("auth off: %d", w.Code)

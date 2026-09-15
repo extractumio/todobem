@@ -19,17 +19,19 @@ import (
 
 	"github.com/extractumio/todobem/internal/auth"
 	"github.com/extractumio/todobem/internal/classify"
+	"github.com/extractumio/todobem/internal/claude"
 	"github.com/extractumio/todobem/internal/codex"
 	"github.com/extractumio/todobem/internal/model"
+	"github.com/extractumio/todobem/internal/settings"
+	"github.com/extractumio/todobem/internal/source"
 	"github.com/extractumio/todobem/internal/store"
 )
 
 type Server struct {
 	auth      *auth.Verifier // nil = the UI is open (-auth=off)
-	ix        *codex.Index
-	home      string
+	src       *source.Multi  // the session sources (Codex, Claude Code) as one index
 	mu        sync.Mutex
-	opened    map[string]*codex.Session // parser-backed sessions (LRU, expensive)
+	opened    map[string]*source.Session // parser-backed sessions (LRU, expensive)
 	lastUse   map[string]time.Time
 	cached    map[string]*cachedEntry // read-only models served from disk (cheap; separate LRU)
 	cache     *store.Store
@@ -38,6 +40,7 @@ type Server struct {
 	maxOpen   int
 	maxCached int
 	insights  *insightsSvc // /api/insights/*: period reports over the project's sessions
+	settings  *settingsSvc // /api/settings: the session folders and the file they are saved in
 }
 
 // cachedEntry is a fingerprint-validated model served without a parser. Its model is immutable
@@ -49,7 +52,7 @@ type cachedEntry struct {
 }
 
 // view is what handlers need from a loaded session, satisfied by both a parser-backed
-// *codex.Session and a read-only cached model.
+// *source.Session and a read-only cached model.
 type view interface {
 	View(func(*model.Session))
 	Version() string
@@ -60,26 +63,47 @@ type cachedView struct{ m *model.Session }
 func (c cachedView) View(fn func(*model.Session)) { fn(c.m) }
 func (c cachedView) Version() string              { return c.m.Version }
 
-func New(codexHome string, web fs.FS) *Server { return NewWithCache(codexHome, web, "") }
+// New serves the sessions of the given homes: Codex homes (each contains sessions/) and Claude
+// Code homes (each contains projects/); see codex.NewIndex / claude.NewIndex for how several
+// homes of one source combine. A source with no homes is simply empty.
+func New(homes settings.Homes, web fs.FS) *Server { return NewWithCache(homes, web, "") }
 
 // NewWithCache is New plus a directory for the derived-session cache ("" disables it).
-func NewWithCache(codexHome string, web fs.FS, cacheDir string) *Server {
-	if abs, err := filepath.Abs(codexHome); err == nil {
-		codexHome = abs
-	}
-	s := &Server{ix: codex.NewIndex(codexHome), home: codexHome, opened: map[string]*codex.Session{}, lastUse: map[string]time.Time{}, cached: map[string]*cachedEntry{}, cache: store.New(cacheDir), web: web, maxOpen: 6, maxCached: 32}
+func NewWithCache(homes settings.Homes, web fs.FS, cacheDir string) *Server {
+	src := source.NewMulti(codex.NewIndex(homes.Codex...), claude.NewIndex(homes.Claude...))
+	s := &Server{src: src, opened: map[string]*source.Session{}, lastUse: map[string]time.Time{}, cached: map[string]*cachedEntry{}, cache: store.New(cacheDir), web: web, maxOpen: 6, maxCached: 32}
 	s.insights = newInsights(s)
+	s.settings = &settingsSvc{}
 	return s
 }
 
-// Scan does the initial (or periodic) index scan.
+// SetHomes points the server at another set of homes, live. Each source drops the files of a
+// removed home before anything else happens; the in-memory pools go too (a parser pins its
+// file path, so an open session of a removed home would otherwise be served until eviction —
+// the disk cache re-serves closed sessions on demand); a running Insights scan is cancelled
+// (it would open ids that just vanished); then a synchronous scan indexes the new homes so the
+// caller can answer with fresh counts.
+func (s *Server) SetHomes(homes settings.Homes) {
+	s.insights.scanner.Cancel()
+	s.src.Source(source.Codex).SetHomes(homes.Codex)
+	s.src.Source(source.Claude).SetHomes(homes.Claude)
+	s.mu.Lock()
+	s.opened = map[string]*source.Session{}
+	s.lastUse = map[string]time.Time{}
+	s.cached = map[string]*cachedEntry{}
+	s.mu.Unlock()
+	s.Scan()
+	log.Printf("settings: codex homes → %v · claude homes → %v", homes.Codex, homes.Claude)
+}
+
+// Scan does the initial (or periodic) index scan of every source.
 func (s *Server) Scan() {
 	t := time.Now()
-	s.ix.Scan()
+	s.src.Scan()
 	s.mu.Lock()
 	s.lastScan = time.Now()
 	s.mu.Unlock()
-	log.Printf("index scan: %d root sessions in %s", len(s.ix.Roots()), time.Since(t).Round(time.Millisecond))
+	log.Printf("index scan: %d root sessions in %s", len(s.src.Roots()), time.Since(t).Round(time.Millisecond))
 }
 
 func (s *Server) maybeScan(maxAge time.Duration) {
@@ -101,6 +125,7 @@ func (s *Server) Handler(listenAddr ...string) http.Handler {
 	mux.HandleFunc("/api/event", s.handleEvent)
 	mux.HandleFunc("/api/rules", s.handleRules)
 	mux.HandleFunc("/api/insights/", s.insights.handle)
+	mux.HandleFunc("/api/settings", s.handleSettings)
 	static := http.FileServer(http.FS(s.web))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
@@ -139,13 +164,13 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 // session returns an opened (and refreshed) session, opening it on demand.
-func (s *Server) session(id string, refresh bool) (*codex.Session, error) {
+func (s *Server) session(id string, refresh bool) (*source.Session, error) {
 	s.mu.Lock()
 	sess, ok := s.opened[id]
 	if !ok {
 		s.maybeScanLocked()
 		var err error
-		sess, err = codex.Open(s.ix, id)
+		sess, err = s.src.Open(id)
 		if err != nil {
 			s.mu.Unlock()
 			return nil, err
@@ -166,17 +191,17 @@ func (s *Server) session(id string, refresh bool) (*codex.Session, error) {
 	return sess, nil
 }
 
-// fingerprint describes a session's current inputs: its rollout files (sizes/mtimes from the
+// fingerprint describes a session's current inputs: its session files (sizes/mtimes from the
 // index) plus a hash of the effective classifier. A change to any file or rule flips it.
 func (s *Server) fingerprint(id string) store.Fingerprint {
 	fp := store.Fingerprint{Rules: classify.RulesFingerprint()}
-	add := func(fm codex.FileMeta) {
+	add := func(fm source.Meta) {
 		fp.Files = append(fp.Files, store.FileFP{Path: fm.Path, Size: fm.Size, Mod: fm.ModTime.UnixNano()})
 	}
-	if fm, ok := s.ix.Get(id); ok {
+	if fm, ok := s.src.Get(id); ok {
 		add(fm)
 	}
-	for _, d := range s.ix.Descendants(id) {
+	for _, d := range s.src.Descendants(id) {
 		add(d)
 	}
 	sort.Slice(fp.Files, func(i, j int) bool { return fp.Files[i].Path < fp.Files[j].Path })
@@ -397,24 +422,36 @@ func (s *Server) recordedSource(src model.Src) bool {
 	return false
 }
 
-// readSource also checks the resolved filesystem location: a previously indexed
-// rollout may have been replaced with a symlink since the session was loaded.
+// readSource also checks the resolved filesystem location: the file must lie under one of the
+// directories a source reads (sessions/ or archived_sessions/ of a Codex home, projects/ of a
+// Claude home) by its logical path, and resolve to the same place under the resolved home — no
+// symlink anywhere below the home, the walkers follow none either. A previously indexed file
+// may have been replaced with a symlink since the session was loaded, or its home removed from
+// the settings.
 func (s *Server) readSource(src model.Src) ([]byte, error) {
-	root, err := filepath.EvalSymlinks(s.home)
-	if err != nil {
-		return nil, err
-	}
 	file, err := filepath.EvalSymlinks(src.File)
 	if err != nil {
 		return nil, err
 	}
-	logical, err := filepath.Rel(s.home, src.File)
-	if err != nil || file != filepath.Join(root, logical) {
-		return nil, errors.New("source path contains a symlink")
+	inside := false
+	for _, dir := range s.src.Dirs() {
+		rel, err := filepath.Rel(dir, src.File)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		home := filepath.Dir(dir)
+		root, err := filepath.EvalSymlinks(home)
+		if err != nil {
+			continue
+		}
+		if file != filepath.Join(root, filepath.Base(dir), rel) {
+			return nil, errors.New("source path contains a symlink")
+		}
+		inside = true
+		break
 	}
-	rel, err := filepath.Rel(root, file)
-	if err != nil || (!strings.HasPrefix(rel, "sessions"+string(filepath.Separator)) && !strings.HasPrefix(rel, "archived_sessions"+string(filepath.Separator))) {
-		return nil, errors.New("source outside rollout directories")
+	if !inside {
+		return nil, errors.New("source outside the session directories")
 	}
 	st, err := os.Stat(file)
 	if err != nil {
@@ -424,7 +461,7 @@ func (s *Server) readSource(src model.Src) ([]byte, error) {
 		return nil, errors.New("source is not a regular file")
 	}
 	src.File = file
-	return codex.ReadSource(src)
+	return source.ReadSpan(src)
 }
 
 func validJSON(b []byte) []byte {
@@ -486,9 +523,12 @@ func gzipMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// Roots lists the root sessions the index knows, newest first (for command-line tools that walk
+// Roots lists the root sessions of every source, newest first (for command-line tools that walk
 // sessions the way the UI's list does).
-func (s *Server) Roots() []codex.FileMeta { return s.ix.Roots() }
+func (s *Server) Roots() []source.Meta { return s.src.Roots() }
+
+// Sources exposes the session sources (command-line tools).
+func (s *Server) Sources() *source.Multi { return s.src }
 
 // Model gives fn a read-only view of a session's current model, served from the parsed-session
 // cache when its fingerprint still matches and parsed otherwise — the same path as the UI.

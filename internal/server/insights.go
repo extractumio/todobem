@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/extractumio/todobem/internal/codex"
 	"github.com/extractumio/todobem/internal/insights"
 	"github.com/extractumio/todobem/internal/model"
+	"github.com/extractumio/todobem/internal/source"
 	"github.com/extractumio/todobem/internal/store"
 )
 
@@ -39,7 +39,7 @@ func newInsights(s *Server) *insightsSvc {
 	return svc
 }
 
-// scanLoader parses one session for the scanner: a private codex.Session, refreshed once, its
+// scanLoader parses one session for the scanner: a private source.Session, refreshed once, its
 // model cached on disk when closed, never inserted into the server's opened/cached pools.
 type scanLoader struct{ svc *insightsSvc }
 
@@ -49,7 +49,7 @@ func (l scanLoader) Parse(id string) (*model.Session, error) {
 	l.svc.mu.Lock()
 	l.svc.parseFP[id] = fp
 	l.svc.mu.Unlock()
-	sess, err := codex.Open(s.ix, id)
+	sess, err := s.src.Open(id)
 	if err != nil {
 		return nil, err
 	}
@@ -130,11 +130,19 @@ func (svc *insightsSvc) factsFor(id string) (insights.Facts, bool) {
 	return insights.Facts{}, false
 }
 
-// paramsFrom reads the report parameters: cwd, period (7d|30d|90d|all|custom|session), from/to
-// (ms, custom), session (one session), include_live.
+// paramsFrom reads the report parameters: cwd, sources (comma-separated source names; absent =
+// all), period (7d|30d|90d|all|custom|session), from/to (ms, custom), session (one session),
+// include_live.
 func paramsFrom(r *http.Request, now int64) insights.Params {
 	q := r.URL.Query()
 	p := insights.Params{CWD: q.Get("cwd"), IncludeLive: q.Get("include_live") == "1"}
+	if v := q.Get("sources"); v != "" {
+		for _, name := range strings.Split(v, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				p.Sources = append(p.Sources, name)
+			}
+		}
+	}
 	p.Period = insights.Period{Kind: q.Get("period"), Session: q.Get("session")}
 	if p.Period.Kind == "custom" {
 		p.Period.From, _ = strconv.ParseInt(q.Get("from"), 10, 64)
@@ -162,7 +170,7 @@ func (svc *insightsSvc) selectSessions(p insights.Params) selection {
 	s.maybeScan(20 * time.Second)
 	var sel selection
 	for _, sum := range s.summaries() {
-		if p.Period.Kind != "session" && p.CWD != "" && sum.CWD != p.CWD {
+		if p.Period.Kind != "session" && (p.CWD != "" && sum.CWD != p.CWD || !p.HasSource(sum.Source)) {
 			continue
 		}
 		if !p.InPeriod(sum.ID, sum.Updated, sum.Live) {
@@ -290,13 +298,13 @@ func (svc *insightsSvc) handleRules(w http.ResponseWriter) {
 	writeJSON(w, map[string]any{"rules": rules, "groups": insights.GroupOrder, "gap_buckets": insights.GapBucketOrder(), "facts_version": insights.FactsVersion})
 }
 
-// summaries lists the root sessions the index knows, with the opened ones' live state.
+// summaries lists the root sessions of every source, with the opened ones' live state.
 func (s *Server) summaries() []model.SessionSummary {
 	s.mu.Lock()
-	opened := map[string]*codex.Session{}
+	opened := map[string]*source.Session{}
 	for k, v := range s.opened {
 		opened[k] = v
 	}
 	s.mu.Unlock()
-	return codex.Summaries(s.ix, opened)
+	return s.src.Summaries(opened)
 }
