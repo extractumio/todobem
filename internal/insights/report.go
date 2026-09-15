@@ -173,7 +173,7 @@ type Evidence struct {
 }
 
 // GroupOrder is the page order of the groups when exposures tie; not_measured is always last.
-var GroupOrder = []string{GroupYou, GroupAgents, GroupFailures, GroupLongRuns, GroupContext, GroupModels, GroupUnseen}
+var GroupOrder = []string{GroupYou, GroupAgents, GroupFailures, GroupTools, GroupLongRuns, GroupContext, GroupModels, GroupUnseen}
 
 // InPeriod reports whether a session with this last activity and live state belongs to the
 // period. Live sessions never count unless asked for (their numbers move on every refresh).
@@ -355,7 +355,7 @@ func buildCard(d Detector, results []Result, scope *Scope, titles map[string]str
 		for _, x := range all {
 			sessionsWith[x.Session] = true
 			c.Exposure.TimeMs += x.TimeMs
-			c.Exposure.Count++
+			c.Exposure.Count += max(1, x.N)
 			if x.Tokens != nil {
 				if c.Exposure.Tokens == nil {
 					c.Exposure.Tokens = &model.TokenUsage{}
@@ -372,7 +372,7 @@ func buildCard(d Detector, results []Result, scope *Scope, titles map[string]str
 				rows[key] = row
 				rowSessions[key] = map[string]bool{}
 			}
-			row.N++
+			row.N += max(1, x.N)
 			row.TimeMs += x.TimeMs
 			if x.Tokens != nil {
 				if row.Tokens == nil {

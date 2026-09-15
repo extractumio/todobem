@@ -7,10 +7,10 @@
 // Every string a reader sees lives in INSIGHT_TEXT (plain English, rule 10 of the spec): short
 // sentences, common words, numbers with units, "you" and "the agent".
 
-const INSIGHT_GROUPS = ['you_and_the_agent', 'sub_agents', 'failures_and_retries', 'long_tool_runs', 'context_size', 'models_and_effort', 'not_measured'];
+const INSIGHT_GROUPS = ['you_and_the_agent', 'sub_agents', 'failures_and_retries', 'tool_calls', 'long_tool_runs', 'context_size', 'models_and_effort', 'not_measured'];
 // Each group carries one of the timeline's phase colours (app.css variables) so a reader can tell
 // the groups apart on a long page: failures are the error red, long runs the Testing yellow, …
-const INSIGHT_TONES = { you_and_the_agent: 'wait_user', sub_agents: 'wait_worker', failures_and_retries: 'error', long_tool_runs: 'test', context_size: 'compaction', models_and_effort: 'llm', not_measured: 'unknown' };
+const INSIGHT_TONES = { you_and_the_agent: 'wait_user', sub_agents: 'wait_worker', failures_and_retries: 'error', tool_calls: 'code', long_tool_runs: 'test', context_size: 'compaction', models_and_effort: 'llm', not_measured: 'unknown' };
 // ERROR_RED is the timeline's red for failed tool calls and interrupted turns (app.js markers).
 const ERROR_RED = '#d76368';
 function toneColor(id) {
@@ -63,6 +63,7 @@ const INSIGHT_TEXT = {
     you_and_the_agent: { name: 'You and the agent', question: 'How fast do you reply, and what does waiting cost?' },
     sub_agents: { name: 'Sub-agents', question: 'Do sub-agents run in parallel, and what does starting them cost?' },
     failures_and_retries: { name: 'Failures and retries', question: 'What breaks, and how often?' },
+    tool_calls: { name: 'Tool calls', question: 'What did the agent spend its tool calls on, and how many found nothing?' },
     long_tool_runs: { name: 'Long tool runs', question: 'Which commands take the longest, and what keeps running?' },
     context_size: { name: 'Context size', question: 'How big does the context get, and what does compaction cost?' },
     models_and_effort: { name: 'Models and effort', question: 'Which model and effort does each stage use?' },
@@ -168,12 +169,14 @@ const INSIGHT_TEXT = {
     },
     D13: {
       title: 'Commands no rule matched',
-      signal: 'A command the classifier could not match to any rule (phase unknown).',
-      measured: 'The time of each such command, by its first word. The time with no telemetry is a number on the card.',
+      signal: 'A command the classifier could not match to any rule (phase unknown). It may be an opaque script, a Claude Code tool without a mapping, or a command no rule knows.',
+      measured: 'The time of each such command, by its first word. How it splits between scripts, unmapped tools and unmatched commands. The time with no telemetry is a number on the card.',
       happened: c => {
         const s = c.stats || {};
         const top = c.distribution && c.distribution[0];
         const parts = [`${fmt(s.unknown_ms || c.exposure.time_ms)} went to commands that matched no rule.`];
+        const split = [['unknown_script_ms', 'opaque scripts'], ['unknown_tool_ms', 'tools without a mapping'], ['unknown_command_ms', 'unmatched commands']].filter(([k]) => s[k] > 0).map(([k, name]) => `${fmt(s[k])} ${name}`);
+        if (split.length > 1) parts.push(`Of that: ${split.join(', ')}.`);
         if (top) parts.push(`The most common: \`${top.label}\`, ${top.n} ${top.n === 1 ? 'time' : 'times'}.`);
         if (s.no_telemetry_ms) parts.push(`${fmt(s.no_telemetry_ms)} had no telemetry at all.`);
         parts.push(inSessions(c));
@@ -189,26 +192,43 @@ const INSIGHT_TEXT = {
       todo: 'This is a model error, not yours. If it repeats with one tool, check that tool\'s description in your setup.',
     },
     D15: {
-      title: 'Edits that failed',
-      signal: 'A failed edit, patch, script or shell command. Reads and searches that found nothing do not count.',
-      measured: 'The count, by kind.',
+      title: 'Tool calls that failed',
+      signal: 'A failed edit, patch, script, shell, git, code-hosting or network call. Reads and searches that found nothing are answers, not failures. So is a CI status check still pending.',
+      measured: 'The count, by what the call did (editing files, shell, git, …); the command and its kind on each row.',
       happened: c => {
         const top = c.distribution && c.distribution[0];
-        const kind = top ? ` The most common kind: ${top.label}, ${top.n} ${top.n === 1 ? 'time' : 'times'}.` : '';
-        return `${c.exposure.count} edits, patches or scripts failed.${kind} ${inSessions(c)}`;
+        const kind = top ? ` Most often: ${subgroupText(top.label).toLowerCase()}, ${top.n} ${top.n === 1 ? 'time' : 'times'}.` : '';
+        return `${c.exposure.count} tool calls failed.${kind} ${inSessions(c)}`;
       },
-      todo: 'Ask the agent to read the file right before it edits. Keep patches small.',
+      todo: 'For edits: ask the agent to read the file right before it edits, and keep patches small. For shell, git and network calls: the evidence rows name the command.',
+    },
+    D16: {
+      title: 'What the tool calls did',
+      signal: 'Every tool call on the main thread, grouped by what it did. Reading files, searching, editing, git, code hosting, network, shell; build, test, release, infrastructure; sub-agents, polling, hooks.',
+      measured: 'The calls and their exclusive time per group, the same partition as the session breakdown. How many found nothing or failed.',
+      happened: c => {
+        const s = c.stats || {};
+        const rows = (c.distribution || []).slice().sort((a, b) => b.n - a.n);
+        const calls = rows.reduce((n, r) => n + r.n, 0);
+        const misses = Object.keys(s).filter(k => k.startsWith('misses_')).reduce((n, k) => n + s[k], 0);
+        const top = rows.slice(0, 3).map(r => `${subgroupText(r.label).toLowerCase()} ${r.n}`);
+        const head = calls ? `${calls} tool calls on the main thread, ${fmt(c.exposure.time_ms)} of tool time.${top.length ? ` Most of them: ${top.join(', ')}.` : ''}` : 'No tool calls on the main thread.';
+        const miss = misses ? ` ${misses} ${misses === 1 ? 'call' : 'calls'} found nothing (a search with no match, a read of a missing path, a CI status still pending).` : '';
+        return `${head}${miss} ${inSessions(c)}`;
+      },
+      todo: 'Many searches that find nothing, or repeated reads of the same files, mean the agent lacks a map of the code. Keep the project\'s instruction file current and name the files in the prompt.',
     },
     M1: {
       title: 'Model time by model, effort and stage',
       signal: 'The model-output segments of the main thread\'s turns, with the model and effort of each turn.',
-      measured: 'That time, by model and effort. The split by stage comes from the stage each call served.',
+      measured: 'That time, by model and effort. The split by stage comes from the stage each segment served: the nearest tool call in the turn, or the turn\'s signal. Output of turns without any tool call is not a stage and is stated apart.',
       happened: c => {
         const s = c.stats || {};
         const stageName = k => { const key = k.slice(6); const def = typeof LIFECYCLES === 'object' && LIFECYCLES[key]; return def ? def.short : key; };
         const stages = Object.keys(s).filter(k => k.startsWith('stage_') && s[k] > 0).sort((a, b) => s[b] - s[a]).slice(0, 4).map(k => `${stageName(k)} ${fmt(s[k])}`);
         const by = stages.length ? ` By stage: ${stages.join(', ')}.` : '';
-        return `The model spent ${fmt(c.exposure.time_ms)} generating on the main thread${shareText(c)}.${by} ${inSessions(c)}`;
+        const none = s.no_tool_call_ms ? ` ${fmt(s.no_tool_call_ms)} in turns without a tool call (not a stage).` : '';
+        return `The model spent ${fmt(c.exposure.time_ms)} generating on the main thread${shareText(c)}.${by}${none} ${inSessions(c)}`;
       },
       todo: 'You can set the effort per stage and a model per agent role in the harness config.',
     },
@@ -338,6 +358,16 @@ function shareText(c) {
   return ` (of ${fmt(c.share.of_ms)} ${SHARE_OF[c.share.of] || c.share.of}, ${c.share.pct.toFixed(1)} %)`;
 }
 
+// subgroupText names a "phase:subgroup" key the way the session breakdown does ("code:read" →
+// "Reading files"); a bare phase key gets the phase name; anything else is shown as is.
+function subgroupText(key) {
+  const i = key.indexOf(':');
+  const phase = i >= 0 ? key.slice(0, i) : key, sub = i >= 0 ? key.slice(i + 1) : '';
+  const phaseDef = typeof PHASES === 'object' && PHASES[phase];
+  if (!phaseDef) return key;
+  if (sub && typeof subgroupName === 'function') return subgroupName(phase, sub);
+  return phaseDef.name;
+}
 // laneLabel names a lane the way the timeline does: the main thread, or a sub-agent's last path segment.
 function laneLabel(path) {
   if (!path || path === '/root') return typeof MAIN_THREAD === 'string' ? MAIN_THREAD : 'main thread';
@@ -728,7 +758,7 @@ function cardHTML(ins, c, rank) {
       v = Math.round(uncached / x.tokens.input * 100);
       shown = `${100 - v} % cached · ${fmtTok(uncached)} not`;
     }
-    const label = c.rule === 'D7' || c.rule === 'D9' || c.rule === 'D12' ? shapeText(x.label) : x.label.startsWith('/') ? laneLabel(x.label) : x.label;
+    const label = c.rule === 'D7' || c.rule === 'D9' || c.rule === 'D12' ? shapeText(x.label) : c.rule === 'D15' || c.rule === 'D16' ? subgroupText(x.label) : x.label.startsWith('/') ? laneLabel(x.label) : x.label;
     return `<div class="dist-row"><span class="label" title="${esc(x.label)}">${esc(label)}</span><span class="bar" aria-hidden="true"><i style="width:${Math.round(v / maxRow * 100)}%"></i></span><span class="n">${x.n}</span><span class="val">${esc(shown)}${x.sessions > 1 ? ` <small>· ${x.sessions} s.</small>` : ''}</span></div>`;
   }).join('')}</div></div>` : '';
   const all = c.evidence || [];
@@ -804,7 +834,7 @@ function insightsTextSamples() {
       { label: '4 h or more', n: 7, tokens: { input: 1118000, cached: 32000, output: 0 } },
       { label: 'infra docker run', n: 12, sessions: 6, time_ms: 5340000 },
     ],
-    stats: { groups: 9, attempts: 30, context_median: 212000, count_main: 59, count_sub: 81, time_main: 10440000, time_sub: 6360000, starts_after_15m: 25, uncached_after_15m: 5000000, median: 240000, p90: 2460000, unknown_ms: 7080000, no_telemetry_ms: 120000, stage_implement: 15000000, stage_review: 6900000, more_to_start: 3 },
+    stats: { groups: 9, attempts: 30, no_tool_call_ms: 120000, unknown_script_ms: 300000, unknown_tool_ms: 60000, misses_code_search: 41, context_median: 212000, count_main: 59, count_sub: 81, time_main: 10440000, time_sub: 6360000, starts_after_15m: 25, uncached_after_15m: 5000000, median: 240000, p90: 2460000, unknown_ms: 7080000, no_telemetry_ms: 120000, stage_implement: 15000000, stage_review: 6900000, more_to_start: 3 },
   };
   sample.distribution.push({ label: '200 k or more', n: 2, tokens: { input: 5e6, cached: 4.5e6, output: 2e5 } });
   sample.distribution.push({ label: 'read-only sub-agents · m / xhigh', n: 39, tokens: { input: 5e7, cached: 4.9e7, output: 1e6 } });

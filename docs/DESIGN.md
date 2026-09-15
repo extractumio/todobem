@@ -195,7 +195,7 @@ lifecycle × model × effort cells); every rule of the catalogue (`detect_*.go`)
 `Facts → Result{Findings, Measurable, Reason, NoData, Stats}`; `report.go` selects the closed
 sessions of a project whose last activity lies inside the period (live sessions never count),
 aggregates findings per rule and per key (a command shape, a gap bucket, an agent type), computes
-exposure, distribution and the printed denominator, arranges cards in seven groups ordered by
+exposure, distribution and the printed denominator, arranges cards in eight groups ordered by
 exposure on the chosen axis (time; or tokens not from cache + output — cached input and reasoning
 are shown, never weighted) and keeps the ten best evidence rows per card. `Info` cards (long
 breaks, counts, shares) are measurements: shown, never ranked or totalled. No estimate of savings

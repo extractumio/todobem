@@ -19,7 +19,7 @@ between "task given" and "task delivered", what burns tokens, and what to change
 Insights is a new page (`#insights`) that produces a **report for a period** (default: the
 sessions of the last 30 days) over the parsed sessions of one project. It runs a catalogue of
 deterministic pattern detectors, aggregates the findings across sessions, arranges them in
-**seven groups** ordered by measured exposure, and shows each finding as a card: the measured
+**eight groups** ordered by measured exposure, and shows each finding as a card: the measured
 cost, its distribution, what to do, and the evidence — sessions, lanes and intervals, one click
 away in the timeline. The page always says which period the report covers and when it was
 generated; the period can be changed and the report regenerated.
@@ -210,7 +210,7 @@ usage record with zero input is skipped for "last value" reads and harmless for 
 | `Operation.Context int64` on compaction ops | `input_tokens` of the last non-zero `token_count` before the item | D11, T2 |
 | `Operation.Tokens *TokenUsage` on compaction ops — the re-read | first non-zero `token_count` after the item | D11 |
 | `TokenUsage.CacheWrite int64` | `cache_write_input_tokens` | shown with tokens |
-| `Totals.Failed` — **verdict failures only** (in progress in the working tree as `Operation.QueryMiss`, set by `Derive` from `classify.QueryKind`, and `Operation.Failure()`) | a query kind's non-zero exit (`read`, `search`, `list_files`, `git diff --quiet`, `test`/`which` probes: the literal list is `classify.queryKinds`) keeps `status: failed` and `exit` on the op but is a *query miss*, not a failure; `Failure()` is the single predicate every count, filter, retry role and Insights signal uses; a `classify_test.go` / `derive_test.go` case each | D7, D15, the metrics tile |
+| `Totals.Failed` — **verdict failures only** (`Operation.QueryMiss`, set by `Derive` from `classify.QueryKind`, and `Operation.Failure()`; since 2026-09-15 a CI status wait — `gh pr checks`, `gh run watch` — exiting non-zero is a query miss too: the state of CI, not a failed step) | a query kind's non-zero exit (`read`, `search`, `list_files`, `git diff --quiet`, `test`/`which` probes: the literal list is `classify.queryKinds`) keeps `status: failed` and `exit` on the op but is a *query miss*, not a failure; `Failure()` is the single predicate every count, filter, retry role and Insights signal uses; a `classify_test.go` / `derive_test.go` case each | D7, D15, the metrics tile |
 | `SCHEMA.md` `Lane.Active` | documented as "intervals of the lane's own turns" | D4 |
 
 P0 validation (definition of done): on three real sessions, per lane, the reconstructed
@@ -225,7 +225,7 @@ PROTOCOL.md` item 5 changes from "last cumulative" to this reconstruction.
 
 ### 5.1 Groups
 
-Cards are arranged in seven groups. A group is a question a reader can act on; its header shows
+Cards are arranged in eight groups. A group is a question a reader can act on; its header shows
 the group's total exposure on the chosen axis with its denominator, the number of cards, and
 how many sessions had data. Groups are ordered by their exposure on the chosen axis; **Not
 measured** is always last. A group with no cards in the period is shown collapsed with "Nothing
@@ -236,6 +236,7 @@ found in this period" so the reader sees that it was checked.
 | **You and the agent** | How fast do you reply, and what does waiting cost? | D1, D2, D2b, D3, T1 |
 | **Sub-agents** | Do sub-agents run in parallel, and what does starting them cost? | D4, T6 (v1.1: D5) |
 | **Failures and retries** | What breaks, and how often? | D7, D15, D14 (v1.1: D6, D8) |
+| **Tool calls** | What did the agent spend its tool calls on, and how many found nothing? | D16 |
 | **Long tool runs** | Which commands take the longest, and what keeps running? | D9, D12 (v1.1: D10) |
 | **Context size** | How big does the context get, and what does compaction cost? | D11, T2 |
 | **Models and effort** | Which model and effort does each stage use? | M1, T3, T7 |
@@ -349,24 +350,49 @@ response that follows. Shown when ≥ 3 in the period.
 *What happened:* "The model sent 4 tool calls with invalid arguments. The retries cost 0.3 M
 tokens."
 
-**D15 · Edits that failed.** Signal: `failed` ops of kinds `edit`/`apply_patch`/`script-*`/
-`write-file`/`shell` (verdict failures in the `code` phase, invisible to D7 because they carry no
-identity). Exposure: count; the time to the next successful edit of the same path where recorded.
-*What happened:* "17 patches failed to apply in 5 sessions. The next successful edit of the same
-file came 4 m later (median)."
-*What to do:* "Ask the agent to read the file right before it edits. Keep patches small."
-Measured after P0 (the current count is polluted by probe misses).
+**D15 · Tool calls that failed.** Signal: verdict failures in the `code` phase (invisible to D7
+because they carry no identity): a failed edit, patch, written file, script, shell, git,
+code-hosting or network call. Query misses (a search with no match, a read of a missing path) and
+CI status waits (`gh pr checks` / `gh run watch` exiting non-zero while the checks are pending or
+failing, `classify.QueryKind` since 2026-09-15) are answers and never count. Exposure: count,
+keyed by the subgroup of the call (`code:edit`, `code:shell`, `code:vcs`, `code:hosting`,
+`code:network`, `code:mcp`, `code:search`, `code:read` — `classify.Subgroup`, carried on every
+op as `sub`); the evidence row names the command and its kind. Info card.
+*What happened:* "17 tool calls failed. Most often: editing files, 11 times."
+*What to do:* "For edits: ask the agent to read the file right before it edits, and keep patches
+small. For shell, git and network calls: the evidence rows name the command."
+
+**D16 · What the tool calls did.** Signal: every non-background tool call of the main thread
+(model output, waiting for the user and compaction excluded), grouped by phase and subgroup —
+reading files, searching, editing, git, code hosting, network, MCP, shell; build, test, release,
+infrastructure; sub-agents, polling, hooks; unknown scripts, tools and commands. Exposure: the
+calls' exclusive time (the same partition as the session breakdown, so it sums with model time to
+the time in turns), one finding per session and subgroup standing for its calls (`Finding.N`),
+with the query misses and failed steps in the note; stats `calls_<key>`, `misses_<key>`,
+`failed_<key>`. Own group, Info card: a measurement of the mix, never ranked — what the agent
+spent its calls on, never why.
+*What happened:* "1,240 tool calls on the main thread, 4 m of tool time; most of them reading
+files 612, searching & listing 320, editing files 118. 41 calls found nothing (a search with no
+match, a read of a missing path, a CI status still pending)."
+*What to do:* "Many searches that find nothing or repeated reads of the same files mean the agent
+is looking for a map of the code: keep the project's instruction file current and name the files
+in the prompt."
+Measured on the four sessions of the stage rework (2026-09-15): reads 62–97 and searches 28–58
+per Claude Code session, misses 0–3; the Codex fan-out session 97 reads, 51 searches, 54 git
+calls, 29 code-hosting queries.
 
 **M1 · Model time by model, effort and stage.** The largest in-turn phase had no card in
 draft 1: model output was 27 % of in-turn on a real session while every delivery detector looks
 at the waits around it. Since 2026-09-15 that time is distributed over the stages it served (the
-nearest tool call, or the turn's signal), so the card reports it per stage; the `llm` key now
-means only a turn that made no tool call at all. Signal: `llm` segments × `Turn.Model` ×
-`Turn.Effort` × lifecycle stage.
+nearest tool call in the turn, or the turn's signal; a test between two edits serves
+implementation since the composition rule), so the card reports it per stage in `stage_<lc>`;
+the output of turns that made no tool call at all is not a stage and is stated apart as
+`no_tool_call_ms`, and output nearest an unknown command as `unknown_ms`. Signal: `llm`
+segments × `Turn.Model` × `Turn.Effort` × lifecycle stage.
 Exposure: time and `Turn.Tokens` per cell (ms-weighted over the turn's segments). Measurement
 card; no substitution value is computed.
 *What happened:* "All 343 turns used gpt-6-astra at effort xhigh. Model time by stage:
-implementation 4h10m, review 1h55m, test 0h40m."
+implementation 4h10m, review 1h55m, test 0h40m. 3 m in turns without a tool call (not a stage)."
 *What to do:* "You can set the effort per stage and a model per agent role in the harness
 config."
 
@@ -420,9 +446,11 @@ Every delivery detector that owns turns (D3, D4 via `Turn.RootTurn`, D7 via wind
 reports those turns' tokens, so a card shows both numbers and ranks on either axis.
 
 **D13 · Not measured.** Signal: `unknown` and `no_telemetry` time; unknown heads with counts and
-time; orphaned turns. Exposure: time. Own group, always last, never mixed with delivery ranking.
-*What happened:* "1h58m (6.9 % of the session time) is not classified: `mytool` ×41,
-`run-thing` ×17 …"
+time; orphaned turns; the unknown time by subgroup (`unknown_script_ms` an opaque `python3 -`
+/ `node` script, `unknown_tool_ms` a Claude Code tool without a mapping, `unknown_command_ms` a
+command no rule matched). Exposure: time. Own group, always last, never mixed with delivery ranking.
+*What happened:* "1h58m (6.9 % of the session time) is not classified. Of that: 1h30m opaque
+scripts, 28m unmatched commands. The most common: `mytool` ×41, `run-thing` ×17 …"
 *What to do:* "Add rules for these commands in `~/.todobem/rules.json` (the rules file).
 [Copy as prompt] After a rule change, all cached sessions are analyzed again (last full scan:
 64 s)."

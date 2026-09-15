@@ -23,8 +23,8 @@ func rootWithGaps(t *testing.T) *model.Lane {
 		{T: 9 * minute, Kind: "question", Lane: "R", Turn: "t1", Text: "which?"},
 		{T: 2 * minute, Kind: "llm_error", Lane: "R", Turn: "t1", Text: "bad args"},
 	}
-	edit := op("e1", "R", classify.Code, "apply_patch", 3*minute, 3*minute+1, "failed")
-	edit.Turn = "t1"
+	edit := op("e1", "R", classify.Code, "edit", 3*minute, 3*minute+1, "failed")
+	edit.Turn, edit.Title = "t1", "edit x.go"
 	unknown := op("u1", "R", classify.Unknown, "unknown", 4*minute, 6*minute, "completed")
 	unknown.Turn, unknown.Title = "t1", "mytool --run"
 	bg := op("b1", "R", classify.Infra, "docker", 31*minute, 3*hour, "completed")
@@ -76,16 +76,46 @@ func TestRunsUnseenAndModelDetectors(t *testing.T) {
 	if r := detectInvalidToolCalls(&f); len(r.Findings) != 1 || r.Findings[0].A != 2*minute {
 		t.Fatalf("D14 %+v", r.Findings)
 	}
-	if r := detectFailedEdits(&f); len(r.Findings) != 1 || r.Findings[0].Key != "apply_patch" {
+	if r := detectFailedEdits(&f); len(r.Findings) != 1 || r.Findings[0].Key != "code:edit" || r.Findings[0].Note != "edit x.go · edit" {
 		t.Fatalf("D15 %+v", r.Findings)
+	}
+	// D16: every tool call of the main thread by phase and subgroup; the edit failed, the docker
+	// run is a background op (left out), the build and the unknown command count
+	r16 := detectToolCalls(&f)
+	byKey := map[string]Finding{}
+	for _, x := range r16.Findings {
+		byKey[x.Key] = x
+	}
+	if x := byKey["code:edit"]; x.N != 1 || x.Note != "1 call, 1 failed" || x.TimeMs != 1 {
+		t.Fatalf("D16 code:edit %+v (all %+v)", x, r16.Findings)
+	}
+	if x := byKey["build"]; x.N != 1 || x.TimeMs != 5*minute {
+		t.Fatalf("D16 build %+v", x)
+	}
+	if x := byKey["unknown:command"]; x.N != 1 || x.TimeMs != 2*minute {
+		t.Fatalf("D16 unknown:command %+v", x)
+	}
+	if _, ok := byKey["infra"]; ok {
+		t.Fatalf("D16 must leave background ops out: %+v", r16.Findings)
+	}
+	if r16.Stats["calls_code:edit"] != 1 || r16.Stats["failed_code:edit"] != 1 || r16.Stats["misses_code:edit"] != 0 {
+		t.Fatalf("D16 stats %v", r16.Stats)
+	}
+	if r := detectUnknown(&f); r.Stats["unknown_command_ms"] != 2*minute || r.Stats["unknown_script_ms"] != 0 {
+		t.Fatalf("D13 subgroup stats %v", r.Stats)
 	}
 	r := detectModelTime(&f)
 	if len(r.Findings) != 3 || r.Findings[0].Key != "m / high" || r.Findings[0].TimeMs <= 0 {
 		t.Fatalf("M1 %+v", r.Findings)
 	}
+	// the stage split plus the output of turns without a tool call (not a stage) plus the output
+	// nearest an unknown command is the whole model time
 	var stage int64
 	for k, v := range r.Stats {
 		if len(k) > 6 && k[:6] == "stage_" {
+			if k == "stage_llm" || k == "stage_unknown" {
+				t.Fatalf("M1 reports a non-stage as a stage: %s", k)
+			}
 			stage += v
 		}
 	}
@@ -93,8 +123,8 @@ func TestRunsUnseenAndModelDetectors(t *testing.T) {
 	for _, x := range r.Findings {
 		llm += x.TimeMs
 	}
-	if stage != llm {
-		t.Fatalf("M1 stage split %d != llm time %d", stage, llm)
+	if stage+r.Stats["no_tool_call_ms"]+r.Stats["unknown_ms"] != llm {
+		t.Fatalf("M1 split %d + %d + %d != llm time %d", stage, r.Stats["no_tool_call_ms"], r.Stats["unknown_ms"], llm)
 	}
 	if r := detectContextSize(&f); !r.Measurable || len(r.Findings) != 3 || r.Findings[0].Key != "200 k or more" || r.Findings[1].Key != "50-100 k" {
 		t.Fatalf("T2 %+v", r.Findings)

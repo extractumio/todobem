@@ -20,6 +20,7 @@ type Finding struct {
 	Tokens  *model.TokenUsage `json:"tokens,omitempty"`
 	Key     string            `json:"key,omitempty"`  // aggregation key inside the rule (a shape, a bucket, a lane kind)
 	Note    string            `json:"note,omitempty"` // plain-English detail for the evidence row
+	N       int               `json:"n,omitempty"`    // occurrences this finding stands for (default 1): a per-session roll-up
 }
 
 // Result is what one detector says about one session. Measurable is false when the session
@@ -49,6 +50,7 @@ const (
 	GroupYou      = "you_and_the_agent"
 	GroupAgents   = "sub_agents"
 	GroupFailures = "failures_and_retries"
+	GroupTools    = "tool_calls"
 	GroupLongRuns = "long_tool_runs"
 	GroupContext  = "context_size"
 	GroupModels   = "models_and_effort"
@@ -65,7 +67,8 @@ var Catalogue = []Detector{
 	{ID: "D4", Group: GroupAgents, Title: "Sub-agents ran one after another", Run: detectSerialDelegation},
 	{ID: "T6", Group: GroupAgents, Title: "Cost to start a sub-agent", Run: detectSpawnCost},
 	{ID: "D7", Group: GroupFailures, Title: "Commands that fail and get retried", Run: detectRetryLoops},
-	{ID: "D15", Group: GroupFailures, Title: "Edits that failed", Info: true, Run: detectFailedEdits},
+	{ID: "D15", Group: GroupFailures, Title: "Tool calls that failed", Info: true, Run: detectFailedEdits},
+	{ID: "D16", Group: GroupTools, Title: "What the tool calls did", Info: true, Run: detectToolCalls},
 	{ID: "D14", Group: GroupFailures, Title: "Invalid tool calls", Info: true, Run: detectInvalidToolCalls},
 	{ID: "D9", Group: GroupLongRuns, Title: "Long tool runs", Run: detectLongRuns},
 	{ID: "D12", Group: GroupLongRuns, Title: "Processes left running", Run: detectBackground},

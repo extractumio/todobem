@@ -19,7 +19,10 @@ func modelKey(m, effort string) string {
 
 // M1 · Model time by model, effort and stage. Signal: the model-output segments of the main
 // agent's turns. Exposure: that time (the largest in-turn phase), keyed by model and effort;
-// the stage split is in the card's stats. A measurement, actionable through harness settings.
+// the split by the stage each segment served is in the card's stats ("stage_<lc>"), and the
+// output of turns that made no tool call — not a stage — is "no_tool_call_ms". Model output
+// nearest an unknown command counts as "unknown_ms". A measurement, actionable through
+// harness settings.
 func detectModelTime(f *Facts) Result {
 	r := Result{Measurable: true, Stats: map[string]int64{}}
 	for _, t := range f.Turns {
@@ -27,7 +30,14 @@ func detectModelTime(f *Facts) Result {
 			continue
 		}
 		for lc, ms := range t.LLMByLifecycle {
-			r.Stats["stage_"+string(lc)] += ms
+			switch {
+			case classify.IsWorkLifecycle(lc):
+				r.Stats["stage_"+string(lc)] += ms
+			case lc == model.Lifecycle(classify.LLM):
+				r.Stats["no_tool_call_ms"] += ms
+			default:
+				r.Stats["unknown_ms"] += ms // model output nearest an unknown command, or a gap's edge
+			}
 		}
 		top, topMs := model.Lifecycle(""), int64(0)
 		for lc, ms := range t.ByLifecycle {

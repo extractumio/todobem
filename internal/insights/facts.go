@@ -14,7 +14,7 @@ import (
 
 // FactsVersion is bumped whenever Extract's output for the same model changes; a cached facts
 // file with another version is a miss. 3: Source; query misses without an exit code.
-const FactsVersion = 3
+const FactsVersion = 4
 
 // Facts is everything the detectors need about one session, in a few KB.
 type Facts struct {
@@ -39,9 +39,11 @@ type Facts struct {
 	Compactions []CompactionFacts `json:"compactions"`
 	Background  []OpFacts         `json:"background"`
 	LongOps     []OpFacts         `json:"long_ops"`    // longest verdict-phase ops, all lanes
-	Failures    []OpFacts         `json:"failures"`    // failed steps in the code phase (edits, patches, scripts)
+	Failures    []OpFacts         `json:"failures"`    // failed steps in the code phase (edits, shell, git, network …); query misses and CI status waits excluded
 	Unknown     []HeadFacts       `json:"unknown"`     // unknown command heads
 	UnknownOps  []OpFacts         `json:"unknown_ops"` // longest unknown commands (evidence for D13)
+	UnknownMs   map[string]int64  `json:"unknown_ms"`  // unknown time by subgroup (script, tool, command), all lanes
+	ToolCalls   []ToolCallFacts   `json:"tool_calls"`  // the main thread's tool calls by phase and subgroup
 	LLMErrors   int               `json:"llm_errors"`
 	LLMErrorAt  []ErrorAt         `json:"llm_errors_at,omitempty"`
 	Cells       []CellFacts       `json:"cells"` // lane kind × model × effort × lifecycle
@@ -106,8 +108,8 @@ type TurnFacts struct {
 	RootTurn    string                    `json:"root_turn,omitempty"`
 	LLMMs       int64                     `json:"llm_ms"` // model-output segments inside the turn
 	ByLifecycle map[model.Lifecycle]int64 `json:"by_lifecycle,omitempty"`
-	// LLMByLifecycle is the model-output time of the turn by the stage it was attributed to
-	// (the stage-bracket convention); the rest of ByLifecycle is tool and wait time.
+	// LLMByLifecycle is the model-output time of the turn by the stage it served (the nearest
+	// tool call's stage, or the turn's signal); the rest of ByLifecycle is tool and wait time.
 	LLMByLifecycle map[model.Lifecycle]int64 `json:"llm_by_lifecycle,omitempty"`
 }
 
@@ -171,6 +173,7 @@ type OpFacts struct {
 	Lane   int         `json:"lane"`
 	ID     string      `json:"id"`
 	Phase  model.Phase `json:"phase"`
+	Sub    string      `json:"sub,omitempty"` // classify.Subgroup of the op ("" for a phase without subgroups)
 	Kind   string      `json:"kind"`
 	Shape  string      `json:"shape,omitempty"`
 	Title  string      `json:"title"`
@@ -192,6 +195,18 @@ type HeadFacts struct {
 	Head  string `json:"head"`
 	Count int    `json:"count"`
 	Ms    int64  `json:"ms"`
+}
+
+// ToolCallFacts is what the main thread's tool calls of one phase and subgroup did in a session:
+// how many, their exclusive time (the partition, not the raw op sum), how many were query misses
+// (a search that found nothing, a CI status still pending) and how many failed steps.
+type ToolCallFacts struct {
+	Phase  model.Phase `json:"phase"`
+	Sub    string      `json:"sub,omitempty"` // classify.Subgroup; "" for a phase without subgroups
+	Calls  int         `json:"calls"`
+	Ms     int64       `json:"ms"`
+	Misses int         `json:"misses"`
+	Failed int         `json:"failed"`
 }
 
 // CellFacts is time and tokens for one (lane kind, model, effort, lifecycle) cell. Tokens are a
@@ -287,11 +302,66 @@ func Extract(s *model.Session) Facts {
 		f.LongOps = f.LongOps[:40]
 	}
 	f.Unknown = unknownHeads(s)
+	f.UnknownMs = map[string]int64{}
+	for _, l := range s.Lanes {
+		for _, o := range l.Ops {
+			if o.Phase == classify.Unknown && !o.Background {
+				f.UnknownMs[o.Subgroup] += o.End - o.Start
+			}
+		}
+	}
+	f.ToolCalls = toolCallFacts(root)
 	for _, c := range cells {
 		f.Cells = append(f.Cells, *c)
 	}
 	sort.Slice(f.Cells, func(a, b int) bool { return f.Cells[a].Ms > f.Cells[b].Ms })
 	return f
+}
+
+// toolCallFacts counts the main thread's tool calls by phase and subgroup: every non-background
+// op that is not model output, with the exclusive time of the segments it won.
+func toolCallFacts(root *model.Lane) []ToolCallFacts {
+	type key struct {
+		phase model.Phase
+		sub   string
+	}
+	acc := map[key]*ToolCallFacts{}
+	get := func(p model.Phase, sub string) *ToolCallFacts {
+		k := key{p, sub}
+		if acc[k] == nil {
+			acc[k] = &ToolCallFacts{Phase: p, Sub: sub}
+		}
+		return acc[k]
+	}
+	byID := map[string]*model.Operation{}
+	for _, o := range root.Ops {
+		byID[o.ID] = o
+		if o.Background || o.Phase == classify.LLM || o.Phase == classify.WaitUser || o.Phase == classify.Compaction {
+			continue
+		}
+		t := get(o.Phase, o.Subgroup)
+		t.Calls++
+		if o.QueryMiss {
+			t.Misses++
+		} else if o.Failure() {
+			t.Failed++
+		}
+	}
+	for _, sg := range root.Segments {
+		o := byID[sg.Op]
+		if o == nil || o.Background || o.Phase == classify.LLM || o.Phase == classify.WaitUser || o.Phase == classify.Compaction {
+			continue
+		}
+		get(o.Phase, o.Subgroup).Ms += sg.End - sg.Start
+	}
+	out := make([]ToolCallFacts, 0, len(acc))
+	for _, t := range acc {
+		out = append(out, *t)
+	}
+	sort.Slice(out, func(a, b int) bool {
+		return out[a].Calls > out[b].Calls || out[a].Calls == out[b].Calls && string(out[a].Phase)+out[a].Sub < string(out[b].Phase)+out[b].Sub
+	})
+	return out
 }
 
 func isVerdictPhase(p model.Phase) bool {
@@ -565,7 +635,7 @@ func opFacts(lane int, o *model.Operation) OpFacts {
 			kind = kind[:i]
 		}
 	}
-	of := OpFacts{Lane: lane, ID: o.ID, Phase: o.Phase, Kind: kind, Title: o.Title, Start: o.Start, End: o.End, Status: o.Status, Exit: o.Exit, Turn: o.Turn}
+	of := OpFacts{Lane: lane, ID: o.ID, Phase: o.Phase, Kind: kind, Sub: o.Subgroup, Title: o.Title, Start: o.Start, End: o.End, Status: o.Status, Exit: o.Exit, Turn: o.Turn}
 	if o.Identity != "" {
 		of.Shape = Shape(o.Phase, o.Identity)
 	} else {
