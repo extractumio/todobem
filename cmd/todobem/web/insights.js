@@ -1,5 +1,5 @@
 'use strict';
-// The Insights page: a period report over the sessions of one project (docs/INSIGHTS-SPEC.md
+// The Insights page: a period report over the sessions of one project (docs/ARCHITECTURE.md §10
 // §7). This file defines functions and the text table only; every other name it uses ($, esc,
 // fmt, fmtTok, stamp, icon, state, api, go, toast, focusInterval, loadSessions, MONTHS, …) is an
 // app.js global resolved at call time, so load order does not matter.

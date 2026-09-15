@@ -12,7 +12,7 @@ import (
 // the same total), the counter restarts when a thread is resumed, a forked child starts from its
 // parent's total, and all-zero / info:null records surround compactions. A call is therefore
 // COUNTED when the total is positive and differs from the last counted total; the lane's usage
-// is the sum of the counted calls (docs/SCHEMA.md "tokens").
+// is the sum of the counted calls (docs/ARCHITECTURE.md §2.1).
 //
 // Every counted call is also attributed to the open turn (Turn.Tokens, Responses, First,
 // ContextPeak) and, when a compaction is waiting for its first call, to that compaction op

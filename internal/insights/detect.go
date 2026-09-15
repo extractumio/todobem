@@ -34,7 +34,7 @@ type Result struct {
 	Stats      map[string]int64 `json:"stats,omitempty"` // rule-specific numbers, summed over sessions by the report
 }
 
-// Detector is one rule of the catalogue (docs/INSIGHTS-SPEC.md §5).
+// Detector is one rule of the catalogue (docs/ARCHITECTURE.md §10.2).
 type Detector struct {
 	ID    string
 	Group string

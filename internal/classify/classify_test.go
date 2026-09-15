@@ -322,7 +322,7 @@ func TestInfraIdentityAllowlist(t *testing.T) {
 
 func TestCIStatusWaitIsAQuery(t *testing.T) {
 	// gh pr checks / gh run watch exit non-zero while the checks are pending or failing: the
-	// state of CI, not a failed step of this agent (docs/SCHEMA.md query_miss)
+	// state of CI, not a failed step of this agent (docs/ARCHITECTURE.md §4.2)
 	for _, kind := range []string{"ci", "ci|worker_queue"} {
 		if !QueryKind(WaitWorker, kind) {
 			t.Errorf("wait_worker/%s must be a query kind", kind)

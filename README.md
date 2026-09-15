@@ -242,19 +242,19 @@ ports.
 * **Conversation** — user messages, questions to the user and final answers, verbatim.
 * **Agents** — one row per lane with active time, turns, ops, tool work.
 * **Insights** — a report for a period (default: the last 30 days) over the sessions of one
-  project: where the time and the tokens went, in seven groups (you and the agent, sub-agents,
-  failures and retries, long tool runs, context size, models and effort, not measured). Every card
+  project: where the time and the tokens went, in eight groups (you and the agent, sub-agents,
+  failures and retries, tool calls, long tool runs, context size, models and effort, not measured). Every card
   comes from one deterministic rule over the parsed sessions, shows what the pattern cost, how it
   is spread, what to do, and links to the evidence in the timeline. No estimates of savings, no
   cause guessed from a duration; sessions that cannot carry a signal are listed as "no data".
   Change the period (7 / 30 / 90 days, all time, custom dates, one session), pick the project,
   order by time or by tokens, and **Analyze** the sessions that are not parsed yet. Plain English
-  throughout. Design and rules: `docs/INSIGHTS-SPEC.md`.
+  throughout. Design and rules: `docs/ARCHITECTURE.md` §10.
 
 ## How it decides
 
-Documented in `docs/SCHEMA.md` (normalized event schema) and `docs/DESIGN.md` (research on the
-rollout format, classification rules, incremental ingestion). Short version:
+Documented in `docs/ARCHITECTURE.md` (the schema, the log formats, classification, derivation,
+the stage detection mechanism). Short version:
 
 * Turn boundaries (`task_started` / `task_complete`) give waiting-for-user time. Inside a turn,
   time not covered by a tool operation is LLM time (the model generating). A turn that never closed becomes

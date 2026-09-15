@@ -15,9 +15,9 @@ coverage.*
 /export*.json
 *.log
 
-# Validation reports quote real sessions verbatim; they stay local (summary: docs/VALIDATION.md)
+# Validation reports quote real sessions verbatim; they stay local (the protocol: docs/ARCHITECTURE.md §11)
 /docs/validation-reports/
-# Russian draft; goes public only as an English docs/ARCHITECTURE.md
+# Russian draft of the architecture; the public document is docs/ARCHITECTURE.md
 /docs/ARCHITECTURE.html
 
 # Editors and OS

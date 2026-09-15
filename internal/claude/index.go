@@ -1,6 +1,6 @@
 // Package claude reads Claude Code session logs and turns them into the normalized model
 // (internal/model) through the shared joiner (internal/source). Verified against CLI 2.1.226 →
-// 2.1.270 (docs/DESIGN.md §1b).
+// 2.1.270 (docs/ARCHITECTURE.md §2.2).
 //
 // Layout of a Claude home (~/.claude): projects/<project>/<session-id>.jsonl is a root
 // session; projects/<project>/<session-id>/subagents/agent-<id>.jsonl is a sub-agent spawned
@@ -595,7 +595,7 @@ func (ix *Index) fileMeta(id string) (fileMeta, bool) {
 
 // Descendants returns the sub-agent files of a root session, by start then path. Every agent
 // file sits directly under the root's subagents/ folder, a nested agent's too: the tree is
-// flat (docs/DESIGN.md §1b).
+// flat (docs/ARCHITECTURE.md §2.2).
 func (ix *Index) Descendants(rootID string) []source.Meta {
 	files := ix.descendants(rootID)
 	out := make([]source.Meta, len(files))

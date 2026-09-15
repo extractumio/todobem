@@ -1,5 +1,5 @@
 'use strict';
-/* todobem SPA. Data comes from /api/* (see docs/SCHEMA.md). All times are Unix ms.
+/* todobem SPA. Data comes from /api/* (see docs/ARCHITECTURE.md §3). All times are Unix ms.
    Aggregates use the root lane's exclusive partition; sub-agent time is shown separately. */
 const LIST_CHUNK = 60; // operations rendered per scroll step
 // BAND is the height of the stage band at the top of every lane row: the tinted run of one SDLC
@@ -66,7 +66,7 @@ const SUBGROUPS = {
   unknown: { script: 'Unclassified scripts', tool: 'Unmapped tools', command: 'Unmatched commands' },
 };
 const subgroupName = (phase, sub) => (SUBGROUPS[phase] || {})[sub] || sub;
-// SDLC lifecycle stages: the second exclusive partition of a lane's time (docs/SCHEMA.md
+// SDLC lifecycle stages: the second exclusive partition of a lane's time (docs/ARCHITECTURE.md §6
 // "Lifecycle"). Phase says what a tool call was; lifecycle says which stage of the software
 // lifecycle it served. The eight work stages come first in lifecycle order; non-work time
 // passes through under its phase name and reuses that phase's colour.

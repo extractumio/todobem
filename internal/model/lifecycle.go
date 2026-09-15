@@ -9,7 +9,7 @@ import (
 )
 
 // assignLifecycle fills the second partition of a lane: every op, turn and segment gets the
-// SDLC stage it served (docs/SCHEMA.md "Lifecycle"). It runs after buildSegments, on the
+// SDLC stage it served (docs/ARCHITECTURE.md §6). It runs after buildSegments, on the
 // exclusive partition it produced, so sum(by_lifecycle) == sum(by_phase) by construction.
 // parent is the lane this one was spawned from (nil for the root); its turns are already
 // assigned because Derive walks the lanes parents first.

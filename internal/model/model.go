@@ -1,4 +1,4 @@
-// Package model is the source-agnostic normalized schema (see docs/SCHEMA.md).
+// Package model is the source-agnostic normalized schema (see docs/ARCHITECTURE.md §3).
 package model
 
 import "github.com/extractumio/todobem/internal/classify"
@@ -6,7 +6,7 @@ import "github.com/extractumio/todobem/internal/classify"
 type Phase = classify.Phase
 
 // Lifecycle is the SDLC stage a segment served (classify.Lifecycle): the second exclusive
-// partition of a lane's time, orthogonal to Phase. See docs/SCHEMA.md "Lifecycle".
+// partition of a lane's time, orthogonal to Phase. See docs/ARCHITECTURE.md §6.
 type Lifecycle = classify.Lifecycle
 
 // Src points at the exact source line of an event so the inspector can show it.

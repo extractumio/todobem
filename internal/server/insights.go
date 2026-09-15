@@ -18,7 +18,7 @@ import (
 // per-session facts. Facts come, in order, from an open parser-backed session, memory, the
 // facts sidecar, or the model cache (extracted and saved); sessions with none of these are
 // "pending" and are parsed only when the user asks (POST scan), on a dedicated path that never
-// touches the server's session pools (docs/INSIGHTS-SPEC.md §6).
+// touches the server's session pools (docs/ARCHITECTURE.md §10.3).
 type insightsSvc struct {
 	srv     *Server
 	scanner *insights.Scanner

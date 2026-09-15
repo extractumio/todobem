@@ -324,8 +324,6 @@ func buildSegments(l *Lane, isRoot bool, now int64) {
 	}
 }
 
-// ---- stages: think attributed to the next tool op inside the same turn, then coalesced
-
 // activeIntervals: for sub-agents, the turns are the active periods.
 func activeIntervals(l *Lane) []Interval {
 	out := []Interval{}

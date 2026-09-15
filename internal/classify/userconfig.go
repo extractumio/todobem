@@ -26,7 +26,7 @@ import (
 //	  "lifecycle": {
 //	    "skills": {"review": ["audit-.*", "my-review"], "plan": ["^brainstorm$"]},
 //	    "roles":  {"review": ["^pragmatic$"]},
-//	    "paths":  {"design": ["(^|/)docs/DESIGN\\.md$"], "requirements": ["(^|/)SPEC\\.md$"]}
+//	    "paths":  {"design": ["(^|/)docs/ARCHITECTURE\\.md$"], "requirements": ["(^|/)SPEC\\.md$"]}
 //	  }
 //	}
 //

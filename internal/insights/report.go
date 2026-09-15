@@ -11,7 +11,7 @@ import (
 )
 
 // Period selects the sessions of a report: closed sessions whose last activity lies inside
-// [From, To] (docs/INSIGHTS-SPEC.md §6 "Period"). Relative kinds are resolved at build time.
+// [From, To] (docs/ARCHITECTURE.md §10.3). Relative kinds are resolved at build time.
 type Period struct {
 	Kind    string `json:"kind"` // 1d | 7d | 30d | 90d | all | custom | session
 	From    int64  `json:"from"` // ms, inclusive

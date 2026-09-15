@@ -1,5 +1,5 @@
 // Package insights turns parsed sessions into ranked, evidence-backed findings about where a
-// harness loses time and tokens (docs/INSIGHTS-SPEC.md). Facts is the compact per-session
+// harness loses time and tokens (docs/ARCHITECTURE.md §10). Facts is the compact per-session
 // record the detectors read; Extract builds it from a derived model.Session and is a pure
 // function of it. Nothing here reads a rollout, infers a cause or uses a duration threshold.
 package insights

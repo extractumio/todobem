@@ -3,8 +3,8 @@
 todobem is a wall-clock profiler for AI coding-agent sessions: a flight-recorder playback of
 what the agents did and where the hours went. *Check what your agents did while you were sleeping.*
 Binding on every contributor, human or AI (`AGENTS.md` symlinks here); every rule is a MUST
-unless stated otherwise. Read `docs/DESIGN.md` and `docs/SCHEMA.md` before touching
-classification or derivation.
+unless stated otherwise. Read `docs/ARCHITECTURE.md` before touching classification or
+derivation.
 
 ## What it is
 
@@ -30,7 +30,7 @@ written by the Settings page, applied live; a key absent → that source's defau
 given). A user rules overlay
 (`-rules`/`$TODOBEM_RULES`/`~/.todobem/rules.json`) adds project-specific commands and
 review/plan skill names, reviewer agent roles and document paths that pin a lifecycle stage; see
-`docs/SCHEMA.md`. Parsed sessions are cached to disk (`-cache`/`$TODOBEM_CACHE`, `off` to
+`docs/ARCHITECTURE.md` §4.5. Parsed sessions are cached to disk (`-cache`/`$TODOBEM_CACHE`, `off` to
 disable). `make`/`scripts/deploy.sh` build and run it.
 
 ## Repository map — where to look, where to change
@@ -54,20 +54,20 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
 - `internal/codex/` — the Codex adapter. `index.go` reads first lines (`session_meta`) into an
   in-memory index (the Codex `Source`); `reader.go` types lines by prefix and skips multi-MB
   lines undecoded; `lane.go` turns one rollout file into a lane (turns, ops, markers);
-  `tokens.go` the per-call token accounting. Design: `docs/DESIGN.md` §1, §4.
+  `tokens.go` the per-call token accounting. Design: `docs/ARCHITECTURE.md` §2.1, §7.1.
 - `internal/claude/` — the Claude Code adapter. `index.go` walks `projects/<project>/` (a bounded
   head scan for cwd / version / title, a tail scan for the last answer, `agent-*.meta.json` for
   sub-agents); `lane.go` the turn state machine (prompt line → deferred close at the last
   `end_turn` block, stop hooks inside the turn, interrupts, slash commands, tokens once per
-  message); `tools.go` the tool-name → operation mapping. Design: `docs/DESIGN.md` §1b.
+  message); `tools.go` the tool-name → operation mapping. Design: `docs/ARCHITECTURE.md` §2.2.
 - `internal/classify/` — `Rules` in `classify.go` is the single source of truth for command →
   phase/kind (served at `/api/rules`), plus the heredoc and remote/queued regexes right below
   it; `shell.go` splits commands and masks heredocs; `Identity` normalizes commands for retry
   groups; `lifecycle.go` holds the SDLC-stage type, the phase → stage defaults, the change
   kinds, the kind pins and the skill / role / path matchers; `subgroup.go` the breakdown
   sub-rows (phase, kind → subgroup); `userconfig.go` the overlay. Definitions:
-  `docs/SCHEMA.md`, `docs/DESIGN.md` §2.
-- `internal/model/` — `model.go` is the normalized schema (`docs/SCHEMA.md`); `derive.go`
+  `docs/ARCHITECTURE.md` §3, §4.
+- `internal/model/` — `model.go` is the normalized schema (`docs/ARCHITECTURE.md` §3); `derive.go`
   builds the exclusive partition, stages, retry groups, background flags and totals;
   `lifecycle.go` assigns the second partition (lane role → turn signal and skill runs → inherited
   → op pin → the turn's composition: the plan run and the change window → phase default; the
@@ -83,7 +83,7 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
   (5-minute window, single use, refused when minted before the server booted), stateless
   HMAC-signed sessions; token and session MACs are domain-separated. `todobem token` lives in
   `cmd/todobem/main.go`.
-- `internal/insights/` — the Insights report (`docs/INSIGHTS-SPEC.md`): `facts.go` extracts a
+- `internal/insights/` — the Insights report (`docs/ARCHITECTURE.md` §10): `facts.go` extracts a
   compact per-session `Facts` from the model (pure; never reads a rollout); `detect_*.go` hold the
   rule catalogue, one pure function per rule (`Facts → Result`); `report.go` selects the period's
   sessions, aggregates per rule and key, ranks groups and cards; `scan.go` parses pending sessions
@@ -103,20 +103,21 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
   the cache when its fingerprint (source files + a hash of the effective classifier) still matches;
   a grown file or a rule change auto-invalidates it; the Refresh button forces a full re-parse.
   Cache is derived, local, gitignored, safe to delete; `todobem cache -prune` drops the entries
-  the current codex home does not list. Design: `docs/DESIGN.md` §4.
-- `docs/` — `DESIGN.md` (format research, design, review outcomes), `SCHEMA.md` (schema, phases,
-  kinds), `VALIDATION-PROTOCOL.md` + `VALIDATION.md` (ground-truth checks), `REVIEW*` (history).
-- A new rule: a row in `Rules`, a case in `classify_test.go`, `SCHEMA.md` if a phase or kind
-  changes; a stage pin goes in `LifecyclePins` with a case in `userconfig_test.go`. A new Claude
-  Code tool: a case in `internal/claude/tools.go` with a fixture in `lane_test.go` and a row in
-  `SCHEMA.md` (an unmapped tool is `unknown/tool:<name>`, which is honest). A new insight:
+  the current codex home does not list. Design: `docs/ARCHITECTURE.md` §7.1.
+- `docs/ARCHITECTURE.md` — the one document: components, schema, algorithms, the stage and
+  operation detection mechanism, the validation protocol, the decision record. Keep it current
+  in the same change that alters what it describes; validation reports stay local (gitignored).
+- A new rule: a row in `Rules`, a case in `classify_test.go`, `docs/ARCHITECTURE.md` §3 if a
+  phase or kind changes; a stage pin goes in `LifecyclePins` with a case in
+  `userconfig_test.go`. A new Claude Code tool: a case in `internal/claude/tools.go` with a fixture in `lane_test.go` and a row in
+  `docs/ARCHITECTURE.md` §2.2 (an unmapped tool is `unknown/tool:<name>`, which is honest). A new insight:
   a `Detector` in `internal/insights/detect_*.go` (a literal signal, no duration threshold that
   explains anything, no estimate), a positive and a negative fixture, a text entry in
-  `INSIGHT_TEXT` written in plain English, a row in `docs/INSIGHTS-SPEC.md` §5. A new source: a
+  `INSIGHT_TEXT` written in plain English, a row in `docs/ARCHITECTURE.md` §10.2. A new source: a
   package under `internal/` emitting `model.*` only, implementing `source.Source` with a
   `LaneParser` per file, registered in `server.NewWithCache` and `cmd/dump`, with a name and mark
   in `filter.js` `SOURCES` and a section in `settings.js`. A schema change: `model.go`,
-  `SCHEMA.md`, `app.js` and `cmd/dump` together.
+  `docs/ARCHITECTURE.md` §3, `app.js` and `cmd/dump` together.
 
 ## Product rules — every number's credibility rests on these
 
@@ -183,7 +184,7 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
 - `gofmt -l .` empty, `go vet ./...`, `go test ./...`, `node --test cmd/todobem/app_test.js`
   green; then `go run ./cmd/dump <root-thread-id>` on several recent sessions of both sources:
   no `partition mismatch`, no new `unknown` heads. Classifier changes also pass
-  `docs/VALIDATION-PROTOCOL.md`.
+  `docs/ARCHITECTURE.md` §11 (the validation protocol).
 - UI changes: exercise the real page in a browser (session list, timeline, brush, inspector,
   Follow mode) and check the console. Tests and source reading do not replace this.
 - Report what changed, why, how it was verified, what was excluded and **Noticed, not fixed** —

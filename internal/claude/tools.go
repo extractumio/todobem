@@ -13,7 +13,7 @@ import (
 )
 
 // Tool calls → operations. Every Claude Code tool call is a literal tool_use block with a
-// name and a JSON input; the mapping below is by name only (docs/SCHEMA.md "Kinds"):
+// name and a JSON input; the mapping below is by name only (docs/ARCHITECTURE.md §2.2):
 //
 //	Bash                       → the command classifier (the same table as Codex commands)
 //	Edit/Write/NotebookEdit    → code/edit (+ the edited path's lifecycle pin)

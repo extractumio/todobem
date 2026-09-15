@@ -100,7 +100,7 @@ func IsChangeOp(phase Phase, kind string) bool {
 // (the kind must be unique to the commands it pins). Review verbs on a PR/MR are review work
 // even though the phase stays release. Log reading, service control and system diagnostics are
 // operations candidates: model.Derive demotes them to implementation before the lane's first
-// release op (an order rule, like the change window — see docs/SCHEMA.md). An overlay rule with a
+// release op (an order rule, like the change window — see docs/ARCHITECTURE.md §6.3). An overlay rule with a
 // "lifecycle" value adds its kind here.
 var LifecyclePins = map[string]Lifecycle{
 	"pr review": LcReview, "pr comment": LcReview, "mr approve": LcReview, "mr note": LcReview,
