@@ -548,7 +548,7 @@ function lifecycleRingHTML(m) {
   const lc = (m.totals && m.totals.by_lifecycle) || {};
   const stages = LIFECYCLE_ORDER.filter(k => LIFECYCLES[k].work); // the eight, in lifecycle order
   const abbr = { plan: 'Plan', requirements: 'Reqs', design: 'Design', implement: 'Impl', review: 'Review', test: 'Test', release: 'Rel', operate: 'Ops' };
-  const cx = 118, cy = 100, R = 70, r = 18, N = stages.length;
+  const cx = 128, cy = 106, R = 70, r = 18, N = stages.length; // labels sit 8 px clear of the discs; the viewBox leaves room for them
   const base = i => -Math.PI / 2 + i * 2 * Math.PI / N;
   const at = (a, rad) => [cx + rad * Math.cos(a), cy + rad * Math.sin(a)];
   const gap = (r + 7) / R;
@@ -561,7 +561,7 @@ function lifecycleRingHTML(m) {
     const k = stages[i], def = LIFECYCLES[k], ms = lc[k] || 0, pct = ms / total * 100, on = ms > 0;
     const [x, y] = at(base(i), R);
     const label = !on ? '0' : pct < 1 ? '<1%' : Math.round(pct) + '%';
-    const [lx, ly] = at(base(i), R + 21);
+    const [lx, ly] = at(base(i), R + r + 8);
     const anchor = lx < cx - 4 ? 'end' : lx > cx + 4 ? 'start' : 'middle';
     const dy = ly < cy - R + 2 ? -1 : ly > cy + R - 2 ? 8 : 3;
     const title = `${def.name} · ${on ? fmt(ms) + ' · ' + pct.toFixed(1) + '%' : 'not used'}`;
@@ -581,7 +581,7 @@ function lifecycleRingHTML(m) {
       `<text x="${x.toFixed(1)}" y="${(y + 3.5).toFixed(1)}" text-anchor="middle" class="lc-pct${on ? '' : ' off'}">${label}</text>` +
       `<text x="${lx.toFixed(1)}" y="${(ly + dy).toFixed(1)}" text-anchor="${anchor}" class="lc-name">${abbr[k]}</text></g>`;
   }
-  return `<figure class="lifecycle-ring" aria-label="SDLC lifecycle: each stage's share of session time"><svg viewBox="0 0 236 200" preserveAspectRatio="xMidYMid meet" role="img"><defs><marker id="lcArrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto"><path d="M0 1L9 5L0 9z" fill="var(--line)"/></marker></defs><circle cx="${cx}" cy="${cy}" r="${R}" fill="none" stroke="var(--line-soft)" stroke-width="1"/>${arcs}${nodes}<text x="${cx}" y="${cy - 4}" text-anchor="middle" class="lc-hub">SDLC</text><text x="${cx}" y="${cy + 9}" text-anchor="middle" class="lc-hub-sub">lifecycle</text></svg><figcaption>Share of session by stage</figcaption></figure>`;
+  return `<figure class="lifecycle-ring" aria-label="SDLC lifecycle: each stage's share of session time"><svg viewBox="0 0 256 212" preserveAspectRatio="xMidYMid meet" role="img"><defs><marker id="lcArrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto"><path d="M0 1L9 5L0 9z" fill="var(--line)"/></marker></defs><circle cx="${cx}" cy="${cy}" r="${R}" fill="none" stroke="var(--line-soft)" stroke-width="1"/>${arcs}${nodes}<text x="${cx}" y="${cy - 4}" text-anchor="middle" class="lc-hub">SDLC</text><text x="${cx}" y="${cy + 9}" text-anchor="middle" class="lc-hub-sub">lifecycle</text></svg><figcaption>Share of session by stage</figcaption></figure>`;
 }
 function sessionSummary() {
   const m = current(), r = root(), last = r.turns[r.turns.length - 1];

@@ -155,8 +155,8 @@ main{padding:22px 28px 40px;display:flex;flex-direction:column;gap:24px;max-widt
 .lifecycle-ring{margin:0;background:var(--surface);border-radius:9px;padding:8px 10px 4px;display:flex;flex-direction:column;align-items:center;justify-content:center}
 .lifecycle-ring svg{width:100%;height:auto;display:block}
 .lifecycle-ring figcaption{font-size:11px;color:var(--subtle);text-align:center;margin-top:2px}
-.lifecycle-ring .lc-pct{font-size:11px;font-weight:700;font-variant-numeric:tabular-nums;fill:#fff;paint-order:stroke fill;stroke:#10202b;stroke-width:2.4px;stroke-linejoin:round}
-.lifecycle-ring .lc-pct.off{fill:var(--subtle);stroke:none}
+.lifecycle-ring .lc-pct{font-size:9px;font-weight:700;font-variant-numeric:tabular-nums;fill:#fff}
+.lifecycle-ring .lc-pct.off{fill:var(--subtle)}
 .lifecycle-ring .lc-name{font-size:8.5px;font-weight:600;fill:var(--subtle)}
 .lifecycle-ring .lc-hub{font-size:12px;font-weight:700;fill:var(--muted);letter-spacing:.5px}
 .lifecycle-ring .lc-hub-sub{font-size:8px;fill:var(--subtle);letter-spacing:.5px;text-transform:uppercase}
