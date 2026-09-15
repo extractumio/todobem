@@ -172,6 +172,11 @@ func collectUnknown(srv *server.Server, ids []string, withOps bool) unknownRepor
 						cmd = o.Title
 					}
 					head := classify.Head(cmd)
+					if strings.HasPrefix(o.Kind, "tool:") {
+						// a Claude Code tool without a mapping is named by the tool, not by the
+						// first word of its JSON input
+						head = strings.TrimPrefix(o.Kind, "tool:")
+					}
 					if head == "" {
 						head = o.Title
 					}

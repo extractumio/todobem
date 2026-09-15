@@ -323,3 +323,30 @@ func TestPendingUserQuestionLiveTailIsWaitUser(t *testing.T) {
 		t.Fatal("an open turn with no recorded activity should stay no_telemetry")
 	}
 }
+
+// A sub-agent whose file stopped mid-turn after the root closed is not live: its turn is
+// orphaned at its last evidence, the session's end is the root's, and no telemetry gap grows
+// until now. While the root is live, the sub-agent stays live.
+func TestSubAgentOpenTurnAfterRootClosedIsOrphaned(t *testing.T) {
+	mk := func(rootStatus string) *Session {
+		root := &Lane{ID: "R", Path: "/root", Started: 0, Ended: 1000, Turns: []*Turn{{ID: "t1", Start: 0, End: 1000, Status: rootStatus}}}
+		sub := &Lane{ID: "S", Path: "/root/a", Parent: "R", Depth: 1, Started: 100, Ended: 600, Turns: []*Turn{{ID: "u1", Start: 100, End: 600, Status: "open"}}}
+		sub.Ops = []*Operation{{ID: "g", Lane: "S", Turn: "u1", Phase: classify.Code, Kind: "read", Start: 200, End: 300, Status: "completed"}}
+		return &Session{ID: "s", Lanes: []*Lane{root, sub}}
+	}
+	s := mk("completed")
+	Derive(s, 100000)
+	sub := s.Lanes[1]
+	if sub.Live || sub.Turns[0].Status != "orphaned" || sub.Ended != 600 || s.Ended != 1000 || s.Live {
+		t.Fatalf("closed root: live=%v status=%q ended=%d session ended=%d live=%v", sub.Live, sub.Turns[0].Status, sub.Ended, s.Ended, s.Live)
+	}
+	if sub.ByPhase["no_telemetry"] != 0 {
+		t.Fatalf("no telemetry gap must not grow after the root closed: %v", sub.ByPhase)
+	}
+	s = mk("open")
+	Derive(s, 100000)
+	sub = s.Lanes[1]
+	if !sub.Live || sub.Turns[0].Status != "open" || sub.Ended != 100000 || !s.Live {
+		t.Fatalf("live root: live=%v status=%q ended=%d session live=%v", sub.Live, sub.Turns[0].Status, sub.Ended, s.Live)
+	}
+}

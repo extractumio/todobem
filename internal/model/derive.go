@@ -35,8 +35,17 @@ func Derive(s *Session, now int64) {
 	}
 	root := s.Lanes[0]
 	s.Live = false
+	openLast := func(l *Lane) bool { return len(l.Turns) > 0 && l.Turns[len(l.Turns)-1].Status == "open" }
+	rootLive := openLast(root)
 	for _, l := range s.Lanes {
-		l.Live = len(l.Turns) > 0 && l.Turns[len(l.Turns)-1].Status == "open"
+		l.Live = openLast(l)
+		if l.Live && l != root && !rootLive {
+			// a sub-agent's file stopped mid-turn and the root has since closed its turn: the
+			// harness stopped the agent and nothing more will be written. An orphaned turn ending
+			// at its last evidence, not a live lane whose telemetry gap grows until now.
+			l.Turns[len(l.Turns)-1].Status = "orphaned"
+			l.Live = false
+		}
 		if l.Live && l.Ended < now {
 			l.Ended = now
 		}
