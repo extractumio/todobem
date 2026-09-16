@@ -102,6 +102,11 @@ func TestCommand(t *testing.T) {
 		{"./dev ci-push origin main", Release, "release-flag"},
 		{"./dev worktree create mysql-fixture-startup origin/main", Code, "vcs-subcommand"},
 		{"./dev build", Build, "build-flag"},
+		{"./dev typecheck", Test, "test-flag"}, // a type check verifies; it sits with npm run typecheck, not with build
+		// tsc emits JavaScript (build); with --noEmit it only checks types (test outranks the word rule)
+		{"tsc", Build, "tsc"}, {"npx tsc -p tsconfig.json", Build, "tsc"},
+		{"tsc --noEmit", Test, "typecheck"}, {"npx tsc --noEmit -p tsconfig.json", Test, "typecheck"},
+		{"cd web && tsc -p . --noEmit --pretty false 2>&1 | head -50", Test, "typecheck"},
 		// First positional that is a read stays code, not work; unknown-first-word stays unknown.
 		{"./dev status", Unknown, "unknown"}, // read-only first word: not forced to a work phase
 		{"./dev integration pair sqlite/nocodb-sqli", Unknown, "unknown"},

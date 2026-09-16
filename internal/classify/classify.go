@@ -156,7 +156,7 @@ var Rules = []Rule{
 	{"make run", Infra, "service", ""}, {"make serve", Infra, "service", ""}, {"make dev", Infra, "service", ""}, {"make start", Infra, "service", ""}, {"make up", Infra, "service", ""},
 	{"make clean", Infra, "cleanup", ""}, {"make deploy", Release, "deploy", ""}, {"make release", Release, "deploy", ""}, {"make install", Build, "make", ""},
 	{"cmake", Build, "cmake", ""}, {"ninja", Build, "ninja", ""},
-	{"tsc", Build, "tsc", ""}, {"npx tsc", Build, "tsc", ""}, {"vite build", Build, "vite", ""}, {"esbuild", Build, "esbuild", ""},
+	{"tsc", Build, "tsc", "emits JavaScript"}, {"npx tsc", Build, "tsc", ""}, {"seg:^(npx\\s+)?tsc\\b.*\\s--noEmit\\b", Test, "typecheck", "tsc --noEmit: a type check, nothing is emitted (test outranks the build word rule)"}, {"vite build", Build, "vite", ""}, {"esbuild", Build, "esbuild", ""},
 	{"docker build", Build, "docker build", ""}, {"docker compose build", Build, "docker build", ""}, {"docker buildx", Build, "docker build", ""},
 	{"gradle", Build, "gradle", ""}, {"mvn", Build, "mvn", ""},
 
@@ -909,7 +909,7 @@ func isLocalScript(head string) bool {
 // Only unambiguous verbs are listed; read-ish words (check/verify/status/list/integration) are
 // deliberately absent — an honest unknown beats a wrong build/test.
 var dispatcherVerbs = map[string]Rule{
-	"build": {Phase: Build, Kind: "build-flag"}, "compile": {Phase: Build, Kind: "build-flag"}, "bundle": {Phase: Build, Kind: "build-flag"}, "rebuild": {Phase: Build, Kind: "build-flag"}, "package": {Phase: Build, Kind: "build-flag"}, "typecheck": {Phase: Build, Kind: "build-flag"},
+	"build": {Phase: Build, Kind: "build-flag"}, "compile": {Phase: Build, Kind: "build-flag"}, "bundle": {Phase: Build, Kind: "build-flag"}, "rebuild": {Phase: Build, Kind: "build-flag"}, "package": {Phase: Build, Kind: "build-flag"}, "typecheck": {Phase: Test, Kind: "test-flag"},
 	"test": {Phase: Test, Kind: "test-flag"}, "tests": {Phase: Test, Kind: "test-flag"}, "e2e": {Phase: Test, Kind: "test-flag"}, "smoke": {Phase: Test, Kind: "test-flag"}, "preflight": {Phase: Test, Kind: "test-flag"}, "bench": {Phase: Test, Kind: "test-flag"}, "benchmark": {Phase: Test, Kind: "test-flag"}, "lint": {Phase: Test, Kind: "test-flag"},
 	"deploy": {Phase: Release, Kind: "release-flag"}, "release": {Phase: Release, Kind: "release-flag"}, "publish": {Phase: Release, Kind: "release-flag"}, "ship": {Phase: Release, Kind: "release-flag"}, "push": {Phase: Release, Kind: "release-flag"},
 	"worktree": {Phase: Code, Kind: "vcs-subcommand"}, "checkout": {Phase: Code, Kind: "vcs-subcommand"}, "branch": {Phase: Code, Kind: "vcs-subcommand"},

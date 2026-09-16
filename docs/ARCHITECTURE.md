@@ -330,7 +330,10 @@ pin. Word rules are looked up exactly (longest key first: `xcrun devicectl devic
    `--test`, `--deploy`, `--serve`). An unmatched executable stays unknown.
 5. The op takes the **highest-priority** phase among its segments; at equal priority the first
    segment decides, except that a `shell` segment (`cd`, `echo`, `set`) yields to a substantive
-   one (`cd x && rg foo` is the search).
+   one (`cd x && rg foo` is the search). Priority also settles a word rule against a `seg:` rule
+   on the same head: `tsc` is `build` (it emits JavaScript) and `tsc --noEmit` is
+   `test/typecheck` — one definition of a type check across `mypy`, `pyright`, `npm run
+   typecheck` and the dispatcher verb `typecheck`, which Insights reads as verification (§10.2).
 6. Interpreter heredocs (`python3 - <<PY`, `node --input-type=module <<JS`) are classified one
    level deep by literal signals: commands passed to `subprocess.*` / `os.system` / `execSync`
    (argv lists, including one bound to a variable and passed later) are classified with the same
