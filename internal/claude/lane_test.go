@@ -591,3 +591,58 @@ func TestStopHooksAreOneOpEach(t *testing.T) {
 		t.Fatalf("hook time is the overlap-free union of the hooks: %+v", root.ByPhase)
 	}
 }
+
+// The hook's own output is attached to the conversation before the summary that times it: the
+// attachment must not close the turn, or the summary finds no turn and the hook is lost (25 of
+// 33 hooks in one real session) or lands on the next turn with no duration.
+func TestStopHookSummaryAfterAnAttachmentStaysInItsTurn(t *testing.T) {
+	content := metaLine("mode", map[string]any{"mode": "normal"}) +
+		promptLine(1_000, "u1", "Fix it.", map[string]any{"promptSource": "typed", "origin": map[string]any{"kind": "human"}}) +
+		assistantLine(10_000, "a1", "m1", "end_turn", text("Done."), usage{in: 10, out: 10}) +
+		attachmentLine(10_450, "att1") +
+		systemLine(10_500, "s1", "stop_hook_summary", map[string]any{"hookCount": 1, "hookInfos": []any{map[string]any{"command": "go test ./...", "durationMs": 450}}, "hookErrors": []any{}}) +
+		promptLine(30_000, "u2", "Thanks.", map[string]any{"promptSource": "typed", "origin": map[string]any{"kind": "human"}}) +
+		assistantLine(31_000, "a2", "m2", "end_turn", text("Welcome."), usage{in: 10, out: 10})
+	h, _ := home(t, content)
+	_, s := open(t, h)
+	root := s.Model.Lanes[0]
+	checkPartition(t, s.Model)
+	var hooks []*model.Operation
+	for _, o := range root.Ops {
+		if classify.BaseKind(o.Kind) == "hook" {
+			hooks = append(hooks, o)
+		}
+	}
+	if len(hooks) != 1 || hooks[0].Turn != "u1" || hooks[0].Start != 10_050 || hooks[0].End != 10_500 {
+		t.Fatalf("hook after an attachment: %+v", hooks)
+	}
+	if len(root.Turns) != 2 || root.Turns[0].End != 10_500 || root.Turns[0].Status != "completed" {
+		t.Fatalf("the turn ends when the hook is done: %+v", root.Turns[0])
+	}
+	// a queued prompt logged while the hooks ran: the summary arrives after the next turn opened
+	// and still belongs to the turn that ended (8 of 33 hooks in one real session landed on the
+	// next turn with no duration)
+	content = metaLine("mode", map[string]any{"mode": "normal"}) +
+		promptLine(1_000, "u1", "Fix it.", map[string]any{"promptSource": "typed", "origin": map[string]any{"kind": "human"}}) +
+		assistantLine(10_000, "a1", "m1", "end_turn", text("Done."), usage{in: 10, out: 10}) +
+		attachmentLine(10_440, "att1") +
+		promptLine(10_450, "u2", "Next.", map[string]any{"promptSource": "queued", "origin": map[string]any{"kind": "human"}}) +
+		systemLine(10_460, "s1", "stop_hook_summary", map[string]any{"hookCount": 1, "hookInfos": []any{map[string]any{"command": "go test ./...", "durationMs": 450}}, "hookErrors": []any{}}) +
+		assistantLine(31_000, "a2", "m2", "end_turn", text("Welcome."), usage{in: 10, out: 10})
+	h, _ = home(t, content)
+	_, s = open(t, h)
+	root = s.Model.Lanes[0]
+	checkPartition(t, s.Model)
+	hooks = nil
+	for _, o := range root.Ops {
+		if classify.BaseKind(o.Kind) == "hook" {
+			hooks = append(hooks, o)
+		}
+	}
+	if len(hooks) != 1 || hooks[0].Turn != "u1" || hooks[0].Start != 10_010 || hooks[0].End != 10_460 || hooks[0].Background {
+		t.Fatalf("hook after a queued prompt: %+v", hooks)
+	}
+	if root.Turns[0].End != 10_000 || root.Turns[1].Start != 10_450 {
+		t.Fatalf("turns unchanged by the late summary: %+v %+v", root.Turns[0], root.Turns[1])
+	}
+}

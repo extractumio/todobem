@@ -139,6 +139,17 @@ func TestBackgroundProcessDoesNotOverlayPartition(t *testing.T) {
 	if s.Totals.BackgroundMs != 800*k || s.Totals.Background != 1 {
 		t.Fatalf("background totals %d %d", s.Totals.BackgroundMs, s.Totals.Background)
 	}
+	// an edit the harness completed on the same millisecond its turn closed names that turn and
+	// is the turn's close-out write, not a background op (15 such patches in one real session)
+	closeOut := mkOp("e1", classify.Code, 300*k, 300*k, "completed", "")
+	closeOut.Kind, closeOut.Turn = "edit", "t1"
+	stray := mkOp("e2", classify.Code, 300*k, 300*k, "completed", "")
+	stray.Kind = "edit" // no turn named: outside every turn, background as before
+	l.Ops = append(l.Ops, closeOut, stray)
+	Derive(s, 2000*k)
+	if closeOut.Background || !stray.Background {
+		t.Fatalf("close-out edit background=%v, stray edit background=%v", closeOut.Background, stray.Background)
+	}
 }
 
 func TestPendingOperationsFillLiveEnvelope(t *testing.T) {

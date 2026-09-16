@@ -330,8 +330,10 @@ func (p *laneParser) handle(line []byte, start int64) {
 		return // a metadata line (mode, ai-title, last-prompt, …): no timestamp, nothing for the timeline
 	}
 	if isAttachment(line) {
-		// harness context attached to the conversation (hook output, reminders): evidence only
-		p.finishEnding()
+		// harness context attached to the conversation (hook output, reminders): evidence only.
+		// It does not end a turn: a stop hook's output is attached before the stop_hook_summary
+		// that carries the hook's duration, and that summary still belongs to the ending turn.
+		// Whatever comes next (a prompt, another message, the end of the file) closes it.
 		p.touch(suffixTS(line))
 		return
 	}
@@ -669,13 +671,26 @@ func (p *laneParser) onSystem(env envelope, ts int64, start int64, line []byte) 
 		// the agent's test command joins that command's group, and a hook whose command is a
 		// test is a recorded verification the Insights read. The summary lists errors without
 		// saying which hook raised them: with any error every hook of the summary is failed.
-		if p.turn != nil {
-			floor := p.lastTS
-			if p.ending != "" {
-				floor = p.endTS
+		turn, floor := p.turn, p.lastTS
+		if p.ending != "" {
+			floor = p.endTS
+		}
+		var longest int64
+		for _, h := range env.HookInfos {
+			longest = max(longest, h.DurationMs)
+		}
+		if turn != nil && p.ending == "" && turn.Start > ts-longest && p.turnIsEmpty(turn) {
+			// a queued prompt was logged while the previous turn's stop hooks were still running,
+			// so this turn opened before the summary arrived: the hooks belong to the turn that
+			// just ended, and they may run a little into this one (the partition tolerates that;
+			// a hook that outlives its turn by more than a second is background, like any op)
+			if n := len(p.lane.Turns); n >= 2 && p.lane.Turns[n-2].Status == "completed" {
+				turn, floor = p.lane.Turns[n-2], p.lane.Turns[n-2].End
 			}
+		}
+		if turn != nil {
 			for _, h := range env.HookInfos {
-				p.hookOp(h.Command, max(floor, ts-h.DurationMs), ts, len(env.HookErrors), src)
+				p.hookOp(turn.ID, h.Command, max(floor, ts-h.DurationMs), ts, len(env.HookErrors), src)
 			}
 		}
 		if p.ending != "" {
@@ -797,9 +812,9 @@ func (p *laneParser) newOp(id, turn string, phase model.Phase, kind string, s, e
 // hookOp records one stop hook as a wait_worker/hook op inside the current turn, classified by
 // its command text like a shell call (Rule "hook · <phase>/<kind>", the retry identity with the
 // session's cwd) so it groups with the same command run by the agent.
-func (p *laneParser) hookOp(cmd string, s, e int64, errors int, src *model.Src) *model.Operation {
+func (p *laneParser) hookOp(turn, cmd string, s, e int64, errors int, src *model.Src) *model.Operation {
 	res := classify.Command(cmd, "")
-	op := p.newOp("", p.turn.ID, classify.WaitWorker, "hook", s, e, src)
+	op := p.newOp("", turn, classify.WaitWorker, "hook", s, e, src)
 	op.Title = "stop hook · " + res.Title
 	op.Detail = source.Clip(cmd, 2000)
 	op.Rule = classify.HookRule(res.Phase, res.Kind)

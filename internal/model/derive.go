@@ -132,6 +132,15 @@ func markBackground(l *Lane, now int64) {
 				turn = t
 				break
 			}
+			// the op names this turn and starts at or after the instant it closed (a patch the
+			// harness completed on the same millisecond as task_complete, a stop hook whose
+			// summary arrived after a queued prompt opened the next turn): the turn's own
+			// close-out work, not work outside any turn; whether it outlived the turn is decided
+			// below like for any op
+			if t.ID == o.Turn && o.Turn != "" && o.Start >= end {
+				turn = t
+				break
+			}
 		}
 		if turn == nil {
 			o.Background = len(l.Turns) > 0
