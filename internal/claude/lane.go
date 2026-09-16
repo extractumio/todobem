@@ -802,7 +802,7 @@ func (p *laneParser) hookOp(cmd string, s, e int64, errors int, src *model.Src) 
 	op := p.newOp("", p.turn.ID, classify.WaitWorker, "hook", s, e, src)
 	op.Title = "stop hook · " + res.Title
 	op.Detail = source.Clip(cmd, 2000)
-	op.Rule = "hook · " + string(res.Phase) + "/" + res.Kind
+	op.Rule = classify.HookRule(res.Phase, res.Kind)
 	if res.Identity != "" {
 		op.Identity = p.meta.CWD + "\n" + res.Identity
 	}

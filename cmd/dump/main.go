@@ -318,6 +318,9 @@ func printInsights(m *model.Session) {
 	f := insights.Extract(m)
 	fmt.Printf("FACTS\t%s\t%s\tcli=%s\telapsed=%s\tin_turn=%s\tagents=%d\tturns=%d\tgaps=%d\twaits=%d\tgroups=%d\tcompactions=%d\tunknown_heads=%d\tcells=%d\n",
 		f.ID, f.CWD, f.CLI, fmtd(f.Root.ElapsedMs), fmtd(f.Root.InTurnMs), len(f.Agents), len(f.Turns), len(f.Gaps), len(f.Waits), len(f.Groups), len(f.Compactions), len(f.Unknown), len(f.Cells))
+	d := f.Delivery
+	fmt.Printf("DELIVERY\tchanges=%d\tlast_change=%s\tverified=%v\tby=%s\ttests=%d\tlast_verdict_failed=%v\treviewed_at=%s\tchanges_after_review=%d\tblind_after_last_change=%s\tedit_turns=%d\tunverified=%d\tunknown_in_windows=%s\n",
+		d.Changes, stampOrNone(d.LastChangeAt), d.Verified, d.VerifiedBy, d.Tests, d.LastVerdictFailed, stampOrNone(d.ReviewedAt), d.ChangesAfterReview, fmtd(d.BlindAfterLastChangeMs), d.EditTurns, d.EditTurnsUnverified, fmtd(d.UnknownInWindowMs))
 	results := insights.RunAll(&f)
 	for _, d := range insights.Catalogue {
 		r := results[d.ID]
@@ -331,4 +334,12 @@ func printInsights(m *model.Session) {
 			fmt.Printf("INSIGHT\t%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\n", x.Rule, x.Key, x.TimeMs, unc, out, x.Lane, time.UnixMilli(x.A).UTC().Format("01-02 15:04"), x.Note)
 		}
 	}
+}
+
+// stampOrNone formats a millisecond timestamp for the DELIVERY line, or "-" for zero.
+func stampOrNone(ms int64) string {
+	if ms == 0 {
+		return "-"
+	}
+	return time.UnixMilli(ms).UTC().Format("01-02 15:04:05")
 }

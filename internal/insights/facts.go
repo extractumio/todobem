@@ -15,8 +15,9 @@ import (
 // FactsVersion is bumped whenever Extract's output for the same model changes; a cached facts
 // file with another version is a miss. 2: the first cached shape. 3: Source; query misses
 // without an exit code. 4: subgroups on ops, the tool-call mix, failures by subgroup, unknown
-// time by subgroup.
-const FactsVersion = 4
+// time by subgroup. 5: the delivery walk (Delivery), recovery on retry windows, compactions
+// inside a change window, gaps after the first change, stop hooks among the long ops.
+const FactsVersion = 5
 
 // Facts is everything the detectors need about one session, in a few KB.
 type Facts struct {
@@ -48,7 +49,8 @@ type Facts struct {
 	ToolCalls   []ToolCallFacts   `json:"tool_calls"`  // the main thread's tool calls by phase and subgroup
 	LLMErrors   int               `json:"llm_errors"`
 	LLMErrorAt  []ErrorAt         `json:"llm_errors_at,omitempty"`
-	Cells       []CellFacts       `json:"cells"` // lane kind × model × effort × lifecycle
+	Cells       []CellFacts       `json:"cells"`    // lane kind × model × effort × lifecycle
+	Delivery    DeliveryFacts     `json:"delivery"` // the session as one delivery loop (facts_delivery.go)
 }
 
 // RootFacts are the root lane's totals (the session's exclusive accounting).
@@ -117,13 +119,14 @@ type TurnFacts struct {
 
 // GapFacts is one root wait_user segment with what surrounded it.
 type GapFacts struct {
-	Start         int64             `json:"start"`
-	End           int64             `json:"end"`
-	AfterQuestion bool              `json:"after_question"` // the turn before it asked the user
-	PrevTurn      string            `json:"prev_turn,omitempty"`
-	NextTurn      string            `json:"next_turn,omitempty"`
-	NextTrigger   string            `json:"next_trigger,omitempty"`
-	NextFirst     *model.TokenUsage `json:"next_first,omitempty"` // first counted call of the next turn
+	Start            int64             `json:"start"`
+	End              int64             `json:"end"`
+	AfterQuestion    bool              `json:"after_question"`               // the turn before it asked the user
+	AfterFirstChange bool              `json:"after_first_change,omitempty"` // the session had already changed a file
+	PrevTurn         string            `json:"prev_turn,omitempty"`
+	NextTurn         string            `json:"next_turn,omitempty"`
+	NextTrigger      string            `json:"next_trigger,omitempty"`
+	NextFirst        *model.TokenUsage `json:"next_first,omitempty"` // first counted call of the next turn
 }
 
 // WaitFacts is one root wait_worker segment. SoloMs is the part of it during which at most one
@@ -153,22 +156,29 @@ type GroupFacts struct {
 }
 
 // WindowFacts is the span from a failed attempt to the next attempt on the same lane, with the
-// tokens of the turns that overlap it, pro rata by time.
+// tokens of the turns that overlap it, pro rata by time. Recovery names what the lane ran in
+// between (none, fix, infra, worker, mixed); RetryFailed says the retry failed too; HumanBoundary
+// that a user-triggered root turn started inside the window (the user may have changed
+// something the log does not show).
 type WindowFacts struct {
-	Lane   int              `json:"lane"`
-	Start  int64            `json:"start"`
-	End    int64            `json:"end"`
-	Tokens model.TokenUsage `json:"tokens"`
+	Lane          int              `json:"lane"`
+	Start         int64            `json:"start"`
+	End           int64            `json:"end"`
+	Tokens        model.TokenUsage `json:"tokens"`
+	Recovery      string           `json:"recovery,omitempty"`
+	RetryFailed   bool             `json:"retry_failed,omitempty"`
+	HumanBoundary bool             `json:"human_boundary,omitempty"`
 }
 
 type CompactionFacts struct {
-	Lane    int               `json:"lane"`
-	Op      string            `json:"op"`
-	Turn    string            `json:"turn,omitempty"`
-	Start   int64             `json:"start"`
-	End     int64             `json:"end"`
-	Context int64             `json:"context,omitempty"`
-	Reread  *model.TokenUsage `json:"reread,omitempty"`
+	Lane           int               `json:"lane"`
+	Op             string            `json:"op"`
+	Turn           string            `json:"turn,omitempty"`
+	Start          int64             `json:"start"`
+	End            int64             `json:"end"`
+	Context        int64             `json:"context,omitempty"`
+	Reread         *model.TokenUsage `json:"reread,omitempty"`
+	InChangeWindow bool              `json:"in_change_window,omitempty"` // between its turn's first and last edit on the same lane
 }
 
 type OpFacts struct {
@@ -271,21 +281,27 @@ func Extract(s *model.Session) Facts {
 		}
 	}
 	sort.SliceStable(f.Turns, func(a, b int) bool { return f.Turns[a].Start < f.Turns[b].Start })
-	f.Gaps = gapFacts(root)
+	f.Delivery = deliveryFacts(s, laneIndex)
+	f.Gaps = gapFacts(root, f.Delivery.FirstChangeAt)
 	f.Waits = waitFacts(s, opByID)
 	f.Groups = groupFacts(s, laneIndex, opByID)
 	for i, l := range s.Lanes {
+		windows := changeWindows(l)
 		for _, o := range l.Ops {
 			switch {
 			case o.Phase == classify.Compaction:
-				f.Compactions = append(f.Compactions, CompactionFacts{Lane: i, Op: o.ID, Turn: o.Turn, Start: o.Start, End: o.End, Context: o.Context, Reread: o.Tokens})
+				c := CompactionFacts{Lane: i, Op: o.ID, Turn: o.Turn, Start: o.Start, End: o.End, Context: o.Context, Reread: o.Tokens}
+				if w := windows[o.Turn]; w != nil && o.Start >= w.first && o.Start <= w.last {
+					c.InChangeWindow = true
+				}
+				f.Compactions = append(f.Compactions, c)
 			case o.Background:
 				f.Background = append(f.Background, opFacts(i, o))
 			}
 			if o.Phase == classify.Code && o.Failure() && !o.Background {
 				f.Failures = append(f.Failures, opFacts(i, o))
 			}
-			if isVerdictPhase(o.Phase) && !o.Background && o.End > o.Start {
+			if (isVerdictPhase(o.Phase) || isHookOp(o)) && !o.Background && o.End > o.Start {
 				f.LongOps = append(f.LongOps, opFacts(i, o))
 			}
 			if o.Phase == classify.Unknown && !o.Background && o.End > o.Start {
@@ -368,6 +384,12 @@ func toolCallFacts(root *model.Lane) []ToolCallFacts {
 
 func isVerdictPhase(p model.Phase) bool {
 	return p == classify.Test || p == classify.Build || p == classify.Release || p == classify.Infra
+}
+
+// isHookOp reports whether o is a harness stop hook (wait_worker/hook): harness time whose
+// command is recorded, so a slow hook is listed among the long runs under its own shape.
+func isHookOp(o *model.Operation) bool {
+	return o.Phase == classify.WaitWorker && classify.BaseKind(o.Kind) == "hook"
 }
 
 func copyPhases(m map[model.Phase]int64) map[model.Phase]int64 {
@@ -483,7 +505,7 @@ func scale(u *model.TokenUsage, num, den int64) *model.TokenUsage {
 	return &model.TokenUsage{Input: u.Input * num / den, Cached: u.Cached * num / den, CacheWrite: u.CacheWrite * num / den, Output: u.Output * num / den, Reasoning: u.Reasoning * num / den, Total: u.Total * num / den}
 }
 
-func gapFacts(root *model.Lane) []GapFacts {
+func gapFacts(root *model.Lane, firstChangeAt int64) []GapFacts {
 	questions := map[string]bool{}
 	for _, m := range root.Markers {
 		if m.Kind == "question" {
@@ -495,7 +517,7 @@ func gapFacts(root *model.Lane) []GapFacts {
 		if sg.Phase != classify.WaitUser {
 			continue
 		}
-		g := GapFacts{Start: sg.Start, End: sg.End}
+		g := GapFacts{Start: sg.Start, End: sg.End, AfterFirstChange: firstChangeAt > 0 && sg.Start > firstChangeAt}
 		for _, t := range root.Turns {
 			if t.End <= sg.Start+1 && t.Start < sg.Start {
 				g.PrevTurn = t.ID
@@ -610,7 +632,7 @@ func groupFacts(s *model.Session, laneIndex map[string]int, opByID map[string]*m
 				continue
 			}
 			li := laneIndex[prev.Lane]
-			w := WindowFacts{Lane: li, Start: prev.End, End: next.Start}
+			w := WindowFacts{Lane: li, Start: prev.End, End: next.Start, Recovery: windowRecovery(s.Lanes[li], prev.End, next.Start), RetryFailed: next.Failure(), HumanBoundary: userTurnInside(s.Lanes[0], prev.End, next.Start)}
 			for _, t := range s.Lanes[li].Turns {
 				if t.Tokens == nil || t.End <= w.Start || t.Start >= w.End || t.End <= t.Start {
 					continue
@@ -638,9 +660,12 @@ func opFacts(lane int, o *model.Operation) OpFacts {
 		}
 	}
 	of := OpFacts{Lane: lane, ID: o.ID, Phase: o.Phase, Kind: kind, Sub: o.Subgroup, Title: o.Title, Start: o.Start, End: o.End, Status: o.Status, Exit: o.Exit, Turn: o.Turn}
-	if o.Identity != "" {
+	switch {
+	case isHookOp(o):
+		of.Shape = Shape("hook", "\n"+o.Detail) // the hook's command, not the "stop hook" title
+	case o.Identity != "":
 		of.Shape = Shape(o.Phase, o.Identity)
-	} else {
+	default:
 		of.Shape = Shape(o.Phase, "\n"+o.Title)
 	}
 	return of

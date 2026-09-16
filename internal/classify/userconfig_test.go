@@ -211,3 +211,16 @@ func TestLoadUserConfigFile(t *testing.T) {
 		t.Errorf("missing file should be no error, got %v", err)
 	}
 }
+
+func TestHookRuleRoundTrip(t *testing.T) {
+	r := HookRule(Test, "go test")
+	if r != "hook · test/go test" {
+		t.Fatalf("rule %q", r)
+	}
+	if p, ok := HookPhase(r); !ok || p != Test {
+		t.Fatalf("phase %q ok=%v", p, ok)
+	}
+	if _, ok := HookPhase("phase test"); ok {
+		t.Fatal("a plain rule is not a hook")
+	}
+}
