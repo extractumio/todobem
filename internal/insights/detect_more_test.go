@@ -178,10 +178,10 @@ func TestBuildAppliesInfoAndCrossSessionFilters(t *testing.T) {
 	}
 	// long breaks are Info: shown, never in the group total nor in the top findings
 	lb, ok := cards["D2b"]
-	if !ok || !lb.Info || lb.Exposure.TimeMs != 15*hour {
+	if !ok || lb.Class != ClassInfo || lb.Exposure.TimeMs != 15*hour {
 		t.Fatalf("D2b %+v", lb)
 	}
-	if you.TimeMs >= 15*hour || you.Cards[len(you.Cards)-1].Rule != "D2b" && !you.Cards[len(you.Cards)-1].Info {
+	if you.TimeMs >= 15*hour || you.Cards[len(you.Cards)-1].Rule != "D2b" && you.Cards[len(you.Cards)-1].Class != ClassInfo {
 		t.Fatalf("group you: time %d cards %v", you.TimeMs, you.Cards)
 	}
 	for _, id := range r.TopTime {

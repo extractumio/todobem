@@ -83,6 +83,7 @@ type Report struct {
 	Scope       Scope       `json:"scope"`
 	TopTime     []string    `json:"top_time"`   // rule ids, best first, on the time axis
 	TopTokens   []string    `json:"top_tokens"` // rule ids, best first, on the tokens axis
+	TopChecks   []string    `json:"top_checks"` // check rule ids, most sessions affected first
 	Groups      []Group     `json:"groups"`     // ordered by time exposure; not_measured last
 	NoData      []NoDataRow `json:"no_data"`    // per rule: sessions that could not carry the signal
 	Fallback    string      `json:"fallback,omitempty"`
@@ -124,7 +125,7 @@ type Card struct {
 	Rule         string           `json:"rule"`
 	Group        string           `json:"group"`
 	Title        string           `json:"title"`
-	Info         bool             `json:"info,omitempty"` // a measurement: never ranked, not in totals
+	Class        string           `json:"class,omitempty"` // ClassCheck | ClassInfo; absent = an exposure card
 	Exposure     Exposure         `json:"exposure"`
 	Share        *Share           `json:"share,omitempty"`
 	Distribution []Row            `json:"distribution,omitempty"`
@@ -230,14 +231,14 @@ func Build(params Params, inputs []Input, now int64) Report {
 		if card == nil {
 			continue
 		}
-		card.Info = d.Info
+		card.Class = d.Class
 		g := groups[d.Group]
 		if g == nil {
 			g = &Group{ID: d.Group}
 			groups[d.Group] = g
 		}
 		g.Cards = append(g.Cards, *card)
-		if !d.Info {
+		if !d.IsInfo() && !d.IsCheck() {
 			g.TimeMs += card.Exposure.TimeMs
 			if card.Exposure.Tokens != nil {
 				g.Tokens.Add(card.Exposure.Tokens)
@@ -247,10 +248,14 @@ func Build(params Params, inputs []Input, now int64) Report {
 	for _, id := range GroupOrder {
 		if g := groups[id]; g != nil {
 			sort.SliceStable(g.Cards, func(a, b int) bool {
-				if g.Cards[a].Info != g.Cards[b].Info {
-					return !g.Cards[a].Info // ranked cards first, measurements last
+				ca, cb := g.Cards[a], g.Cards[b]
+				if ra, rb := ClassRank(ca.Class), ClassRank(cb.Class); ra != rb {
+					return ra < rb // exposure cards first, then checks, measurements last
 				}
-				return g.Cards[a].Exposure.TimeMs > g.Cards[b].Exposure.TimeMs
+				if ca.Class == ClassCheck {
+					return ca.Sessions > cb.Sessions || ca.Sessions == cb.Sessions && ca.Exposure.Count > cb.Exposure.Count
+				}
+				return ca.Exposure.TimeMs > cb.Exposure.TimeMs
 			})
 			r.Groups = append(r.Groups, *g)
 		}
@@ -276,16 +281,26 @@ func Build(params Params, inputs []Input, now int64) Report {
 		r.Groups[i].OrderTokens = pos
 	}
 	sort.SliceStable(r.Groups, func(a, b int) bool { return r.Groups[a].OrderTime < r.Groups[b].OrderTime })
-	var cards []Card
+	var cards, checks []Card
 	for _, g := range r.Groups {
 		if g.ID == GroupUnseen {
 			continue
 		}
 		for _, c := range g.Cards {
-			if !c.Info {
+			switch c.Class {
+			case ClassCheck:
+				checks = append(checks, c)
+			case ClassInfo:
+			default:
 				cards = append(cards, c)
 			}
 		}
+	}
+	sort.SliceStable(checks, func(a, b int) bool {
+		return checks[a].Sessions > checks[b].Sessions || checks[a].Sessions == checks[b].Sessions && checks[a].Exposure.Count > checks[b].Exposure.Count
+	})
+	for i := 0; i < len(checks) && i < 3; i++ {
+		r.TopChecks = append(r.TopChecks, checks[i].Rule)
 	}
 	sort.SliceStable(cards, func(a, b int) bool { return cards[a].Exposure.TimeMs > cards[b].Exposure.TimeMs })
 	for i := 0; i < len(cards) && i < 3; i++ {
@@ -330,6 +345,9 @@ func buildCard(d Detector, results []Result, scope *Scope, titles map[string]str
 	rowSessions := map[string]map[string]bool{}
 	sessionsWith := map[string]bool{}
 	for _, res := range results {
+		if res.NotApplicable {
+			continue // the rule's precondition is absent: not in the denominator, not "no data"
+		}
 		if !res.Measurable {
 			c.NoData++
 			nd.Sessions++
@@ -509,9 +527,8 @@ func statsFor(rule string, c *Card, all []Finding) {
 	case "D11":
 		var contexts []int64
 		for _, x := range all {
-			var ctx int64
-			if n, _ := fmt.Sscanf(x.Note, "context before: %d k tokens", &ctx); n == 1 {
-				contexts = append(contexts, ctx*1000)
+			if x.Value > 0 {
+				contexts = append(contexts, x.Value)
 			}
 		}
 		if len(contexts) > 0 {
@@ -528,17 +545,6 @@ func statsFor(rule string, c *Card, all []Finding) {
 			c.Stats["time_"+k] = row.TimeMs
 			c.Stats["count_"+k] = int64(row.N)
 		}
-	case "D7":
-		var groups, attempts int64
-		for _, x := range all {
-			groups++
-			var a, f int
-			if n, _ := fmt.Sscanf(x.Note, "%d attempts, %d failed", &a, &f); n == 2 {
-				attempts += int64(a)
-			}
-		}
-		c.Stats["groups"] = groups
-		c.Stats["attempts"] = attempts
 	case "T1":
 		var slow, slowUncached int64
 		for _, x := range all {

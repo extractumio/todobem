@@ -20,6 +20,11 @@ function toneColor(id) {
   return (phase && phase.color) || '#98a4ad';
 }
 const toneStyle = id => `--tone:${toneColor(id)}`;
+// Card classes (report.go): an exposure card is ranked by time or tokens, a check by the
+// sessions it happened in, an info card is a measurement that is never ranked.
+const isInfo = c => c.class === 'info';
+const isCheck = c => c.class === 'check';
+const classRank = c => (isCheck(c) ? 1 : isInfo(c) ? 2 : 0);
 
 const INSIGHT_TEXT = {
   page: {
@@ -698,13 +703,13 @@ function reportBodyHTML(ins) {
   const maxGroup = Math.max(1, ...groups.map(groupValue));
   const groupsHTML = `<div class="insight-groups">${groups.map((g, gi) => {
     const def = T.groups[g.id] || { name: g.id, question: '' };
-    const cards = (g.cards || []).slice().sort((a, b) => (a.info ? 1 : 0) - (b.info ? 1 : 0) || (ins.axis === 'tokens' ? billableOf(b.exposure.tokens) - billableOf(a.exposure.tokens) : b.exposure.time_ms - a.exposure.time_ms));
-    const ranked = cards.filter(c => !c.info);
+    const cards = (g.cards || []).slice().sort((a, b) => classRank(a) - classRank(b) || (isCheck(a) ? (b.sessions - a.sessions || b.exposure.count - a.exposure.count) : (ins.axis === 'tokens' ? billableOf(b.exposure.tokens) - billableOf(a.exposure.tokens) : b.exposure.time_ms - a.exposure.time_ms)));
+    const ranked = cards.filter(c => !isInfo(c) && !isCheck(c));
     const unseen = g.id === 'not_measured' && noData.length ? `<div class="nodata"><div class="part-label">${esc(T.card.noDataTitle)}</div><ul>${noData.map(nd => `<li><b>${esc(nd.rule)} · ${esc(ruleTitle(nd))}</b>: ${nd.sessions ? esc(T.states.noData(nd.sessions, nd.reason || '')) : ''}${nd.items ? ' ' + esc(T.states.noDataItems(nd.items)) : ''}</li>`).join('')}</ul></div>` : '';
     const has = cards.length > 0 || unseen !== '';
     const open = ins.openGroups.has(g.id) && has;
     const value = ins.axis === 'tokens' ? fmtTok(billableOf(g.tokens)) : fmt(g.time_ms);
-    const body = has ? `<div class="group-body">${unseen}${cards.map(c => cardHTML(ins, c, c.info ? 0 : ++rank)).join('')}</div>` : `<p class="group-empty">${esc(T.states.emptyGroup)}</p>`;
+    const body = has ? `<div class="group-body">${unseen}${cards.map(c => cardHTML(ins, c, isInfo(c) ? 0 : ++rank)).join('')}</div>` : `<p class="group-empty">${esc(T.states.emptyGroup)}</p>`;
     const gauge = ranked.length ? Math.round(groupValue(g) / maxGroup * 100) : 0;
     return `<section class="insight-group ${open ? 'open' : ''}" id="group-${esc(g.id)}" style="${toneStyle(g.id)}"><button class="group-head" data-action="ins-group" data-ins-group="${esc(g.id)}" aria-expanded="${!!open}" ${has ? '' : 'disabled'}><span class="mono-index"><i class="tone-mark" aria-hidden="true"></i>G${pad2(gi + 1)}</span><span><h2>${esc(def.name)}</h2><div class="question">${esc(def.question)}</div></span><span class="exposure"><b class="num">${ranked.length ? esc(value) : '—'}</b><span>${plural(cards.length, 'card')}</span></span><span class="chev">${icon('right', true)}</span><span class="gauge" aria-hidden="true"><i style="width:${gauge}%"></i></span></button>${body}</section>`;
   }).join('')}</div>`;
@@ -769,9 +774,9 @@ function cardHTML(ins, c, rank) {
   for (const conv of c.conventions || []) foot.push(esc(conv));
   if (c.no_data_items) foot.push(esc(T.states.noDataItems(c.no_data_items)));
   foot.push(`<button class="text-btn" data-action="ins-guide">${esc(T.card.how)}</button>`);
-  const tab = `<span class="mono-index card-tab" title="${esc(T.card.how)}">${esc(c.rule)} · ${c.info ? 'info' : pad2(rank)}</span>`;
-  const badge = c.info ? `<span class="chip info-chip">${esc(T.card.info)}</span>` : '';
-  return `<article class="insight-card ${c.info ? 'info' : ''}" id="card-${esc(c.rule)}" aria-labelledby="card-${esc(c.rule)}-title"><div class="card-top">${tab}<h3 id="card-${esc(c.rule)}-title">${esc(r.title)}</h3>${badge}</div><p class="headline">${esc(headline)}</p>${dist}<div><div class="part-label">${esc(T.card.todo)}</div><p>${esc(r.todo)}</p></div>${evidence}<div class="card-foot">${foot.join('<span>·</span>')}</div></article>`;
+  const tab = `<span class="mono-index card-tab" title="${esc(T.card.how)}">${esc(c.rule)} · ${isInfo(c) ? 'info' : pad2(rank)}</span>`;
+  const badge = isInfo(c) ? `<span class="chip info-chip">${esc(T.card.info)}</span>` : '';
+  return `<article class="insight-card ${isInfo(c) ? 'info' : ''}" id="card-${esc(c.rule)}" aria-labelledby="card-${esc(c.rule)}-title"><div class="card-top">${tab}<h3 id="card-${esc(c.rule)}-title">${esc(r.title)}</h3>${badge}</div><p class="headline">${esc(headline)}</p>${dist}<div><div class="part-label">${esc(T.card.todo)}</div><p>${esc(r.todo)}</p></div>${evidence}<div class="card-foot">${foot.join('<span>·</span>')}</div></article>`;
 }
 
 /* ---------- the session page card ---------- */

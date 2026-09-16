@@ -54,66 +54,6 @@ func detectModelTime(f *Facts) Result {
 	return r
 }
 
-// Context buckets for T2 (thousands of tokens; a display convention).
-var contextBuckets = []struct {
-	label string
-	max   int64
-}{
-	{"under 50 k", 50000},
-	{"50-100 k", 100000},
-	{"100-150 k", 150000},
-	{"150-200 k", 200000},
-	{"200 k or more", 1 << 62},
-}
-
-func ContextBucket(peak int64) string {
-	for _, b := range contextBuckets {
-		if peak < b.max {
-			return b.label
-		}
-	}
-	return contextBuckets[len(contextBuckets)-1].label
-}
-
-func ContextBucketOrder() []string {
-	out := make([]string, 0, len(contextBuckets))
-	for _, b := range contextBuckets {
-		out = append(out, b.label)
-	}
-	return out
-}
-
-// T2 · Context size. Signal: the largest input of one model call in each turn (the context it
-// reached). Exposure: the turn's tokens, keyed by context bucket.
-func detectContextSize(f *Facts) Result {
-	r := Result{}
-	for _, t := range f.Turns {
-		if t.ContextPeak <= 0 {
-			continue
-		}
-		r.Measurable = true
-		perCall := int64(0)
-		if t.Responses > 0 && t.Tokens != nil {
-			perCall = t.Tokens.Input / int64(t.Responses)
-		}
-		r.Findings = append(r.Findings, Finding{Lane: f.lanePath(t.Lane), LaneID: f.laneID(t.Lane), A: t.Start, B: t.End, Tokens: t.Tokens, Key: ContextBucket(t.ContextPeak), Note: fmt.Sprintf("turn of %s: peak %d k, %d calls, about %d k input each", fmtDur(t.End-t.Start), t.ContextPeak/1000, t.Responses, perCall/1000)})
-	}
-	if !r.Measurable {
-		r.Reason = "no token usage records"
-	}
-	return r
-}
-
-func laneKindLabel(kind string) string {
-	switch kind {
-	case LaneRoot:
-		return "main thread"
-	case LaneReadOnly:
-		return "read-only sub-agents"
-	}
-	return "worker sub-agents"
-}
-
 // T3 · Tokens by model, effort and agent type. Signal: each lane's tokens with its model and
 // effort and what its ops literally did. Exposure: the lane's tokens, keyed by agent type,
 // model and effort; read-only sub-agents on the default model are the usual candidate for a
@@ -142,34 +82,6 @@ func detectTokensByModel(f *Facts) Result {
 	}
 	if !r.Measurable {
 		r.Reason = "no token usage records"
-	}
-	return r
-}
-
-// T6 · Cost to start a sub-agent. Signal: the first model call of a sub-agent's first turn
-// (the instructions and context it re-reads). Exposure: those tokens, keyed by agent type;
-// the note compares them with the sub-agent's whole usage.
-func detectSpawnCost(f *Facts) Result {
-	r := Result{Stats: map[string]int64{}}
-	for _, a := range f.Agents[min(1, len(f.Agents)):] {
-		if a.Tokens == nil {
-			continue
-		}
-		r.Measurable = true
-		if a.First == nil || a.First.Input <= 0 {
-			r.NoData++
-			continue
-		}
-		work := a.Tokens.Total - a.First.Total
-		note := fmt.Sprintf("start %d k of %d k tokens", a.First.Total/1000, a.Tokens.Total/1000)
-		if a.First.Total > work {
-			note += " — more to start than to work"
-			r.Stats["more_to_start"]++
-		}
-		r.Findings = append(r.Findings, Finding{Lane: a.Path, LaneID: a.ID, A: a.Started, B: a.Ended, Tokens: a.First, Key: laneKindLabel(a.Kind), Note: note})
-	}
-	if !r.Measurable {
-		r.Reason = "no sub-agents with token usage records"
 	}
 	return r
 }

@@ -170,3 +170,80 @@ func TestOneSessionReportHasNoFallback(t *testing.T) {
 		t.Fatalf("fallback %q scope %+v", r.Fallback, r.Scope)
 	}
 }
+
+// A check card is ranked by sessions affected, never totalled; a session the rule does not
+// apply to is in neither the denominator nor "no data"; headline stats come from the detector,
+// not from the wording of a note.
+func TestCheckCardsRankByAffectedSessionsAndSkipNotApplicable(t *testing.T) {
+	check := Detector{ID: "X1", Group: GroupFailures, Title: "A check", Class: ClassCheck}
+	results := []Result{
+		{Measurable: true, Findings: []Finding{{Session: "s1", TimeMs: 0, N: 1}}},
+		{NotApplicable: true},
+		{Measurable: false, Reason: "no records"},
+		{Measurable: true},
+	}
+	titles := map[string]string{"s1": "one"}
+	card, nd := buildCard(check, results, &Scope{RootInTurn: minute}, titles)
+	if card == nil || card.Sessions != 1 || card.Of != 2 || card.NoData != 1 || nd.Sessions != 1 {
+		t.Fatalf("card %+v nd %+v", card, nd)
+	}
+	// D7's headline numbers are stats the detector emitted, D11's the finding's Value
+	if s := statsProbe(t, "D7", []Finding{{Note: "anything"}}, map[string]int64{"groups": 2, "attempts": 5}); s["groups"] != 2 || s["attempts"] != 5 {
+		t.Fatalf("D7 stats %+v", s)
+	}
+	if s := statsProbe(t, "D11", []Finding{{Key: "main thread", Value: 90_000}, {Key: "main thread", Value: 120_000}, {Key: "sub-agents", Value: 30_000}}, nil); s["context_median"] != 90_000 || s["context_min"] != 30_000 || s["context_max"] != 120_000 {
+		t.Fatalf("D11 stats %+v", s)
+	}
+	// through Build: a check card sits after the exposure cards of its group, before the
+	// measurements, adds nothing to the group's time and reaches TopChecks
+	saved := Catalogue
+	defer func() { Catalogue = saved }()
+	Catalogue = append([]Detector{{ID: "X1", Group: GroupAgents, Title: "A check", Class: ClassCheck, Run: func(f *Facts) Result {
+		return Result{Measurable: true, Findings: []Finding{{Lane: "/root", A: f.Started, B: f.Ended, N: 1}}}
+	}}}, saved...)
+	now := int64(100 * day)
+	inputs := []Input{
+		{Facts: factsWithWait(t, "s1", now-day, 4*minute), Fingerprint: "f1"},
+		{Facts: factsWithWait(t, "s2", now-2*day, 2*minute), Fingerprint: "f2"},
+		{Facts: factsWithWait(t, "s3", now-3*day, 0), Fingerprint: "f3"},
+	}
+	r := Build(Params{CWD: "/proj", Period: Period{Kind: "30d"}.Resolve(now)}, inputs, now)
+	var agents Group
+	for _, g := range r.Groups {
+		if g.ID == GroupAgents {
+			agents = g
+		}
+	}
+	if len(agents.Cards) < 2 || agents.Cards[0].Rule != "D4" || agents.Cards[1].Rule != "X1" || agents.Cards[1].Class != ClassCheck || agents.Cards[1].Sessions != 3 {
+		t.Fatalf("agents group cards %+v", agents.Cards)
+	}
+	if agents.TimeMs != 6*minute {
+		t.Fatalf("a check adds nothing to the group's time: %d", agents.TimeMs)
+	}
+	if len(r.TopChecks) != 1 || r.TopChecks[0] != "X1" {
+		t.Fatalf("top checks %v", r.TopChecks)
+	}
+	for _, id := range r.TopTime {
+		if id == "X1" {
+			t.Fatal("a check card reached the time ranking")
+		}
+	}
+}
+
+// statsProbe runs statsFor on a card with the given findings and pre-summed stats.
+func statsProbe(t *testing.T, rule string, all []Finding, stats map[string]int64) map[string]int64 {
+	t.Helper()
+	c := &Card{Rule: rule, Stats: map[string]int64{}}
+	for k, v := range stats {
+		c.Stats[k] = v
+	}
+	for _, x := range all {
+		key := x.Key
+		if key == "" {
+			key = "all"
+		}
+		c.Distribution = append(c.Distribution, Row{Label: key, N: 1})
+	}
+	statsFor(rule, c, all)
+	return c.Stats
+}

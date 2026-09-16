@@ -13,7 +13,9 @@ import (
 )
 
 // FactsVersion is bumped whenever Extract's output for the same model changes; a cached facts
-// file with another version is a miss. 3: Source; query misses without an exit code.
+// file with another version is a miss. 2: the first cached shape. 3: Source; query misses
+// without an exit code. 4: subgroups on ops, the tool-call mix, failures by subgroup, unknown
+// time by subgroup.
 const FactsVersion = 4
 
 // Facts is everything the detectors need about one session, in a few KB.
