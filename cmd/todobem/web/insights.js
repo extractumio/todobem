@@ -634,8 +634,15 @@ function insightsAction(a, el) {
     return;
   }
   if (a === 'ins-top') {
+    // the card's group is opened first: a card in a collapsed group has no box to scroll to
+    // (data-ins-group, not data-group: the timeline tooltip claims that one for retry groups)
+    const group = el.dataset.insGroup;
+    if (group && !ins.openGroups.has(group)) {
+      ins.openGroups.add(group);
+      renderInsights();
+    }
     const target = $('#card-' + el.dataset.rule);
-    if (target) target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    if (target) scrollBelowTopbar(target);
     return;
   }
   if (a === 'ins-evidence') {
@@ -779,7 +786,7 @@ function reportBodyHTML(ins) {
     const c = cardsByRule.get(rule);
     if (!c) return '';
     const value = isCheck(c) ? T.card.checkValue(c.sessions, c.of) : ins.axis === 'tokens' ? fmtTok(billableOf(c.exposure.tokens)) : fmt(c.exposure.main_ms);
-    return `<button data-action="ins-top" data-rule="${esc(rule)}" style="${toneStyle(c.group)}"><span class="rank">${pad2(i + 1)}</span><span><i class="tone-mark" aria-hidden="true"></i><b>${esc(ruleTitle(c))}</b> · ${esc(T.groups[c.group] ? T.groups[c.group].name : c.group)}</span><span class="mono">${esc(value)}</span></button>`;
+    return `<button data-action="ins-top" data-rule="${esc(rule)}" data-ins-group="${esc(c.group)}" style="${toneStyle(c.group)}"><span class="rank">${pad2(i + 1)}</span><span><i class="tone-mark" aria-hidden="true"></i><b>${esc(ruleTitle(c))}</b> · ${esc(T.groups[c.group] ? T.groups[c.group].name : c.group)}</span><span class="mono">${esc(value)}</span></button>`;
   }).join('')}</section>` : '';
   let rank = 0;
   const noData = rep.no_data || [];

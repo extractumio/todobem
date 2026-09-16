@@ -1172,6 +1172,32 @@ test('a check card is ranked by sessions, wears its chip, counts sessions and re
   assert.equal(h.errors.length, 0);
 });
 
+test('a top finding scrolls its card to just under the top bar and opens a collapsed group first', async () => {
+  const h = await harness().ready();
+  await openInsights(h);
+  // the page is scrolled and the sticky top bar is 63px tall; the card sits 400px into the viewport
+  // (pinned by selector: reopening the group re-renders the page and replaces the card node)
+  h.window.scrollY = 5000;
+  const topbar = h.document.querySelector('.topbar');
+  topbar.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 63 });
+  const card = h.node('card-D4');
+  card.getBoundingClientRect = () => ({ left: 0, top: 400, width: 1000, height: 300 });
+  const query = h.document.querySelector;
+  h.document.querySelector = selector => selector === '.topbar' ? topbar : selector === '#card-D4' ? card : query(selector);
+  const scrolls = [];
+  h.window.scrollTo = options => scrolls.push(options);
+  assert.match(h.node('main').innerHTML, /data-action="ins-top" data-rule="D4" data-ins-group="sub_agents"/);
+  h.action('ins-group', { insGroup: 'sub_agents' });
+  assert.equal(h.run("state.insights.openGroups.has('sub_agents')"), false, 'the group collapses on its header');
+  h.action('ins-top', { rule: 'D4', insGroup: 'sub_agents' });
+  assert.equal(h.run("state.insights.openGroups.has('sub_agents')"), true, 'the strip reopens the group its card sits in');
+  // 5000 + 400 - 63 - 12: the card's title lands below the bar, not behind it
+  assert.equal(scrolls.length, 1);
+  assert.equal(scrolls[0].top, 5325);
+  assert.equal(scrolls[0].behavior, 'smooth');
+  assert.equal(h.errors.length, 0);
+});
+
 test('the model-time card names lifecycle stages by their readable label, not the raw key', async () => {
   const h = await harness().ready();
   const report = insightsReport();
@@ -1200,24 +1226,35 @@ test('the axis switch reorders groups by tokens and back', async () => {
   assert.ok(html.indexOf('id="group-sub_agents"') < html.indexOf('id="group-you_and_the_agent"'));
 });
 
-test('an evidence row opens the session and focuses the interval', async () => {
+test('an evidence row opens the session and focuses the interval once the insights card above the timeline is in', async () => {
   const h = await harness().ready();
   await openInsights(h);
+  const scrolls = [];
+  h.window.scrollTo = options => scrolls.push(options);
   h.action('ins-evidence', { id: 'S1', a: '2000', b: '3000' });
   h.take('/api/sessions/S1').resolve(session('S1')); await flush();
   assert.equal(h.run('state.page'), 'session');
   assert.equal(h.run('state.id'), 'S1');
+  // the session's insights card is still loading: it will push the timeline down by its height,
+  // so the focus (and its scroll to the timeline) waits for it
+  assert.equal(h.run('state.focus'), null);
+  assert.equal(scrolls.length, 0);
+  h.take('/api/insights/report?period=session&session=S1').resolve(insightsReport()); await flush();
   assert.equal(h.run('JSON.stringify(state.focus)'), '{"a":2000,"b":3000}');
   assert.equal(h.run('state.pendingFocus'), null);
+  assert.equal(scrolls.length, 1, 'one scroll, after the layout above the timeline settled');
+  assert.equal(scrolls[0].behavior, 'smooth');
 });
 
-test('a focus parameter in the session hash highlights the interval after the load', async () => {
+test('a focus parameter in the session hash highlights the interval after the load, even when the insights card fails', async () => {
   const h = await harness().ready();
   h.location.hash = '#session/S9?focus=5000-6000';
   h.run('route()');
   h.take('/api/sessions/S9').resolve(session('S9')); await flush();
   assert.equal(h.run('state.id'), 'S9');
+  h.take('/api/insights/report?period=session&session=S9').resolve({ error: 'synthetic' }, 500); await flush();
   assert.equal(h.run('JSON.stringify(state.focus)'), '{"a":5000,"b":6000}');
+  assert.equal(h.errors.length, 0);
 });
 
 test('changing the period or the project requests a new report', async () => {

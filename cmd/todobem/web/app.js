@@ -337,7 +337,13 @@ function go(page, id) {
   }
   if (page === 'session' && id && id !== state.id) {
     setHash('#session/' + encodeURIComponent(id)); $('#main').innerHTML = '<div class="loading">Parsing session…</div>';
-    loadSession(id).then(applied => { if (applied && navigation === navigationRequest) { render(); schedulePoll(); applyPendingFocus(); } }).catch(e => {
+    loadSession(id).then(async applied => {
+      if (!applied || navigation !== navigationRequest) return;
+      const settled = render();
+      schedulePoll();
+      await settled;
+      if (navigation === navigationRequest) applyPendingFocus();
+    }).catch(e => {
       if (navigation !== navigationRequest || e instanceof AuthError) return; // locked: the lock screen is already up
       console.error(e); $('#main').innerHTML = `<div class="empty"><h3>Could not load session</h3><p>${esc(e.message)}</p></div>`;
     });
@@ -372,7 +378,31 @@ function keepPlace(paint) {
   }
   if (window.scrollTo) window.scrollTo(x, y);
 }
-function render() { nav(); if (state.page === 'sessions') { $('#main').innerHTML = fleetPage(); renderFleetRows(); } else if (state.page === 'insights') { renderInsights(); return; } else if (state.page === 'settings') { renderSettings(); return; } else if (current()) { $('#main').innerHTML = sessionPage(); renderOverview(); renderTimeline(); renderLower(); renderSessionInsights(); } $$('[data-icon]').forEach(el => el.innerHTML = icon(el.dataset.icon)); }
+// render paints the current page. On the session page it returns the settle of the session's
+// insights card: that card loads after the page and sits above the timeline, so anything that
+// scrolls to the timeline waits for it or lands a card's height too low.
+function render() {
+  nav();
+  let settled;
+  if (state.page === 'sessions') {
+    $('#main').innerHTML = fleetPage();
+    renderFleetRows();
+  } else if (state.page === 'insights') {
+    renderInsights();
+    return;
+  } else if (state.page === 'settings') {
+    renderSettings();
+    return;
+  } else if (current()) {
+    $('#main').innerHTML = sessionPage();
+    renderOverview();
+    renderTimeline();
+    renderLower();
+    settled = renderSessionInsights();
+  }
+  $$('[data-icon]').forEach(el => el.innerHTML = icon(el.dataset.icon));
+  return settled;
+}
 // applyPendingFocus honours a `#session/<id>?focus=<a>-<b>` link (an Insights evidence row):
 // the session opens and the timeline highlights that interval.
 function applyPendingFocus() {
@@ -996,17 +1026,31 @@ function zoomToBlock(ta, tb) {
   chooseSpan(framed < cur * .9 ? framed : Math.max(120e3, cur / 3), (ta + tb) / 2);
 }
 function pan(dir) { const span = state.b - state.a; setWindow(state.a + dir * span * .6, state.b + dir * span * .6); }
-// revealPlot brings the timeline into view only when it is entirely off-screen. If any part is
-// already visible it does nothing, so focusing an interval while looking at the timeline never
-// scrolls the page out from under the user (the zoom + highlight band already show the result).
+// topbarCover is the height of the sticky top bar: the strip at the top of the viewport that
+// hides whatever scrolls under it.
+function topbarCover() {
+  const bar = $('.topbar');
+  return bar ? bar.getBoundingClientRect().height : 0;
+}
+// scrollBelowTopbar scrolls the page so el's top edge sits just under the top bar.
+// scrollIntoView({ block: 'start' }) alone parks the element behind that bar and hides its first
+// lines (the title of an Insights card, the toolbar of the timeline).
+function scrollBelowTopbar(el) {
+  const top = el.getBoundingClientRect().top + (window.scrollY || 0) - topbarCover() - 12;
+  window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+}
+// revealPlot brings the timeline into view only when it is entirely off-screen (under the top
+// bar counts). If any part is already visible it does nothing, so focusing an interval while
+// looking at the timeline never scrolls the page out from under the user (the zoom + highlight
+// band already show the result).
 function revealPlot() {
   const el = $('#plot'); if (!el) return;
   const r = el.getBoundingClientRect();
-  if (r.bottom <= 0 || r.top >= window.innerHeight) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  if (r.bottom <= topbarCover() || r.top >= window.innerHeight) scrollBelowTopbar(el);
 }
 function scrollToTimeline() {
   const el = $('.timeline-card') || $('#plot');
-  if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  if (el) scrollBelowTopbar(el);
 }
 // Show an object in the timeline: select the WHOLE range (brush handles to both ends of the
 // session), scroll the range bar fully into view, and highlight where the object sits in it.
