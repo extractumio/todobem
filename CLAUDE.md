@@ -112,7 +112,8 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
   `userconfig_test.go`. A new Claude Code tool: a case in `internal/claude/tools.go` with a fixture in `lane_test.go` and a row in
   `docs/ARCHITECTURE.md` §2.2 (an unmapped tool is `unknown/tool:<name>`, which is honest). A new insight:
   a `Detector` in `internal/insights/detect_*.go` (a literal signal, no duration threshold that
-  explains anything, no estimate), a positive and a negative fixture, a text entry in
+  explains anything, no estimate) with its class (exposure, check, info) and its denominator
+  (which sessions are `NotApplicable`), a positive and a negative fixture, a text entry in
   `INSIGHT_TEXT` written in plain English, a row in `docs/ARCHITECTURE.md` §10.2. A new source: a
   package under `internal/` emitting `model.*` only, implementing `source.Source` with a
   `LaneParser` per file, registered in `server.NewWithCache` and `cmd/dump`, with a name and mark
