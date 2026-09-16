@@ -24,7 +24,8 @@ import (
 // 6: QueryMiss on a failed query kind without an exit code; SessionSummary/Session.Source.
 // 7: a sub-agent's open turn after the root closed is orphaned (its lane is not live).
 // 8: one op per Claude Code stop hook, with the command's classification and retry identity.
-const cacheVersion = 8
+// 9: a Claude Code assistant line with the model "<synthetic>" never names the turn's model.
+const cacheVersion = 9
 
 // FileFP fingerprints one source file. Append-only rollouts change size on every write and the
 // file set changes when a sub-agent appears, so (path,size,mtime) detects every real change.

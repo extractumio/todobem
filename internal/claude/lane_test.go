@@ -274,6 +274,35 @@ func TestTurnsOpsTokensAndHooks(t *testing.T) {
 	}
 }
 
+// TestSyntheticModelNeverNamesTheTurn: an assistant line the harness generated carries the
+// model "<synthetic>"; as the last message of a turn it must not overwrite the model of the
+// real calls, and a turn made of synthetic lines only has no model at all.
+func TestSyntheticModelNeverNamesTheTurn(t *testing.T) {
+	synthetic := func(ms int64, uuid, msgID, body string) string {
+		msg := map[string]any{"model": "<synthetic>", "id": msgID, "type": "message", "role": "assistant", "content": []any{text(body)}, "stop_reason": "end_turn",
+			"usage": map[string]any{"input_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 0}}
+		return msgLine("assistant", ms, uuid, map[string]any{"message": msg})
+	}
+	content := promptLine(1_000, "u1", "Look at x.", map[string]any{"promptSource": "typed", "origin": map[string]any{"kind": "human"}}) +
+		assistantLine(2_000, "a1", "m1", "tool_use", toolUse("t1", "Read", map[string]any{"file_path": fxCWD + "/x.go"}), usage{in: 10, cacheRead: 100, out: 5}) +
+		resultLine(2_500, "r1", "t1", "package x", false, nil) +
+		synthetic(3_000, "a2", "m2", "No response requested.") +
+		promptLine(4_000, "u2", "Go on.", map[string]any{"promptSource": "typed", "origin": map[string]any{"kind": "human"}}) +
+		synthetic(4_500, "a3", "m3", "No response requested.")
+	h, _ := home(t, content)
+	_, s := open(t, h)
+	root := s.Model.Lanes[0]
+	if len(root.Turns) != 2 {
+		t.Fatalf("turns: %d", len(root.Turns))
+	}
+	if root.Turns[0].Model != "claude-synthetic-1" || root.Model != "claude-synthetic-1" {
+		t.Fatalf("the synthetic line renamed the turn: turn=%q lane=%q", root.Turns[0].Model, root.Model)
+	}
+	if root.Turns[1].Model != "" {
+		t.Fatalf("a turn of synthetic lines only has no model, got %q", root.Turns[1].Model)
+	}
+}
+
 // TestSlashCommandsInterruptsAndSystemPrompts: a local slash command opens no turn but keeps
 // the user's message; a command the model answers is a turn; an interrupt closes the turn as
 // aborted with its pending op; harness prompts open system-triggered turns.

@@ -227,6 +227,10 @@ const (
 	promptNoise  = "noise"  // echoes and attachments that start nothing
 )
 
+// syntheticModel is the model name the CLI writes on assistant lines it generated itself (a
+// "No response requested." notice, an interrupt echo): no model call, so no model.
+const syntheticModel = "<synthetic>"
+
 // Tags the harness wraps its own user-role messages in.
 var (
 	systemTags = map[string]bool{"task-notification": true, "teammate-message": true, "system-reminder": true}
@@ -605,7 +609,9 @@ func (p *laneParser) onAssistant(env envelope, ts int64, start int64, line []byt
 		}
 		p.openTurn("sys-"+env.UUID, st, "system", src)
 	}
-	if msg.Model != "" {
+	if msg.Model != "" && msg.Model != syntheticModel {
+		// a harness-generated message ("No response requested.", an interrupt notice) names no
+		// model; it never overwrites the model the turn's real calls recorded
 		p.lane.Model = msg.Model
 		p.turn.Model = msg.Model
 	}
