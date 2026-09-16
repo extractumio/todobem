@@ -290,10 +290,11 @@ func (svc *insightsSvc) handleRules(w http.ResponseWriter) {
 		ID    string `json:"id"`
 		Group string `json:"group"`
 		Title string `json:"title"`
+		Class string `json:"class,omitempty"`
 	}
 	rules := make([]rule, 0, len(insights.Catalogue))
 	for _, d := range insights.Catalogue {
-		rules = append(rules, rule{d.ID, d.Group, d.Title})
+		rules = append(rules, rule{d.ID, d.Group, d.Title, d.Class})
 	}
 	writeJSON(w, map[string]any{"rules": rules, "groups": insights.GroupOrder, "gap_buckets": insights.GapBucketOrder(), "facts_version": insights.FactsVersion})
 }

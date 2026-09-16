@@ -174,7 +174,7 @@ type Evidence struct {
 }
 
 // GroupOrder is the page order of the groups when exposures tie; not_measured is always last.
-var GroupOrder = []string{GroupYou, GroupAgents, GroupFailures, GroupTools, GroupLongRuns, GroupContext, GroupModels, GroupUnseen}
+var GroupOrder = []string{GroupYou, GroupAgents, GroupVerify, GroupFailures, GroupTools, GroupLongRuns, GroupContext, GroupModels, GroupUnseen}
 
 // InPeriod reports whether a session with this last activity and live state belongs to the
 // period. Live sessions never count unless asked for (their numbers move on every refresh).

@@ -3,9 +3,11 @@ package insights
 import "fmt"
 
 // D11 · Context compaction pauses. Signal: a compaction op. Exposure: its duration and the
-// first model call after it (the re-read). Key: main thread or sub-agents, never mixed in one total.
+// first model call after it (the re-read). Key: main thread or sub-agents, never mixed in one
+// total. Stats: how many sat between two edits of one turn (the model lost its context in the
+// middle of an implementation loop) and their time.
 func detectCompactions(f *Facts) Result {
-	r := Result{Measurable: true}
+	r := Result{Measurable: true, Stats: map[string]int64{}}
 	for _, c := range f.Compactions {
 		key := "sub-agents"
 		if c.Lane == 0 {
@@ -17,6 +19,11 @@ func detectCompactions(f *Facts) Result {
 		}
 		if c.Reread == nil {
 			r.NoData++
+		}
+		if c.InChangeWindow {
+			r.Stats["in_change_window"]++
+			r.Stats["in_change_window_ms"] += c.End - c.Start
+			note += "; between two edits of one turn"
 		}
 		r.Findings = append(r.Findings, Finding{Lane: f.lanePath(c.Lane), LaneID: f.laneID(c.Lane), A: c.Start, B: c.End, Op: c.Op, TimeMs: c.End - c.Start, Tokens: c.Reread, Key: key, Note: note, Value: c.Context})
 	}

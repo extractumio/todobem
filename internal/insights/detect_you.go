@@ -7,14 +7,21 @@ import "fmt"
 const LongBreakMs = 4 * 3600e3
 
 // D1 · The agent waited for your answer. Signal: a wait for the user right after a turn in
-// which the agent asked a question. Exposure: the wait.
+// which the agent asked a question. Exposure: the wait. Stats: the questions asked after the
+// session had already changed a file, and their waits (a decision that arrived mid-work).
 func detectWaitingOnAnswer(f *Facts) Result {
-	r := Result{Measurable: true}
+	r := Result{Measurable: true, Stats: map[string]int64{}}
 	for _, g := range f.Gaps {
 		if !g.AfterQuestion || g.NextTurn == "" {
 			continue
 		}
-		r.Findings = append(r.Findings, Finding{Lane: f.lanePath(0), LaneID: f.laneID(0), A: g.Start, B: g.End, TimeMs: g.End - g.Start, Key: GapBucket(g.End - g.Start), Note: "the agent asked a question before this wait"})
+		note := "the agent asked a question before this wait"
+		if g.AfterFirstChange {
+			note += "; files had already been changed"
+			r.Stats["after_changes"]++
+			r.Stats["after_changes_ms"] += g.End - g.Start
+		}
+		r.Findings = append(r.Findings, Finding{Lane: f.lanePath(0), LaneID: f.laneID(0), A: g.Start, B: g.End, TimeMs: g.End - g.Start, Key: GapBucket(g.End - g.Start), Note: note})
 	}
 	return r
 }

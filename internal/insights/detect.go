@@ -78,6 +78,7 @@ func ClassRank(class string) int {
 const (
 	GroupYou      = "you_and_the_agent"
 	GroupAgents   = "sub_agents"
+	GroupVerify   = "verification"
 	GroupFailures = "failures_and_retries"
 	GroupTools    = "tool_calls"
 	GroupLongRuns = "long_tool_runs"
@@ -95,10 +96,12 @@ var Catalogue = []Detector{
 	{ID: "T1", Group: GroupYou, Title: "Cache after a break", Run: detectCacheAfterBreak},
 	{ID: "D4", Group: GroupAgents, Title: "Sub-agents ran one after another", Run: detectSerialDelegation},
 	{ID: "T6", Group: GroupAgents, Title: "Cost to start a sub-agent", Run: detectSpawnCost},
+	{ID: "D17", Group: GroupVerify, Title: "Final changes had no later successful test", Class: ClassCheck, Run: detectUnverifiedChanges},
+	{ID: "D24", Group: GroupVerify, Title: "A review did not cover the last changes", Class: ClassCheck, Run: detectReviewNotCoveringLastChanges},
 	{ID: "D7", Group: GroupFailures, Title: "Commands that fail and get retried", Run: detectRetryLoops},
 	{ID: "D15", Group: GroupFailures, Title: "Tool calls that failed", Class: ClassInfo, Run: detectFailedEdits},
 	{ID: "D16", Group: GroupTools, Title: "What the tool calls did", Class: ClassInfo, Run: detectToolCalls},
-	{ID: "D14", Group: GroupFailures, Title: "Invalid tool calls", Class: ClassInfo, Run: detectInvalidToolCalls},
+	{ID: "D14", Group: GroupFailures, Title: "Tool calls the harness could not parse", Class: ClassInfo, Run: detectInvalidToolCalls},
 	{ID: "D9", Group: GroupLongRuns, Title: "Long tool runs", Run: detectLongRuns},
 	{ID: "D12", Group: GroupLongRuns, Title: "Processes left running", Run: detectBackground},
 	{ID: "D11", Group: GroupContext, Title: "Context compaction pauses", Run: detectCompactions},

@@ -5,10 +5,11 @@ import "fmt"
 // D13 · Not measured. Signal: a command no rule matched (phase unknown). Exposure: its time,
 // keyed by the command head; the card lists the heads so a user can add overlay rules, and says
 // how much of it was an opaque script, a Claude Code tool without a mapping, or a command no rule
-// matched (the unknown subgroups). The session's time with no telemetry is reported as a number,
-// not as findings (it has no op).
+// matched (the unknown subgroups), and how much sat inside the main thread's change windows —
+// the unknown time a rule would pay off first. The session's time with no telemetry is reported
+// as a number, not as findings (it has no op).
 func detectUnknown(f *Facts) Result {
-	r := Result{Measurable: true, Stats: map[string]int64{"no_telemetry_ms": f.Root.ByPhase["no_telemetry"], "unknown_ms": f.Root.ByPhase["unknown"]}}
+	r := Result{Measurable: true, Stats: map[string]int64{"no_telemetry_ms": f.Root.ByPhase["no_telemetry"], "unknown_ms": f.Root.ByPhase["unknown"], "unknown_in_change_window_ms": f.Delivery.UnknownInWindowMs}}
 	for sub, ms := range f.UnknownMs {
 		if sub != "" {
 			r.Stats["unknown_"+sub+"_ms"] += ms
@@ -20,12 +21,13 @@ func detectUnknown(f *Facts) Result {
 	return r
 }
 
-// D14 · Invalid tool calls. Signal: the model produced arguments the harness could not parse
-// (an llm_error marker). Exposure: the count; each is a point in time.
+// D14 · Tool calls the harness could not parse. Signal: an llm_error marker — the harness
+// rejected a tool call's arguments. Exposure: the count; each is a point in time. The log
+// records the rejection, not its cause (the model, the tool's schema or description, the CLI).
 func detectInvalidToolCalls(f *Facts) Result {
 	r := Result{Measurable: true}
 	for _, e := range f.LLMErrorAt {
-		r.Findings = append(r.Findings, Finding{Lane: f.lanePath(e.Lane), LaneID: f.laneID(e.Lane), A: e.T, B: e.T, Key: "invalid tool call", Note: "the harness could not parse the model's tool call"})
+		r.Findings = append(r.Findings, Finding{Lane: f.lanePath(e.Lane), LaneID: f.laneID(e.Lane), A: e.T, B: e.T, Key: "rejected tool call", Note: "the harness rejected the tool call's arguments"})
 	}
 	return r
 }
