@@ -48,8 +48,16 @@ func detectUnverifiedChanges(f *Facts) Result {
 	case d.Tests > 0:
 		note = "the last test ran before the last edit"
 	}
-	r.Findings = append(r.Findings, Finding{Lane: f.lanePath(d.LastChangeLane), LaneID: f.laneID(d.LastChangeLane), A: d.LastChangeAt, B: f.Ended, Op: d.LastChangeOp, Key: sourceLabel(f.Source), Note: fmt.Sprintf("%d edits; %s", d.Changes, note)})
+	r.Findings = append(r.Findings, Finding{Lane: f.lanePath(d.LastChangeLane), LaneID: f.laneID(d.LastChangeLane), A: d.LastChangeAt, B: f.Ended, Op: d.LastChangeOp, Key: sourceLabel(f.Source), Note: fmt.Sprintf("%s; %s", plural(d.Changes, "edit"), note)})
 	return r
+}
+
+// plural words a count with its noun ("1 edit", "3 edits").
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // reviewGapBucket names how many edits followed the review (a display convention).
@@ -77,6 +85,6 @@ func detectReviewNotCoveringLastChanges(f *Facts) Result {
 	if d.ChangesAfterReview == 0 {
 		return r
 	}
-	r.Findings = append(r.Findings, Finding{Lane: f.lanePath(0), LaneID: f.laneID(0), A: d.ReviewedAt, B: d.LastChangeAt, Op: d.LastChangeOp, Key: reviewGapBucket(d.ChangesAfterReview), Note: fmt.Sprintf("%d edits after the last review run", d.ChangesAfterReview)})
+	r.Findings = append(r.Findings, Finding{Lane: f.lanePath(0), LaneID: f.laneID(0), A: d.ReviewedAt, B: d.LastChangeAt, Op: d.LastChangeOp, Key: reviewGapBucket(d.ChangesAfterReview), Note: plural(d.ChangesAfterReview, "edit") + " after the last review run"})
 	return r
 }

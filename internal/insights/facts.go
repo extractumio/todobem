@@ -17,8 +17,9 @@ import (
 // without an exit code. 4: subgroups on ops, the tool-call mix, failures by subgroup, unknown
 // time by subgroup. 5: the delivery walk (Delivery), recovery on retry windows, compactions
 // inside a change window, gaps after the first change, stop hooks among the long ops. 6:
-// unknown heads past env assignments.
-const FactsVersion = 6
+// unknown heads and shapes past env assignments and `export`. 7, 8: the same past a lone
+// shell separator (intermediate builds of the same change wrote 6 and 7).
+const FactsVersion = 8
 
 // Facts is everything the detectors need about one session, in a few KB.
 type Facts struct {
@@ -702,7 +703,7 @@ func unknownHeads(s *model.Session) []HeadFacts {
 func unknownHead(title string) string {
 	fields := strings.Fields(title)
 	for _, w := range fields {
-		if strings.Contains(w, "=") && !strings.HasPrefix(w, "=") || w == "env" || w == "sudo" || w == "nohup" || w == "time" {
+		if prefixWord(w) {
 			continue
 		}
 		return w
@@ -711,6 +712,20 @@ func unknownHead(title string) string {
 		return fields[0]
 	}
 	return title
+}
+
+// prefixWord reports whether w, at the head of a command, is not the command: an env
+// assignment (`FOO=bar`, `export PATH=…;`) or a wrapper (`env`, `sudo`, `nohup`, `time`,
+// `export`).
+func prefixWord(w string) bool {
+	if strings.Contains(w, "=") && !strings.HasPrefix(w, "=") {
+		return true
+	}
+	switch w {
+	case "env", "sudo", "nohup", "time", "export", ";", "&&", "||", "|":
+		return true
+	}
+	return false
 }
 
 // Shape is the cross-session key of a command: its phase, head word and subcommand, taken from
@@ -723,11 +738,8 @@ func Shape(phase model.Phase, identity string) string {
 	}
 	var words []string
 	for _, w := range strings.Fields(cmd) {
-		if len(words) == 0 && strings.Contains(w, "=") && !strings.HasPrefix(w, "=") {
-			continue // env assignment prefix
-		}
-		if len(words) == 0 && (w == "env" || w == "sudo" || w == "nohup" || w == "time") {
-			continue
+		if len(words) == 0 && prefixWord(w) {
+			continue // env assignment or wrapper prefix
 		}
 		if len(words) == 1 && strings.HasPrefix(w, "-") {
 			break

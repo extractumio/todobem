@@ -25,6 +25,8 @@ const toneStyle = id => `--tone:${toneColor(id)}`;
 const isInfo = c => c.class === 'info';
 const isCheck = c => c.class === 'check';
 const classRank = c => (isCheck(c) ? 1 : isInfo(c) ? 2 : 0);
+// "1 retry", "5 retries": the one plural the generic helper gets wrong.
+const retries = n => `${n} ${n === 1 ? 'retry' : 'retries'}`;
 
 const INSIGHT_TEXT = {
   page: {
@@ -85,13 +87,13 @@ const INSIGHT_TEXT = {
     noData: (n, reason) => `No data in ${plural(n, 'session')}${reason ? ` (${reason})` : ''}.`,
     noDataItems: n => `${plural(n, 'item')} had no usage record.`,
     inSessions: (n, of) => `In ${n} of ${of} sessions.`,
-    checkSessions: (n, of, what) => `In ${n} of ${of} sessions ${what}.`,
+    checkSessions: (n, of, what) => `In ${n} of ${of} ${of === 1 ? 'session' : 'sessions'} ${what}.`,
     projectsWithMore: 'Projects with 3 or more sessions in this period:',
   },
   card: {
     info: 'For information',
     check: 'A check',
-    checkValue: (n, of) => `${n} of ${of} sessions`,
+    checkValue: (n, of) => `${n} of ${of} ${of === 1 ? 'session' : 'sessions'}`,
     noDataTitle: 'Signals that could not be measured',
     spread: 'How it is spread',
     todo: 'What to do',
@@ -344,8 +346,8 @@ const INSIGHT_TEXT = {
         if (top) parts.push(`The most common command shape: \`${shapeText(top.label)}\`, in ${plural(top.sessions, 'session')}.`);
         if (s.windows) {
           const blind = s.windows_blind || 0;
-          parts.push(`${blind} of ${plural(s.windows, 'retry')} ran again with nothing recorded between the failure and the retry.`);
-          if (s.windows_after_user) parts.push(`${plural(s.windows_after_user, 'retry')} came after a message from you.`);
+          parts.push(`${blind} of ${retries(s.windows)} ran again with nothing recorded between the failure and the retry.`);
+          if (s.windows_after_user) parts.push(`${retries(s.windows_after_user)} came after a message from you.`);
           if (s.retries_failed_again) parts.push(`${plural(s.retries_failed_again, 'fix or recovery step')} ${s.retries_failed_again === 1 ? 'was' : 'were'} followed by another failure.`);
         }
         return parts.join(' ');
@@ -811,9 +813,9 @@ function cardHTML(ins, c, rank) {
     let v = ins.axis === 'tokens' ? billableOf(x.tokens) : x.time_ms;
     let shown = ins.axis === 'tokens' ? fmtTok(v) : fmt(x.time_ms);
     if (isCheck(c)) {
-      // a check row counts sessions: no time or tokens to show
+      // a check row counts sessions: no time or tokens to show (the sessions suffix follows)
       v = x.n;
-      shown = plural(x.sessions || x.n, 'session');
+      shown = `${x.n} of ${c.of}`;
     }
     if (c.rule === 'T1' && x.tokens && x.tokens.input) {
       // a cache row: the bar is the share not served from cache, the value says both numbers

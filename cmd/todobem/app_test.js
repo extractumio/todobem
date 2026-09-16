@@ -1162,7 +1162,7 @@ test('a check card is ranked by sessions, wears its chip, counts sessions and re
   assert.doesNotMatch(html, /D17 · info/);
   assert.match(html, /In 3 of 20 sessions with changes, no test passed after the last edit\. 7 of 12 turns with edits had no passing test after their last edit\. In 1 session the last test failed\. 2 sessions were verified by a stop hook\. No data in 1 session \(an unknown command after the last edit\)\./);
   // distribution rows count sessions, the evidence row shows the interval's length
-  assert.match(html, /<span class="label" title="Codex">Codex<\/span>[\s\S]*?2 sessions/);
+  assert.match(html, /<span class="label" title="Codex">Codex<\/span>[\s\S]*?2 of 20/);
   assert.match(html, /data-a="2000" data-b="62000"[\s\S]*?<span class="mono">1m<\/span>/);
   // the top findings strip lists the check after the time-ranked cards, valued in sessions
   const strip = html.slice(html.indexOf('class="top-findings"'), html.indexOf('class="insight-groups"'));
