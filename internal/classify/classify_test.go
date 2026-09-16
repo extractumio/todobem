@@ -407,6 +407,38 @@ func TestProbesAndQueryKinds(t *testing.T) {
 	}
 }
 
+// TestHeadWordsAndSegment: the cross-session key of a command is the head and subcommand of
+// the segment that decided its phase, past keywords, wrappers, env prefixes and `bash -c`.
+func TestHeadWordsAndSegment(t *testing.T) {
+	for _, c := range []struct{ seg, head, sub string }{
+		{"skills/run-remote-tests.sh candidate-local > out.log 2>&1", "skills/run-remote-tests.sh", "candidate-local"},
+		{"while ! skills/run-remote-tests.sh app; do sleep 5; done", "skills/run-remote-tests.sh", "app"},
+		{"bash -o pipefail -c 'skills/run-remote-tests.sh app 2>&1 | rg --line-buffered x'", "skills/run-remote-tests.sh", "app"},
+		{"FOO=1 docker run --rm img", "docker", "run"},
+		{"git -C /repo push --force-with-lease origin main", "git", "push"},
+		{"make -j8 test", "make", ""},
+		{"python3 -m pytest tests/", "python3", "-m pytest"},
+		{"sudo -n timeout 30 ./deploy-thing --now", "./deploy-thing", ""},
+		{"for x in a b", "", ""},
+		{"R=/tmp/ship.log", "", ""},
+		{"", "", ""},
+	} {
+		if head, sub := HeadWords(c.seg); head != c.head || sub != c.sub {
+			t.Errorf("HeadWords(%q) = %q %q, want %q %q", c.seg, head, sub, c.head, c.sub)
+		}
+	}
+	for _, c := range []struct{ cmd, segment string }{
+		{"set -euo pipefail; skills/run-remote-tests.sh candidate-local > out.log 2>&1", "skills/run-remote-tests.sh candidate-local > out.log 2>&1"},
+		{"export GIT_SSH_COMMAND='ssh -o ServerAliveInterval=30'\ngit push origin main", "git push origin main"},
+		{"go test ./...", "go test ./..."},
+		{"ls", "ls"},
+	} {
+		if got := Command(c.cmd, "").Segment; got != c.segment {
+			t.Errorf("Command(%q).Segment = %q, want %q", c.cmd, got, c.segment)
+		}
+	}
+}
+
 func TestHead(t *testing.T) {
 	for _, c := range []struct{ cmd, want string }{
 		{"python3 artifacts/x/capture.py before", "python3"},

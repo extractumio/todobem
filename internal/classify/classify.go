@@ -44,6 +44,9 @@ type Result struct {
 	Identity string `json:"identity"` // normalized command for retry grouping ("" if not groupable)
 	Title    string `json:"title"`    // short human label
 	Rule     string `json:"rule"`     // which rule matched (for the inspector)
+	// Segment is the top-level simple command that decided the phase (its env prefix
+	// stripped); "" when a regex rule, a heredoc body or Codex's own kind decided.
+	Segment string `json:"segment,omitempty"`
 	// Lifecycle is the SDLC stage pinned by the winning rule ("" = PhaseLifecycle(Phase)).
 	Lifecycle Lifecycle `json:"lifecycle,omitempty"`
 }
@@ -532,6 +535,7 @@ func command(cmd string, codexKind string, depth int) Result {
 	if loop && res.Phase != WaitWorker {
 		res.Queued = true
 	}
+	res.Segment = bestSeg
 	// Title: the segment that decided the phase, so "x=1; while …; done; run-tests.sh" reads as the test.
 	if bestSeg != "" && !strings.HasPrefix(cmd, bestSeg) {
 		res.Title = shortTitle(bestSeg)
@@ -686,101 +690,12 @@ var interpreters = map[string]bool{"python": true, "python3": true, "node": true
 
 // matchHead finds the rule for a simple command by its executable and optional subcommand.
 func matchHead(seg string) (Rule, string, bool) {
-	seg = strings.TrimSpace(reSubst.ReplaceAllString(seg, ""))
-	for {
-		fields := shellFields(seg)
-		if len(fields) == 0 {
-			return Rule{}, "", false
-		}
-		h := fields[0]
-		if shellKeywords[h] {
-			// `for x in …`, `select x in …` and `case $x in` are headers with no command in
-			// them: the words after the keyword are a variable and a word list (`for log in
-			// a.log b.log` must not classify as the macOS `log` tool). The body follows in
-			// later segments (`do …`). `while` / `until` / `if` are followed by a command.
-			if h == "for" || h == "select" || h == "case" || len(fields) == 1 {
-				return Rule{}, "", false
-			}
-			seg = strings.Join(fields[1:], " ")
-			continue
-		}
-		switch h {
-		case "sudo", "nohup", "exec", "command", "builtin", "nice", "timeout", "gtimeout", "env", "xargs", "caffeinate", "time":
-			rest := fields[1:]
-			if h == "command" && len(rest) > 0 && (rest[0] == "-v" || rest[0] == "-V") {
-				return wordRules["command -v"], "command -v", true
-			}
-			for len(rest) > 0 && (strings.HasPrefix(rest[0], "-") || (h == "timeout" && isNumberish(rest[0])) || (h == "env" && strings.Contains(rest[0], "="))) {
-				if h == "env" && (rest[0] == "-u" || rest[0] == "--unset") && len(rest) > 1 {
-					rest = rest[2:]
-					continue
-				}
-				rest = rest[1:]
-			}
-			if len(rest) > 0 {
-				seg = strings.Join(rest, " ")
-				continue
-			}
-			if h == "caffeinate" {
-				return wordRules["caffeinate"], "caffeinate", true
-			}
-			return Rule{}, "", false
-		}
-		break
+	fields, head, base, ok := unwrapHead(seg)
+	if !ok {
+		return Rule{}, "", false
 	}
-	fields := shellFields(seg)
-	head := fields[0]
-	base := head
-	if i := strings.LastIndex(head, "/"); i >= 0 {
-		base = head[i+1:]
-	}
-	// node_modules/.bin/<tool> → <tool>; node … node_modules/<pkg>/…/cli.js <sub> → <pkg> <sub>
-	if strings.Contains(head, "node_modules/.bin/") {
-		head = base
-	}
-	if base == "node" || base == "npx" {
-		for i, a := range fields[1:] {
-			if strings.HasPrefix(a, "-") {
-				continue
-			}
-			if m := reNodePkgCLI.FindStringSubmatch(a); m != nil {
-				fields = append([]string{m[1]}, fields[i+2:]...)
-				head, base = m[1], m[1]
-			}
-			break
-		}
-	}
-	// git [-C dir] [-c k=v] [--git-dir=…] [--no-pager] <sub> → git <sub>
-	if base == "git" {
-		rest := fields[1:]
-		for len(rest) > 0 {
-			switch {
-			case (rest[0] == "-C" || rest[0] == "-c") && len(rest) > 1:
-				rest = rest[2:]
-			case strings.HasPrefix(rest[0], "--git-dir") || strings.HasPrefix(rest[0], "--work-tree") || rest[0] == "--no-pager" || strings.HasPrefix(rest[0], "-c"):
-				rest = rest[1:]
-			default:
-				goto gitDone
-			}
-		}
-	gitDone:
-		fields = append([]string{"git"}, rest...)
-	}
-	// npm/pnpm/yarn [--prefix DIR | -C DIR | -w PKG | --workspace PKG | --filter G] <sub> → <tool> <sub>
-	if base == "npm" || base == "pnpm" || base == "yarn" {
-		rest := fields[1:]
-		for len(rest) > 0 {
-			switch {
-			case (rest[0] == "--prefix" || rest[0] == "-C" || rest[0] == "-w" || rest[0] == "--workspace" || rest[0] == "--filter" || rest[0] == "-F") && len(rest) > 1:
-				rest = rest[2:]
-			case strings.HasPrefix(rest[0], "--prefix=") || strings.HasPrefix(rest[0], "--workspace=") || strings.HasPrefix(rest[0], "--filter=") || rest[0] == "--silent" || rest[0] == "-s" || rest[0] == "--no-audit" || rest[0] == "--no-fund":
-				rest = rest[1:]
-			default:
-				goto npmDone
-			}
-		}
-	npmDone:
-		fields = append([]string{base}, rest...)
+	if base == "command" && len(fields) > 1 && (fields[1] == "-v" || fields[1] == "-V") {
+		return wordRules["command -v"], "command -v", true
 	}
 	// go run <pkg> / cargo run --bin <name>: judge by the package or binary name
 	if (base == "go" || base == "cargo") && len(fields) > 2 && fields[1] == "run" {
