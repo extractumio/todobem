@@ -165,7 +165,7 @@ pending question); no line longer than 256 KB is decoded there.
 | `user` `[Request interrupted by user…]` | turn aborted |
 | `assistant` (one line per streamed content block, all carrying the message `id`, `model`, `stop_reason`, `usage`) | tool-call ops (start), model-output ops, tokens once per message id, turn end at the last `end_turn` block (deferred until the next line proves the message over), `isApiErrorMessage` → `llm_error` |
 | `user` with `tool_result` (`is_error`, `Exit code N`, `returnCodeInterpretation`, `interrupted`, `backgroundTaskId`, `agentId`) | op end, status and exit; the sub-agent lane link; background polls |
-| `system/stop_hook_summary` | a `wait_worker/hook` op inside the turn; the turn ends when the hooks are done |
+| `system/stop_hook_summary` | one `wait_worker/hook` op per hook (`hookInfos`: command and duration; each ends at the summary line), titled by the command, its classification in `rule` (`hook · test/go test`) and the retry identity of a shell call, so a hook re-running the agent's command joins its group and a test hook is a recorded verification (§10); `hookErrors` marks every hook of the summary failed (the harness does not say which); the turn ends when the hooks are done |
 | `system/compact_boundary` (`preTokens`, `postTokens`, `durationMs`) | a compaction op |
 | `system/local_command`, `model_refusal_*`, `attachment` lines | evidence only |
 | `permissionMode: plan` on a prompt | `Turn.Mode = "plan"` |

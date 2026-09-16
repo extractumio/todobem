@@ -241,7 +241,7 @@ func TestTurnsOpsTokensAndHooks(t *testing.T) {
 			question = o
 		}
 	}
-	if hook == nil || hook.Phase != classify.WaitWorker || hook.Start != 20_500 || hook.End != 22_000 || hook.Turn != "u1" || hook.Title != "stop hooks · 1" {
+	if hook == nil || hook.Phase != classify.WaitWorker || hook.Start != 20_500 || hook.End != 22_000 || hook.Turn != "u1" || hook.Title != "stop hook · lint.sh" || hook.Rule != "hook · test/check-script" || hook.Identity != fxCWD+"\nlint.sh" || hook.Status != "completed" {
 		t.Fatalf("hook op: %+v", hook)
 	}
 	if question == nil || question.Phase != classify.WaitUser || question.Start != 24_000 || question.End != 54_000 || question.Turn != "u2" {
@@ -527,5 +527,67 @@ func TestIndexTitlesGrowthAndHomes(t *testing.T) {
 	ix2.SetHomes([]string{bare})
 	if _, ok := ix2.Get(fxSession); ok {
 		t.Fatal("a dropped home's sessions must leave at once")
+	}
+}
+
+// Stop hooks: one op per hook, each with its own duration ending at the summary line, the
+// command's own classification in Rule and the retry identity of a shell call — so a hook that
+// re-runs the agent's test command joins its group as a rerun, and a summary with errors marks
+// every hook of that summary failed (the harness does not say which one raised them).
+func TestStopHooksAreOneOpEach(t *testing.T) {
+	content := metaLine("mode", map[string]any{"mode": "normal"}) +
+		promptLine(1_000, "u1", "Fix it.", map[string]any{"promptSource": "typed", "origin": map[string]any{"kind": "human"}}) +
+		assistantLine(2_000, "a1", "m1", "tool_use", toolUse("t1", "Edit", map[string]any{"file_path": fxCWD + "/pkg/x.go", "old_string": "a", "new_string": "b"}), usage{in: 50, out: 30}) +
+		resultLine(2_200, "r1", "t1", "The file has been updated.", false, map[string]any{"filePath": fxCWD + "/pkg/x.go"}) +
+		assistantLine(3_000, "a2", "m2", "tool_use", toolUse("t2", "Bash", map[string]any{"command": "go test ./..."}), usage{in: 50, out: 30}) +
+		resultLine(9_000, "r2", "t2", "ok", false, map[string]any{"stdout": "ok", "stderr": ""}) +
+		assistantLine(10_000, "a3", "m3", "end_turn", text("Done."), usage{in: 10, out: 10}) +
+		systemLine(20_000, "s1", "stop_hook_summary", map[string]any{"hookCount": 3, "hookInfos": []any{
+			map[string]any{"command": "go test ./...", "durationMs": 6000},
+			map[string]any{"command": "gofmt -l .", "durationMs": 500},
+			map[string]any{"command": "scripts/notify.sh", "durationMs": 12000},
+		}, "hookErrors": []any{"notify.sh: exit 1"}, "preventedContinuation": false}) +
+		promptLine(30_000, "u2", "Thanks.", map[string]any{"promptSource": "typed", "origin": map[string]any{"kind": "human"}}) +
+		assistantLine(31_000, "a4", "m4", "end_turn", text("Welcome."), usage{in: 10, out: 10})
+	h, _ := home(t, content)
+	_, s := open(t, h)
+	m := s.Model
+	root := m.Lanes[0]
+	checkPartition(t, m)
+	var hooks []*model.Operation
+	for _, o := range root.Ops {
+		if o.Kind == "hook" || strings.HasPrefix(o.Kind, "hook|") {
+			hooks = append(hooks, o)
+		}
+	}
+	if len(hooks) != 3 {
+		t.Fatalf("hook ops: %d", len(hooks))
+	}
+	// each hook ends at the summary line and starts its own duration earlier, never before the
+	// final message; every hook of an errored summary is failed
+	want := []struct {
+		title, rule string
+		start       int64
+	}{
+		{"stop hook · go test ./...", "hook · test/go test", 14_000},
+		{"stop hook · gofmt -l .", "hook · code/format", 19_500},
+		{"stop hook · scripts/notify.sh", "hook · unknown/unknown", 10_000},
+	}
+	for i, w := range want {
+		o := hooks[i]
+		if o.Title != w.title || o.Rule != w.rule || o.Start != w.start || o.End != 20_000 || o.Turn != "u1" || o.Phase != classify.WaitWorker || o.Status != "failed" || !strings.Contains(o.Detail, "1 hook error(s)") {
+			t.Fatalf("hook %d: %+v", i, o)
+		}
+	}
+	// the hook's go test has the identity of the agent's go test: one retry group, the hook a rerun
+	agentTest := opByID(root, "t2")
+	if agentTest == nil || agentTest.Group == "" || hooks[0].Group != agentTest.Group || model.RoleOf(hooks[0].Kind) != "rerun" || hooks[1].Group != "" {
+		t.Fatalf("groups: agent %+v hook %+v", agentTest, hooks[0])
+	}
+	if len(root.Turns) != 2 || root.Turns[0].End != 20_000 {
+		t.Fatalf("the turn ends when the hooks are done: %+v", root.Turns[0])
+	}
+	if root.ByPhase[classify.WaitWorker] != 10_000 {
+		t.Fatalf("hook time is the overlap-free union of the hooks: %+v", root.ByPhase)
 	}
 }

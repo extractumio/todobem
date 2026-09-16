@@ -662,26 +662,20 @@ func (p *laneParser) onSystem(env envelope, ts int64, start int64, line []byte) 
 	switch env.Subtype {
 	case "stop_hook_summary":
 		// the harness's stop hooks ran after the model's last message: harness time inside the
-		// turn, and the turn ends when they are done
-		var total int64
-		var cmds []string
-		for _, h := range env.HookInfos {
-			total += h.DurationMs
-			cmds = append(cmds, h.Command)
-		}
-		if p.turn != nil && total > 0 {
-			s := ts - total
-			if p.ending != "" && s < p.endTS {
-				s = p.endTS
-			} else if p.ending == "" && s < p.lastTS {
-				s = p.lastTS
+		// turn, and the turn ends when they are done. One op per hook (the summary records each
+		// hook's command and duration, and they end together at the summary line): the op is
+		// wait_worker/hook — the activity partition does not change — but it carries the
+		// command's own classification in Rule and its retry identity, so a hook that re-runs
+		// the agent's test command joins that command's group, and a hook whose command is a
+		// test is a recorded verification the Insights read. The summary lists errors without
+		// saying which hook raised them: with any error every hook of the summary is failed.
+		if p.turn != nil {
+			floor := p.lastTS
+			if p.ending != "" {
+				floor = p.endTS
 			}
-			op := p.newOp("", p.turn.ID, classify.WaitWorker, "hook", s, ts, src)
-			op.Title = fmt.Sprintf("stop hooks · %d", len(env.HookInfos))
-			op.Detail = source.Clip(strings.Join(cmds, "\n"), 2000)
-			op.Status = "completed"
-			if len(env.HookErrors) > 0 {
-				op.Status = "failed"
+			for _, h := range env.HookInfos {
+				p.hookOp(h.Command, max(floor, ts-h.DurationMs), ts, len(env.HookErrors), src)
 			}
 		}
 		if p.ending != "" {
@@ -797,6 +791,26 @@ func (p *laneParser) newOp(id, turn string, phase model.Phase, kind string, s, e
 	}
 	op := &model.Operation{ID: id, Lane: p.lane.ID, Turn: turn, Phase: phase, Kind: kind, Start: s, End: e, Src: src}
 	p.lane.Ops = append(p.lane.Ops, op)
+	return op
+}
+
+// hookOp records one stop hook as a wait_worker/hook op inside the current turn, classified by
+// its command text like a shell call (Rule "hook · <phase>/<kind>", the retry identity with the
+// session's cwd) so it groups with the same command run by the agent.
+func (p *laneParser) hookOp(cmd string, s, e int64, errors int, src *model.Src) *model.Operation {
+	res := classify.Command(cmd, "")
+	op := p.newOp("", p.turn.ID, classify.WaitWorker, "hook", s, e, src)
+	op.Title = "stop hook · " + res.Title
+	op.Detail = source.Clip(cmd, 2000)
+	op.Rule = "hook · " + string(res.Phase) + "/" + res.Kind
+	if res.Identity != "" {
+		op.Identity = p.meta.CWD + "\n" + res.Identity
+	}
+	op.Status = "completed"
+	if errors > 0 {
+		op.Status = "failed"
+		op.Detail += fmt.Sprintf("\n(%d hook error(s) recorded on this summary; the harness does not say which hook)", errors)
+	}
 	return op
 }
 
