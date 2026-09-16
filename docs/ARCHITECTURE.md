@@ -361,7 +361,9 @@ codesign queries, dns, net) and a CI status wait (`gh pr checks`, `gh run watch`
 ci`, whose exit says the checks are still pending or failing) are **answers**: the op keeps its
 literal status and exit, is marked `query_miss`, and is not counted in `failed_ops`.
 `Operation.Failure()` is the single predicate every count, filter, retry role and Insights
-signal reads. (CI status waits: decision of 2026-09-15.)
+signal reads. An exit of 130 (SIGINT) or 143 (SIGTERM) is a command that was stopped, not
+judged — the record keeps its status and exit, `Failure()` says no. (CI status waits: decision
+of 2026-09-15; kill signals: 2026-09-16.)
 
 ### 4.3 Lifecycle pins, matchers and change kinds (`lifecycle.go`)
 

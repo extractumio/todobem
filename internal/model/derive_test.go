@@ -251,6 +251,30 @@ func TestInfraAttemptsFormGroupsAndLoneInfraStaysRecovery(t *testing.T) {
 	}
 }
 
+// TestKilledCommandsAreNotFailures: a command that ended with SIGINT (130) or SIGTERM (143)
+// was stopped, not judged; the record stays literal, the failure count leaves it out.
+func TestKilledCommandsAreNotFailures(t *testing.T) {
+	one, sigint, sigterm := 1, 130, 143
+	s := fixture()
+	l := s.Lanes[0]
+	Derive(s, 200)
+	before := s.Totals.Failed
+	failed := mkOp("f1", classify.Code, 132, 134, "failed", "")
+	failed.Kind, failed.Exit = "shell", &one
+	killed := mkOp("f2", classify.Code, 136, 138, "failed", "")
+	killed.Kind, killed.Exit = "shell", &sigterm
+	interrupted := mkOp("f3", classify.Test, 140, 142, "failed", "")
+	interrupted.Kind, interrupted.Exit = "go test", &sigint
+	l.Ops = append(l.Ops, failed, killed, interrupted)
+	Derive(s, 200)
+	if !failed.Failure() || killed.Failure() || interrupted.Failure() || killed.Status != "failed" {
+		t.Fatalf("failure: exit 1=%v exit 143=%v exit 130=%v status=%q", failed.Failure(), killed.Failure(), interrupted.Failure(), killed.Status)
+	}
+	if s.Totals.Failed != before+1 {
+		t.Fatalf("failed count %d, want %d", s.Totals.Failed, before+1)
+	}
+}
+
 func TestQueryMissesAreNotFailures(t *testing.T) {
 	// the harness records status "failed" and the exit code for a search with no match or a
 	// read of a missing path; the record stays literal, the failure count does not include it

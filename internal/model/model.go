@@ -63,8 +63,15 @@ type Operation struct {
 
 // Failure reports whether the op counts as a failed step: a recorded failure or non-zero exit
 // that is not a query miss.
+// Failure reports a step that failed: the harness recorded a failure or a non-zero exit, the
+// op is not a query (a miss is an answer, classify.QueryKind) and the exit is not a kill
+// signal — 130 (SIGINT) and 143 (SIGTERM) are what a command ends with when the turn is
+// stopped, not a verdict on the command (product rule 3).
 func (o *Operation) Failure() bool {
-	return !o.QueryMiss && (o.Status == "failed" || (o.Exit != nil && *o.Exit != 0))
+	if o.QueryMiss || o.Exit != nil && (*o.Exit == 130 || *o.Exit == 143) {
+		return false
+	}
+	return o.Status == "failed" || o.Exit != nil && *o.Exit != 0
 }
 
 // SetCall/CallID are used by adapters to stitch polls to their originating command.
