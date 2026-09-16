@@ -7,10 +7,10 @@
 // Every string a reader sees lives in INSIGHT_TEXT (plain English, rule 10 of the spec): short
 // sentences, common words, numbers with units, "you" and "the agent".
 
-const INSIGHT_GROUPS = ['you_and_the_agent', 'sub_agents', 'failures_and_retries', 'tool_calls', 'long_tool_runs', 'context_size', 'models_and_effort', 'not_measured'];
+const INSIGHT_GROUPS = ['you_and_the_agent', 'sub_agents', 'verification', 'failures_and_retries', 'tool_calls', 'long_tool_runs', 'context_size', 'models_and_effort', 'not_measured'];
 // Each group carries one of the timeline's phase colours (app.css variables) so a reader can tell
 // the groups apart on a long page: failures are the error red, long runs the Testing yellow, …
-const INSIGHT_TONES = { you_and_the_agent: 'wait_user', sub_agents: 'wait_worker', failures_and_retries: 'error', tool_calls: 'code', long_tool_runs: 'test', context_size: 'compaction', models_and_effort: 'llm', not_measured: 'unknown' };
+const INSIGHT_TONES = { you_and_the_agent: 'wait_user', sub_agents: 'wait_worker', verification: 'test', failures_and_retries: 'error', tool_calls: 'code', long_tool_runs: 'test', context_size: 'compaction', models_and_effort: 'llm', not_measured: 'unknown' };
 // ERROR_RED is the timeline's red for failed tool calls and interrupted turns (app.js markers).
 const ERROR_RED = '#d76368';
 function toneColor(id) {
@@ -67,6 +67,7 @@ const INSIGHT_TEXT = {
   groups: {
     you_and_the_agent: { name: 'You and the agent', question: 'How fast do you reply, and what does waiting cost?' },
     sub_agents: { name: 'Sub-agents', question: 'Do sub-agents run in parallel, and what does starting them cost?' },
+    verification: { name: 'Verification loop', question: 'Were the last changes tested and reviewed before the answer?' },
     failures_and_retries: { name: 'Failures and retries', question: 'What breaks, and how often?' },
     tool_calls: { name: 'Tool calls', question: 'What did the agent spend its tool calls on, and how many found nothing?' },
     long_tool_runs: { name: 'Long tool runs', question: 'Which commands take the longest, and what keeps running?' },
@@ -84,10 +85,13 @@ const INSIGHT_TEXT = {
     noData: (n, reason) => `No data in ${plural(n, 'session')}${reason ? ` (${reason})` : ''}.`,
     noDataItems: n => `${plural(n, 'item')} had no usage record.`,
     inSessions: (n, of) => `In ${n} of ${of} sessions.`,
+    checkSessions: (n, of, what) => `In ${n} of ${of} sessions ${what}.`,
     projectsWithMore: 'Projects with 3 or more sessions in this period:',
   },
   card: {
     info: 'For information',
+    check: 'A check',
+    checkValue: (n, of) => `${n} of ${of} sessions`,
     noDataTitle: 'Signals that could not be measured',
     spread: 'How it is spread',
     todo: 'What to do',
@@ -122,9 +126,15 @@ const INSIGHT_TEXT = {
     D1: {
       title: 'The agent waited for your answer',
       signal: 'A wait for you right after a turn in which the agent asked a question.',
-      measured: 'The length of each such wait.',
-      happened: c => `The agent asked you a question ${c.exposure.count} ${c.exposure.count === 1 ? 'time' : 'times'} and waited ${fmt(c.exposure.time_ms)} in total${shareText(c)}. ${inSessions(c)}`,
-      todo: 'Reply sooner. Or write the default answers into the instructions file (AGENTS.md) so the agent does not need to ask. Or use plan mode at the start.',
+      measured: 'The length of each such wait. How many questions came after the agent had already changed files.',
+      happened: c => {
+        const s = c.stats || {};
+        const parts = [`The agent asked you a question ${c.exposure.count} ${c.exposure.count === 1 ? 'time' : 'times'} and waited ${fmt(c.exposure.time_ms)} in total${shareText(c)}.`];
+        if (s.after_changes) parts.push(`${plural(s.after_changes, 'question')} came after files had already been changed, ${fmt(s.after_changes_ms || 0)} of waiting.`);
+        parts.push(inSessions(c));
+        return parts.join(' ');
+      },
+      todo: 'Reply sooner. Or write the default answers into the instructions file (AGENTS.md) so the agent does not need to ask. A question asked after edits began is a decision to settle before the work starts. Put it in the task or in plan mode.',
     },
     D2: {
       title: 'Time to your reply',
@@ -156,14 +166,14 @@ const INSIGHT_TEXT = {
     },
     D9: {
       title: 'Long tool runs',
-      signal: 'A test, build, release or infra command whose shape ran two or more times in the period.',
-      measured: 'The time of each run, by command shape.',
+      signal: 'A test, build, release or infra command, or a stop hook, whose shape ran two or more times in the period.',
+      measured: 'The time of each run, by command shape. A stop hook is listed under its own command, marked hook.',
       happened: c => {
         const top = c.distribution && c.distribution[0];
         const first = top ? ` The longest shape: \`${shapeText(top.label)}\`, ${top.n} runs, ${fmt(top.time_ms)}.` : '';
         return `Commands that ran two or more times took ${fmt(c.exposure.time_ms)} in total${shareText(c)}.${first} ${inSessions(c)}`;
       },
-      todo: 'Try a faster or incremental version. Or start it early and let the agent do other work while it runs.',
+      todo: 'Try a faster or incremental version. Or start it early and let the agent do other work while it runs. A slow stop hook holds every turn: narrow it or move it to a pre-commit step.',
     },
     D12: {
       title: 'Processes left running',
@@ -175,13 +185,14 @@ const INSIGHT_TEXT = {
     D13: {
       title: 'Commands no rule matched',
       signal: 'A command the classifier could not match to any rule (phase unknown). It may be an opaque script, a Claude Code tool without a mapping, or a command no rule knows.',
-      measured: 'The time of each such command, by its first word. How it splits between scripts, unmapped tools and unmatched commands. The time with no telemetry is a number on the card.',
+      measured: 'The time of each such command, by its first word. How it splits between scripts, unmapped tools and unmatched commands. How much of it sat inside the main thread\'s edit loops. The time with no telemetry is a number on the card.',
       happened: c => {
         const s = c.stats || {};
         const top = c.distribution && c.distribution[0];
         const parts = [`${fmt(s.unknown_ms || c.exposure.time_ms)} went to commands that matched no rule.`];
         const split = [['unknown_script_ms', 'opaque scripts'], ['unknown_tool_ms', 'tools without a mapping'], ['unknown_command_ms', 'unmatched commands']].filter(([k]) => s[k] > 0).map(([k, name]) => `${fmt(s[k])} ${name}`);
         if (split.length > 1) parts.push(`Of that: ${split.join(', ')}.`);
+        if (s.unknown_in_change_window_ms) parts.push(`${fmt(s.unknown_in_change_window_ms)} of it sat between the first and the last edit of a turn, where a rule pays off first.`);
         if (top) parts.push(`The most common: \`${top.label}\`, ${top.n} ${top.n === 1 ? 'time' : 'times'}.`);
         if (s.no_telemetry_ms) parts.push(`${fmt(s.no_telemetry_ms)} had no telemetry at all.`);
         parts.push(inSessions(c));
@@ -190,11 +201,11 @@ const INSIGHT_TEXT = {
       todo: 'Add rules for these commands in the rules file (~/.todobem/rules.json). After a rule change, all cached sessions are analyzed again.',
     },
     D14: {
-      title: 'Invalid tool calls',
-      signal: 'The model sent a tool call the harness could not parse. Shown from three occurrences.',
-      measured: 'The count.',
-      happened: c => `The model sent ${c.exposure.count} tool calls with invalid arguments. ${inSessions(c)}`,
-      todo: 'This is a model error, not yours. If it repeats with one tool, check that tool\'s description in your setup.',
+      title: 'Tool calls the harness could not parse',
+      signal: 'The harness rejected the arguments of a tool call. Shown from three occurrences.',
+      measured: 'The count. The log records the rejection, not its cause.',
+      happened: c => `The harness rejected ${plural(c.exposure.count, 'tool call')}. ${inSessions(c)}`,
+      todo: 'If it repeats with one tool, check that tool\'s description and examples in your setup. The cause can be the model, the tool schema or the CLI version; the log does not say which.',
     },
     D15: {
       title: 'Tool calls that failed',
@@ -235,7 +246,7 @@ const INSIGHT_TEXT = {
         const none = s.no_tool_call_ms ? ` ${fmt(s.no_tool_call_ms)} in turns without a tool call (not a stage).` : '';
         return `The model spent ${fmt(c.exposure.time_ms)} generating on the main thread${shareText(c)}.${by}${none} ${inSessions(c)}`;
       },
-      todo: 'You can set the effort per stage and a model per agent role in the harness config.',
+      todo: 'Where your harness allows a model or an effort per agent role or per stage, this split says which stage would be affected. It does not say the result would be as good.',
     },
     T2: {
       title: 'Context size',
@@ -260,7 +271,7 @@ const INSIGHT_TEXT = {
         const sum = prefix => fmtTok(rows.filter(r => r.label.startsWith(prefix)).reduce((a, r) => a + billableOf(r.tokens), 0));
         return `Read-only sub-agents used ${sum('read-only')} tokens; worker sub-agents ${sum('worker')}; the main thread ${sum('main')} (input not from cache + output). ${inSessions(c)}`;
       },
-      todo: 'Give read-only sub-agents a cheaper model or a lower effort (Codex: a model per agent in the agent config).',
+      todo: 'Read-only sub-agents on the default model are the usual place to try a cheaper model or a lower effort. Codex takes a model per agent in the agent config. Check their answers after the change; the log does not measure quality.',
     },
     T6: {
       title: 'Cost to start a sub-agent',
@@ -282,31 +293,69 @@ const INSIGHT_TEXT = {
         const pct = t.output ? Math.round((t.reasoning || 0) / t.output * 100) : 0;
         return `Reasoning is ${pct} % of all output tokens. ${inSessions(c)}`;
       },
-      todo: 'Reasoning follows the effort setting. A lower effort for simple stages reduces it.',
+      todo: 'Reasoning follows the effort setting. A lower effort reduces it; whether the answers stay as good is not in the log.',
     },
     D4: {
       title: 'Sub-agents ran one after another',
       signal: 'The main thread waited for sub-agents while at most one sub-agent was inside a turn.',
       measured: 'The part of each wait with at most one sub-agent working.',
       happened: c => `The main thread waited ${fmt(c.exposure.time_ms)} while only one sub-agent was working${shareText(c)}. ${inSessions(c)}`,
-      todo: 'If the sub-agents did not depend on each other, start them together and wait once. If they did, let the main thread do its own next step while it waits. The log does not show whether they depended on each other.',
+      todo: 'If the sub-agents did not depend on each other, start them together and wait once. Both harnesses block the main thread on the wait, so it never works meanwhile. The log does not show whether they depended on each other.',
+    },
+    D17: {
+      title: 'Final changes had no later successful test',
+      signal: 'The session changed files, and no test ran and passed after the last change. A test is a test, lint or type-check command, or a stop hook that runs one. A build does not count.',
+      measured: 'The sessions where this happened, out of the sessions with changes. Per turn: turns with edits and no passing test after their last edit. Sessions whose last test failed. Sessions verified by a stop hook.',
+      happened: c => {
+        const s = c.stats || {};
+        const parts = [INSIGHT_TEXT.states.checkSessions(c.sessions, c.of, 'with changes, no test passed after the last edit')];
+        if (s.edit_turns) parts.push(`${s.edit_turns_unverified || 0} of ${plural(s.edit_turns, 'turn')} with edits had no passing test after their last edit.`);
+        if (s.last_verdict_failed) parts.push(`In ${plural(s.last_verdict_failed, 'session')} the last test failed.`);
+        if (s.verified_by_hook) parts.push(`${plural(s.verified_by_hook, 'session')} ${s.verified_by_hook === 1 ? 'was' : 'were'} verified by a stop hook.`);
+        if (c.no_data) parts.push(INSIGHT_TEXT.states.noData(c.no_data, c.reason || ''));
+        parts.push('The log does not say what the test covered.');
+        return parts.join(' ');
+      },
+      todo: 'Add a verification step after the last edit. A line in the instructions file (AGENTS.md) works, and so does a stop hook that runs the project\'s test command. The evidence opens the last edit; everything after it ran without a passing test.',
+    },
+    D24: {
+      title: 'A review did not cover the last changes',
+      signal: 'A review skill ran (or the agent was in review mode), and files were changed after that review ended. Reviews the harness did not record cannot be seen.',
+      measured: 'The sessions where this happened, out of the sessions with a recorded review. How many edits came after the last review.',
+      happened: c => {
+        const s = c.stats || {};
+        const parts = [INSIGHT_TEXT.states.checkSessions(c.sessions, c.of, 'with a review, files changed after the last review ended')];
+        if (s.edits_after_review) parts.push(`${plural(s.edits_after_review, 'edit')} came after the last review.`);
+        if (c.no_data) parts.push(INSIGHT_TEXT.states.noData(c.no_data, c.reason || ''));
+        parts.push('The log does not say what the review looked at.');
+        return parts.join(' ');
+      },
+      todo: 'Run the review skill again after the edits it asked for, or make the review the last step of the turn. The evidence opens the interval from the review\'s end to the last edit.',
     },
     D7: {
       title: 'Commands that fail and get retried',
       signal: 'A retry group with at least one failed attempt. The same normalized command ran again after a failure.',
-      measured: 'Time in retries, fixes between attempts, recovery steps and queue waits. Tokens of the turns inside those windows.',
+      measured: 'Time in retries, fixes between attempts, recovery steps and queue waits. Tokens of the turns inside those windows. What the thread ran between each failure and its retry.',
       happened: c => {
-        const groups = (c.stats && c.stats.groups) || c.exposure.count;
+        const s = c.stats || {};
+        const groups = s.groups || c.exposure.count;
         const top = c.distribution && c.distribution[0];
-        const shape = top ? ` The most common command shape: \`${shapeText(top.label)}\`, in ${plural(top.sessions, 'session')}.` : '';
-        return `Commands failed and were run again in ${c.sessions} of ${c.of} sessions. ${plural(groups, 'retry group')} took ${fmt(c.exposure.time_ms)} in retries and fixes${shareText(c)}.${shape}`;
+        const parts = [`Commands failed and were run again in ${c.sessions} of ${c.of} sessions. ${plural(groups, 'retry group')} took ${fmt(c.exposure.time_ms)} in retries and fixes${shareText(c)}.`];
+        if (top) parts.push(`The most common command shape: \`${shapeText(top.label)}\`, in ${plural(top.sessions, 'session')}.`);
+        if (s.windows) {
+          const blind = s.windows_blind || 0;
+          parts.push(`${blind} of ${plural(s.windows, 'retry')} ran again with nothing recorded between the failure and the retry.`);
+          if (s.windows_after_user) parts.push(`${plural(s.windows_after_user, 'retry')} came after a message from you.`);
+          if (s.retries_failed_again) parts.push(`${plural(s.retries_failed_again, 'fix or recovery step')} ${s.retries_failed_again === 1 ? 'was' : 'were'} followed by another failure.`);
+        }
+        return parts.join(' ');
       },
-      todo: 'Look at the command shape that fails most. For a setup step: fix the setup script or the image, or write the working command into the instructions file (AGENTS.md). For a test or build: add the check that the fix always does, before the run.',
+      todo: 'Look at the command shape that fails most. For a setup step: fix the setup script or the image, or write the working command into the instructions file (AGENTS.md). For a test or build: add the check that the fix always does, before the run. Many retries with nothing between them point at an error message the agent cannot act on.',
     },
     D11: {
       title: 'Context compaction pauses',
       signal: 'A context compaction by the harness.',
-      measured: 'Time of each compaction. The context size before it. The tokens of the first model call after it.',
+      measured: 'Time of each compaction. The context size before it. The tokens of the first model call after it. How many sat between two edits of one turn.',
       happened: c => {
         const s = c.stats || {};
         const rootN = s.count_main || 0;
@@ -314,9 +363,10 @@ const INSIGHT_TEXT = {
         const ctx = s.context_median ? ` at about ${Math.round(s.context_median / 1000)} k tokens each time` : '';
         const root = rootN ? `${fmt(s.time_main || 0)} on the main thread${c.share ? ` (${c.share.pct.toFixed(1)} % of its elapsed time)` : ''}` : 'no time on the main thread';
         const sub = subN ? `, ${fmt(s.time_sub || 0)} in sub-agents (in parallel)` : '';
-        return `The harness compacted the context ${c.exposure.count} times (main thread ${rootN}, sub-agents ${subN})${ctx}. This took ${root}${sub}. ${inSessions(c)}`;
+        const loop = s.in_change_window ? ` ${s.in_change_window} of them happened between two edits of one turn, in the middle of the work.` : '';
+        return `The harness compacted the context ${c.exposure.count} times (main thread ${rootN}, sub-agents ${subN})${ctx}. This took ${root}${sub}.${loop} ${inSessions(c)}`;
       },
-      todo: 'Split long tasks into new threads or sub-agents at stage boundaries. Keep instruction files short. Do not paste large outputs into the chat.',
+      todo: 'Split long tasks into new threads or sub-agents at stage boundaries. Keep instruction files short. Do not paste large outputs into the chat. Before a long edit loop, write the plan and the files to touch into a note the next thread can read.',
     },
     T1: {
       title: 'Cache after a break',
@@ -341,7 +391,7 @@ const INSIGHT_TEXT = {
         parts.push(inSessions(c));
         return parts.join(' ');
       },
-      todo: 'Reply within the cache window. After a long break, start a new thread with a short summary instead of continuing a large context.',
+      todo: 'Reply within the cache window. After a long break, a new thread with a short summary costs less only when most of the old context is stale. The number shown is the input read again.',
     },
   },
 };
@@ -381,7 +431,9 @@ function laneLabel(path) {
 
 function shapeText(shape) {
   const i = (shape || '').indexOf(' ');
-  return i >= 0 ? shape.slice(i + 1) : shape;
+  if (i < 0) return shape;
+  // the phase prefix is dropped; a stop hook keeps its mark so it is not read as the agent's own run
+  return (shape.startsWith('hook ') ? 'hook · ' : '') + shape.slice(i + 1);
 }
 
 /* ---------- state and data ---------- */
@@ -690,11 +742,12 @@ function reportBodyHTML(ins) {
   for (const g of groups) {
     for (const c of g.cards || []) cardsByRule.set(c.rule, c);
   }
-  const top = (ins.axis === 'tokens' ? rep.top_tokens : rep.top_time) || [];
+  // the exposure cards of the chosen axis, then the checks (most sessions affected first)
+  const top = ((ins.axis === 'tokens' ? rep.top_tokens : rep.top_time) || []).concat(rep.top_checks || []);
   const topHTML = top.length ? `<section class="top-findings" aria-label="${esc(T.strip.top)}"><div class="eyebrow">${esc(T.strip.top)}</div>${top.map((rule, i) => {
     const c = cardsByRule.get(rule);
     if (!c) return '';
-    const value = ins.axis === 'tokens' ? fmtTok(billableOf(c.exposure.tokens)) : fmt(c.exposure.time_ms);
+    const value = isCheck(c) ? T.card.checkValue(c.sessions, c.of) : ins.axis === 'tokens' ? fmtTok(billableOf(c.exposure.tokens)) : fmt(c.exposure.time_ms);
     return `<button data-action="ins-top" data-rule="${esc(rule)}" style="${toneStyle(c.group)}"><span class="rank">${pad2(i + 1)}</span><span><i class="tone-mark" aria-hidden="true"></i><b>${esc(ruleTitle(c))}</b> · ${esc(T.groups[c.group] ? T.groups[c.group].name : c.group)}</span><span class="mono">${esc(value)}</span></button>`;
   }).join('')}</section>` : '';
   let rank = 0;
@@ -753,10 +806,15 @@ function cardHTML(ins, c, rank) {
   const r = T.rules[c.rule] || { title: c.title, happened: () => '', todo: '' };
   const headline = r.happened(c);
   const rows = (c.distribution || []).slice(0, 8);
-  const maxRow = c.rule === 'T1' ? 100 : Math.max(1, ...rows.map(x => ins.axis === 'tokens' ? billableOf(x.tokens) : x.time_ms));
+  const maxRow = c.rule === 'T1' ? 100 : isCheck(c) ? Math.max(1, ...rows.map(x => x.n)) : Math.max(1, ...rows.map(x => ins.axis === 'tokens' ? billableOf(x.tokens) : x.time_ms));
   const dist = rows.length ? `<div><div class="part-label">${esc(T.card.spread)}</div><div class="dist">${rows.map(x => {
     let v = ins.axis === 'tokens' ? billableOf(x.tokens) : x.time_ms;
     let shown = ins.axis === 'tokens' ? fmtTok(v) : fmt(x.time_ms);
+    if (isCheck(c)) {
+      // a check row counts sessions: no time or tokens to show
+      v = x.n;
+      shown = plural(x.sessions || x.n, 'session');
+    }
     if (c.rule === 'T1' && x.tokens && x.tokens.input) {
       // a cache row: the bar is the share not served from cache, the value says both numbers
       const uncached = x.tokens.input - x.tokens.cached;
@@ -769,14 +827,14 @@ function cardHTML(ins, c, rank) {
   const all = c.evidence || [];
   const showAll = ins.showAll.has(c.rule);
   const shown = showAll ? all : all.slice(0, 3);
-  const evidence = all.length ? `<div><div class="part-label">${esc(T.card.where)}</div><div class="evidence"><div class="ev-head" aria-hidden="true"><span>${esc(T.card.session)}</span><span>${esc(T.card.agent)}</span><span>${esc(T.card.when)}</span><span>${esc(T.card.duration)}</span><span>${esc(T.card.tokens)}</span><span>${esc(T.card.note)}</span></div>${shown.map(e => `<button class="ev-row" data-action="ins-evidence" data-id="${esc(e.session)}" data-a="${e.a}" data-b="${e.b}" title="${esc(e.title || e.session)}"><span>${esc(trunc(e.title || e.session, 48))}</span><span>${esc(laneLabel(e.lane))}</span><span class="mono">${stamp(e.a)}</span><span class="mono">${fmt(e.time_ms)}</span><span class="mono">${e.tokens ? fmtTok(billableOf(e.tokens)) : '—'}</span><span>${esc(e.note || '')}</span></button>`).join('')}</div>${all.length > 3 ? `<button class="text-btn" data-action="ins-more" data-rule="${esc(c.rule)}">${esc(showAll ? T.card.showFewer : T.card.showAll(all.length))}</button>` : ''}</div>` : '';
+  const evidence = all.length ? `<div><div class="part-label">${esc(T.card.where)}</div><div class="evidence"><div class="ev-head" aria-hidden="true"><span>${esc(T.card.session)}</span><span>${esc(T.card.agent)}</span><span>${esc(T.card.when)}</span><span>${esc(T.card.duration)}</span><span>${esc(T.card.tokens)}</span><span>${esc(T.card.note)}</span></div>${shown.map(e => `<button class="ev-row" data-action="ins-evidence" data-id="${esc(e.session)}" data-a="${e.a}" data-b="${e.b}" title="${esc(e.title || e.session)}"><span>${esc(trunc(e.title || e.session, 48))}</span><span>${esc(laneLabel(e.lane))}</span><span class="mono">${stamp(e.a)}</span><span class="mono">${isCheck(c) ? fmt(e.b - e.a) : fmt(e.time_ms)}</span><span class="mono">${e.tokens ? fmtTok(billableOf(e.tokens)) : '—'}</span><span>${esc(e.note || '')}</span></button>`).join('')}</div>${all.length > 3 ? `<button class="text-btn" data-action="ins-more" data-rule="${esc(c.rule)}">${esc(showAll ? T.card.showFewer : T.card.showAll(all.length))}</button>` : ''}</div>` : '';
   const foot = [];
   for (const conv of c.conventions || []) foot.push(esc(conv));
   if (c.no_data_items) foot.push(esc(T.states.noDataItems(c.no_data_items)));
   foot.push(`<button class="text-btn" data-action="ins-guide">${esc(T.card.how)}</button>`);
   const tab = `<span class="mono-index card-tab" title="${esc(T.card.how)}">${esc(c.rule)} · ${isInfo(c) ? 'info' : pad2(rank)}</span>`;
-  const badge = isInfo(c) ? `<span class="chip info-chip">${esc(T.card.info)}</span>` : '';
-  return `<article class="insight-card ${isInfo(c) ? 'info' : ''}" id="card-${esc(c.rule)}" aria-labelledby="card-${esc(c.rule)}-title"><div class="card-top">${tab}<h3 id="card-${esc(c.rule)}-title">${esc(r.title)}</h3>${badge}</div><p class="headline">${esc(headline)}</p>${dist}<div><div class="part-label">${esc(T.card.todo)}</div><p>${esc(r.todo)}</p></div>${evidence}<div class="card-foot">${foot.join('<span>·</span>')}</div></article>`;
+  const badge = isInfo(c) ? `<span class="chip info-chip">${esc(T.card.info)}</span>` : isCheck(c) ? `<span class="chip info-chip check-chip">${esc(T.card.check)}</span>` : '';
+  return `<article class="insight-card ${isInfo(c) ? 'info' : isCheck(c) ? 'check' : ''}" id="card-${esc(c.rule)}" aria-labelledby="card-${esc(c.rule)}-title"><div class="card-top">${tab}<h3 id="card-${esc(c.rule)}-title">${esc(r.title)}</h3>${badge}</div><p class="headline">${esc(headline)}</p>${dist}<div><div class="part-label">${esc(T.card.todo)}</div><p>${esc(r.todo)}</p></div>${evidence}<div class="card-foot">${foot.join('<span>·</span>')}</div></article>`;
 }
 
 /* ---------- the session page card ---------- */
@@ -839,7 +897,7 @@ function insightsTextSamples() {
       { label: '4 h or more', n: 7, tokens: { input: 1118000, cached: 32000, output: 0 } },
       { label: 'infra docker run', n: 12, sessions: 6, time_ms: 5340000 },
     ],
-    stats: { groups: 9, attempts: 30, no_tool_call_ms: 120000, unknown_script_ms: 300000, unknown_tool_ms: 60000, misses_code_search: 41, context_median: 212000, count_main: 59, count_sub: 81, time_main: 10440000, time_sub: 6360000, starts_after_15m: 25, uncached_after_15m: 5000000, median: 240000, p90: 2460000, unknown_ms: 7080000, no_telemetry_ms: 120000, stage_implement: 15000000, stage_review: 6900000, more_to_start: 3 },
+    stats: { groups: 9, attempts: 30, no_tool_call_ms: 120000, unknown_script_ms: 300000, unknown_tool_ms: 60000, misses_code_search: 41, context_median: 212000, count_main: 59, count_sub: 81, time_main: 10440000, time_sub: 6360000, starts_after_15m: 25, uncached_after_15m: 5000000, median: 240000, p90: 2460000, unknown_ms: 7080000, no_telemetry_ms: 120000, stage_implement: 15000000, stage_review: 6900000, more_to_start: 3 , windows: 14, windows_blind: 3, windows_after_user: 1, retries_failed_again: 4, in_change_window: 6, after_changes: 2, after_changes_ms: 600000, unknown_in_change_window_ms: 120000, edit_turns: 12, edit_turns_unverified: 7, verified_by_hook: 2, last_verdict_failed: 1, edits_after_review: 9 },
   };
   sample.distribution.push({ label: '200 k or more', n: 2, tokens: { input: 5e6, cached: 4.5e6, output: 2e5 } });
   sample.distribution.push({ label: 'read-only sub-agents · m / xhigh', n: 39, tokens: { input: 5e7, cached: 4.9e7, output: 1e6 } });

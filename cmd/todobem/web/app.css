@@ -485,6 +485,7 @@ dialog::backdrop{background:rgba(8,13,18,.7)}
 .insight-card .card-tab::after{content:'';display:inline-block;width:26px;height:1px;background:var(--tone);margin-left:10px}
 .insight-card h3{margin:0;font-size:17px;line-height:1.3;flex:1 1 auto}
 .info-chip{border-radius:0;font-size:11px;padding:2px 8px;min-height:0;background:transparent;border:1px dashed var(--line);color:var(--subtle);letter-spacing:.3px}
+.check-chip{border-style:solid;color:var(--muted)}
 .insight-card .headline{font-size:15px;line-height:1.6}
 .insight-card .part-label{font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:var(--subtle);margin-bottom:6px;font-family:ui-monospace,Menlo,monospace}
 .insight-card p{font-size:14.5px;line-height:1.55}

@@ -862,11 +862,11 @@ test('the legend separates activity fills from lifecycle rails, and stage hues n
   assert.match(legend, /legend-caption">Activity · fill<\/span><span class="row"><i class="color-square"/);
   assert.match(legend, /id="legendLifecycle"><span class="row legend-caption">Lifecycle stage · band above each lane, strip under the overview<\/span>/);
   const rails = [...legend.matchAll(/<i class="color-rail" style="background:(#[0-9a-f]{6})"><\/i>([^<]+)</g)].map(m => [m[2], m[1]]);
-  assert.deepEqual(rails.map(r => r[0]), ['Planning', 'Requirements', 'Design', 'Implementation', 'Code review', 'Testing / QA', 'Deployment / release', 'Maintenance / operations']);
+  assert.deepEqual(rails.map(r => r[0]), ['Planning', 'Requirements', 'Design', 'Implementation', 'Code review', 'Verification', 'Deployment / release', 'Maintenance / operations']);
   assert.ok(!legend.includes('color-rail" style="background:#a889fc'), 'no stage is Build purple');
   // the four stages with no activity home take hues no fill uses; the four with one share it
   const fills = Object.fromEntries([...legend.matchAll(/<i class="color-square(?: hatch)?" style="background:(#[0-9a-f]{6})"><\/i>([^<]+)</g)].map(m => [m[2], m[1]]));
-  const home = { Implementation: 'Development', 'Testing / QA': 'Testing', 'Deployment / release': 'Release & deploy', 'Maintenance / operations': 'Infrastructure' };
+  const home = { Implementation: 'Development', 'Verification': 'Testing', 'Deployment / release': 'Release & deploy', 'Maintenance / operations': 'Infrastructure' };
   for (const [stage, color] of rails) {
     const owner = Object.keys(fills).find(k => fills[k] === color);
     assert.equal(owner, home[stage], `${stage} rail ${color} must be the hue of ${home[stage] || 'no fill'}, found ${owner}`);
@@ -886,7 +886,7 @@ test('the guide lists every lifecycle stage with its rule sources and says which
   h.take('/api/rules').resolve({ rules: [{ match: 'go test', phase: 'test', kind: 'go test' }], priority: {}, builtin_rules: 1, review_skills: ['(?i)code-review'], lifecycle: { stages: ['plan', 'requirements', 'design', 'implement', 'review', 'test', 'release', 'operate'], defaults: { code: 'implement', build: 'implement', infra: 'implement', test: 'test', release: 'release' }, pins: { 'pr review': 'review', journalctl: 'operate' }, matchers: { skills: { review: ['(?i)code-review'] }, roles: { review: ['^pragmatic$'] }, paths: {} } } });
   await flush();
   const table = h.node('lifecycleTable').innerHTML;
-  for (const name of ['Planning', 'Requirements', 'Design', 'Implementation', 'Code review', 'Testing / QA', 'Deployment / release', 'Maintenance / operations']) assert.match(table, new RegExp(name));
+  for (const name of ['Planning', 'Requirements', 'Design', 'Implementation', 'Code review', 'Verification', 'Deployment / release', 'Maintenance / operations']) assert.match(table, new RegExp(name));
   assert.match(table, /Requirements[^]*?no built-in detector/);
   assert.match(table, /command kinds: pr review/);
   assert.match(table, /agent roles: <code>\^pragmatic\$<\/code>/);
@@ -1140,6 +1140,35 @@ test('the insights page loads a 30-day report and renders groups, cards and the 
   assert.match(html, /Nothing found in this period/);
   assert.ok(html.lastIndexOf('id="group-not_measured"') > html.indexOf('id="group-models_and_effort"'));
   assert.match(html, /The main thread waited 1h while only one sub-agent was working \(of 5h main thread time in turns, 20\.0 %\)\. In 2 of 3 sessions\./);
+});
+
+test('a check card is ranked by sessions, wears its chip, counts sessions and reaches the top findings', async () => {
+  const h = await harness().ready();
+  const report = insightsReport();
+  report.top_checks = ['D17'];
+  report.groups.push({ id: 'verification', time_ms: 0, tokens: { input: 0, cached: 0, output: 0 }, order_time: 2, order_tokens: 2, cards: [{
+    rule: 'D17', group: 'verification', title: 'D17', class: 'check', exposure: { time_ms: 0, count: 3, tokens: null }, sessions: 3, of: 20, no_data: 1, reason: 'an unknown command after the last edit',
+    stats: { edit_turns: 12, edit_turns_unverified: 7, verified_by_hook: 2, last_verdict_failed: 1 },
+    distribution: [{ label: 'Codex', n: 2, time_ms: 0, sessions: 2 }, { label: 'Claude Code', n: 1, time_ms: 0, sessions: 1 }],
+    evidence: [{ session: 'S1', title: 'First session', lane: '/root', lane_id: 'L1', a: 2000, b: 62000, time_ms: 0, note: '4 edits; no test ran in this session' }],
+  }] });
+  await openInsights(h, report);
+  const html = h.node('main').innerHTML;
+  assert.match(html, /Verification loop/);
+  assert.match(html, /Were the last changes tested and reviewed before the answer\?/);
+  // the chip, a rank number (not "info"), the denominator wording with the not-applicable sessions left out
+  assert.match(html, /<span class="chip info-chip check-chip">A check<\/span>/);
+  assert.match(html, /D17 · 0[0-9]<\/span>/);
+  assert.doesNotMatch(html, /D17 · info/);
+  assert.match(html, /In 3 of 20 sessions with changes, no test passed after the last edit\. 7 of 12 turns with edits had no passing test after their last edit\. In 1 session the last test failed\. 2 sessions were verified by a stop hook\. No data in 1 session \(an unknown command after the last edit\)\./);
+  // distribution rows count sessions, the evidence row shows the interval's length
+  assert.match(html, /<span class="label" title="Codex">Codex<\/span>[\s\S]*?2 sessions/);
+  assert.match(html, /data-a="2000" data-b="62000"[\s\S]*?<span class="mono">1m<\/span>/);
+  // the top findings strip lists the check after the time-ranked cards, valued in sessions
+  const strip = html.slice(html.indexOf('class="top-findings"'), html.indexOf('class="insight-groups"'));
+  assert.ok(strip.indexOf('data-rule="D4"') < strip.indexOf('data-rule="D17"'));
+  assert.match(strip, /data-rule="D17"[\s\S]*?3 of 20 sessions/);
+  assert.equal(h.errors.length, 0);
 });
 
 test('the model-time card names lifecycle stages by their readable label, not the raw key', async () => {
