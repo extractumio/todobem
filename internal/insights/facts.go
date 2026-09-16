@@ -16,8 +16,9 @@ import (
 // file with another version is a miss. 2: the first cached shape. 3: Source; query misses
 // without an exit code. 4: subgroups on ops, the tool-call mix, failures by subgroup, unknown
 // time by subgroup. 5: the delivery walk (Delivery), recovery on retry windows, compactions
-// inside a change window, gaps after the first change, stop hooks among the long ops.
-const FactsVersion = 5
+// inside a change window, gaps after the first change, stop hooks among the long ops. 6:
+// unknown heads past env assignments.
+const FactsVersion = 6
 
 // Facts is everything the detectors need about one session, in a few KB.
 type Facts struct {
@@ -653,11 +654,7 @@ func opFacts(lane int, o *model.Operation) OpFacts {
 		kind = kind[:i]
 	}
 	if o.Phase == classify.Unknown {
-		// an unknown command is keyed by its head word: the thing a rule would match
-		kind = o.Title
-		if i := strings.IndexAny(kind, " \n"); i > 0 {
-			kind = kind[:i]
-		}
+		kind = unknownHead(o.Title)
 	}
 	of := OpFacts{Lane: lane, ID: o.ID, Phase: o.Phase, Kind: kind, Sub: o.Subgroup, Title: o.Title, Start: o.Start, End: o.End, Status: o.Status, Exit: o.Exit, Turn: o.Turn}
 	switch {
@@ -678,10 +675,7 @@ func unknownHeads(s *model.Session) []HeadFacts {
 			if o.Phase != classify.Unknown || o.Background {
 				continue
 			}
-			h := o.Title
-			if i := strings.IndexAny(h, " \n"); i > 0 {
-				h = h[:i]
-			}
+			h := unknownHead(o.Title)
 			e := heads[h]
 			if e == nil {
 				e = &HeadFacts{Head: h}
@@ -699,6 +693,24 @@ func unknownHeads(s *model.Session) []HeadFacts {
 		return out[a].Ms > out[b].Ms || out[a].Ms == out[b].Ms && out[a].Head < out[b].Head
 	})
 	return out
+}
+
+// unknownHead is the word a rule would match for an unknown command: the first word of its
+// title past any env assignments and wrappers (the same skip Shape applies), so `S=/tmp/x go
+// run ./probe` is keyed `go`, not `S=/tmp/x`. A command that is nothing but an assignment
+// keeps its first word.
+func unknownHead(title string) string {
+	fields := strings.Fields(title)
+	for _, w := range fields {
+		if strings.Contains(w, "=") && !strings.HasPrefix(w, "=") || w == "env" || w == "sudo" || w == "nohup" || w == "time" {
+			continue
+		}
+		return w
+	}
+	if len(fields) > 0 {
+		return fields[0]
+	}
+	return title
 }
 
 // Shape is the cross-session key of a command: its phase, head word and subcommand, taken from
