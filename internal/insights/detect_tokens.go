@@ -50,14 +50,14 @@ func detectCacheAfterBreak(f *Facts) Result {
 		return r
 	}
 	for _, g := range f.Gaps {
-		if g.NextTurn == "" || g.NextTrigger == "system" {
-			continue // the session's tail, or a harness-triggered turn: not the user's reply
+		gap := g.End - g.Start
+		if g.NextTurn == "" || g.NextTrigger == "system" || gap < MinReplyMs {
+			continue // the session's tail, a harness-triggered turn or a queued message: not a break
 		}
 		if g.NextFirst == nil || g.NextFirst.Input <= 0 {
 			r.NoData++
 			continue
 		}
-		gap := g.End - g.Start
 		uncached := g.NextFirst.Input - g.NextFirst.Cached
 		note := fmt.Sprintf("break of %s; first call after it: %d k input, %d k not cached", fmtDur(gap), g.NextFirst.Input/1000, uncached/1000)
 		// a tokens card: the break itself is counted by D2 / D2b, so no time exposure here

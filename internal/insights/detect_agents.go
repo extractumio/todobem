@@ -9,16 +9,19 @@ import (
 // harness's wait tool) during which at most one sub-agent lane was inside a turn. Exposure:
 // that part of the wait. Whether the sub-agents depended on each other is not on disk.
 func detectSerialDelegation(f *Facts) Result {
+	if len(f.Agents) < 3 {
+		return Result{NotApplicable: true} // fewer than two sub-agents: nothing could have run in parallel
+	}
 	r := Result{Measurable: true}
 	for _, w := range f.Waits {
 		if w.Kind != "agent" && w.Kind != "wait" || w.SoloMs <= 0 {
 			continue
 		}
-		key := "none"
+		key := "no sub-agent inside a turn"
 		note := "no sub-agent was inside a turn"
 		if len(w.Lanes) == 1 {
-			key = f.lanePath(w.Lanes[0])
-			note = "one sub-agent at a time: " + key
+			key = "one sub-agent at a time"
+			note = "one sub-agent at a time: " + f.lanePath(w.Lanes[0])
 		} else if len(w.Lanes) > 1 {
 			key = "several, one at a time"
 			note = strconv.Itoa(len(w.Lanes)) + " sub-agents, at most one inside a turn at any moment"
@@ -32,8 +35,11 @@ func detectSerialDelegation(f *Facts) Result {
 // (the instructions and context it re-reads). Exposure: those tokens, keyed by agent type;
 // the note compares them with the sub-agent's whole usage.
 func detectSpawnCost(f *Facts) Result {
+	if len(f.Agents) <= 1 {
+		return Result{NotApplicable: true} // no sub-agent was started
+	}
 	r := Result{Stats: map[string]int64{}}
-	for _, a := range f.Agents[min(1, len(f.Agents)):] {
+	for _, a := range f.Agents[1:] {
 		if a.Tokens == nil {
 			continue
 		}
@@ -51,7 +57,7 @@ func detectSpawnCost(f *Facts) Result {
 		r.Findings = append(r.Findings, Finding{Lane: a.Path, LaneID: a.ID, A: a.Started, B: a.Ended, Tokens: a.First, Key: laneKindLabel(a.Kind), Note: note})
 	}
 	if !r.Measurable {
-		r.Reason = "no sub-agents with token usage records"
+		r.Reason = "the sub-agents have no token usage records"
 	}
 	return r
 }

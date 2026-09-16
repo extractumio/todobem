@@ -122,25 +122,31 @@ type Group struct {
 }
 
 type Card struct {
-	Rule         string           `json:"rule"`
-	Group        string           `json:"group"`
-	Title        string           `json:"title"`
-	Class        string           `json:"class,omitempty"` // ClassCheck | ClassInfo; absent = an exposure card
-	Exposure     Exposure         `json:"exposure"`
-	Share        *Share           `json:"share,omitempty"`
-	Distribution []Row            `json:"distribution,omitempty"`
-	Sessions     int              `json:"sessions"` // sessions with at least one finding
-	Of           int              `json:"of"`       // sessions where the signal could be measured
-	NoData       int              `json:"no_data"`  // sessions where it could not
-	Reason       string           `json:"reason,omitempty"`
-	NoDataItems  int              `json:"no_data_items,omitempty"` // occurrences without a usable record
-	Conventions  []string         `json:"conventions,omitempty"`
-	Evidence     []Evidence       `json:"evidence"`
-	Stats        map[string]int64 `json:"stats,omitempty"`
+	Rule         string   `json:"rule"`
+	Group        string   `json:"group"`
+	Title        string   `json:"title"`
+	Class        string   `json:"class,omitempty"` // ClassCheck | ClassInfo; absent = an exposure card
+	Exposure     Exposure `json:"exposure"`
+	Share        *Share   `json:"share,omitempty"`
+	Distribution []Row    `json:"distribution,omitempty"`
+	Sessions     int      `json:"sessions"` // sessions with at least one finding
+	Of           int      `json:"of"`       // sessions where the signal could be measured
+	NoData       int      `json:"no_data"`  // sessions where it could not
+	// NotApplicable counts the sessions the rule's precondition was absent from (no sub-agent, no
+	// change op, no review run): outside the denominator, printed so the reader sees the scope.
+	NotApplicable int              `json:"not_applicable,omitempty"`
+	Reason        string           `json:"reason,omitempty"`
+	NoDataItems   int              `json:"no_data_items,omitempty"` // occurrences without a usable record
+	Conventions   []string         `json:"conventions,omitempty"`
+	Evidence      []Evidence       `json:"evidence"`
+	Stats         map[string]int64 `json:"stats,omitempty"`
 }
 
 type Exposure struct {
-	TimeMs int64             `json:"time_ms"`
+	TimeMs int64 `json:"time_ms"` // every lane (the raw op-sum; sub-agent time runs in parallel)
+	// MainMs is the main thread's part of TimeMs: the number a share, a group total and the top
+	// list use, so parallel sub-agent time never joins a root denominator (product rule 6).
+	MainMs int64             `json:"main_ms"`
 	Tokens *model.TokenUsage `json:"tokens,omitempty"`
 	Count  int               `json:"count"`
 }
@@ -158,6 +164,7 @@ type Row struct {
 	TimeMs   int64             `json:"time_ms"`
 	Tokens   *model.TokenUsage `json:"tokens,omitempty"`
 	Sessions int               `json:"sessions"`
+	Of       int               `json:"of,omitempty"` // the row's own denominator when the rule keys sessions (Result.Key); else the card's
 }
 
 type Evidence struct {
@@ -239,7 +246,7 @@ func Build(params Params, inputs []Input, now int64) Report {
 		}
 		g.Cards = append(g.Cards, *card)
 		if !d.IsInfo() && !d.IsCheck() {
-			g.TimeMs += card.Exposure.TimeMs
+			g.TimeMs += card.Exposure.MainMs
 			if card.Exposure.Tokens != nil {
 				g.Tokens.Add(card.Exposure.Tokens)
 			}
@@ -255,7 +262,7 @@ func Build(params Params, inputs []Input, now int64) Report {
 				if ca.Class == ClassCheck {
 					return ca.Sessions > cb.Sessions || ca.Sessions == cb.Sessions && ca.Exposure.Count > cb.Exposure.Count
 				}
-				return ca.Exposure.TimeMs > cb.Exposure.TimeMs
+				return ca.Exposure.MainMs > cb.Exposure.MainMs
 			})
 			r.Groups = append(r.Groups, *g)
 		}
@@ -302,9 +309,9 @@ func Build(params Params, inputs []Input, now int64) Report {
 	for i := 0; i < len(checks) && i < 3; i++ {
 		r.TopChecks = append(r.TopChecks, checks[i].Rule)
 	}
-	sort.SliceStable(cards, func(a, b int) bool { return cards[a].Exposure.TimeMs > cards[b].Exposure.TimeMs })
+	sort.SliceStable(cards, func(a, b int) bool { return cards[a].Exposure.MainMs > cards[b].Exposure.MainMs })
 	for i := 0; i < len(cards) && i < 3; i++ {
-		if cards[i].Exposure.TimeMs > 0 {
+		if cards[i].Exposure.MainMs > 0 {
 			r.TopTime = append(r.TopTime, cards[i].Rule)
 		}
 	}
@@ -344,9 +351,11 @@ func buildCard(d Detector, results []Result, scope *Scope, titles map[string]str
 	rows := map[string]*Row{}
 	rowSessions := map[string]map[string]bool{}
 	sessionsWith := map[string]bool{}
+	ofByKey := map[string]int{} // measurable sessions per row key (Result.Key)
 	for _, res := range results {
 		if res.NotApplicable {
-			continue // the rule's precondition is absent: not in the denominator, not "no data"
+			c.NotApplicable++ // the rule's precondition is absent: not in the denominator, not "no data"
+			continue
 		}
 		if !res.Measurable {
 			c.NoData++
@@ -358,6 +367,9 @@ func buildCard(d Detector, results []Result, scope *Scope, titles map[string]str
 			continue
 		}
 		c.Of++
+		if res.Key != "" {
+			ofByKey[res.Key]++
+		}
 		c.NoDataItems += res.NoData
 		nd.Items += res.NoData
 		for k, v := range res.Stats {
@@ -373,6 +385,9 @@ func buildCard(d Detector, results []Result, scope *Scope, titles map[string]str
 		for _, x := range all {
 			sessionsWith[x.Session] = true
 			c.Exposure.TimeMs += x.TimeMs
+			if x.Lane == "/root" || x.Lane == "" {
+				c.Exposure.MainMs += x.TimeMs
+			}
 			c.Exposure.Count += max(1, x.N)
 			if x.Tokens != nil {
 				if c.Exposure.Tokens == nil {
@@ -404,6 +419,7 @@ func buildCard(d Detector, results []Result, scope *Scope, titles map[string]str
 	c.Sessions = len(sessionsWith)
 	for key, row := range rows {
 		row.Sessions = len(rowSessions[key])
+		row.Of = ofByKey[key]
 		c.Distribution = append(c.Distribution, *row)
 	}
 	sortRows(d.ID, c.Distribution)
@@ -426,8 +442,7 @@ func buildCard(d Detector, results []Result, scope *Scope, titles map[string]str
 }
 
 // postFilter applies the cross-session conditions a single session cannot know: long tool runs
-// count only for command shapes that ran at least twice in the period; invalid tool calls are
-// shown from three occurrences.
+// count only for command shapes that ran at least twice in the period.
 func postFilter(rule string, all []Finding) []Finding {
 	switch rule {
 	case "D9":
@@ -442,10 +457,6 @@ func postFilter(rule string, all []Finding) []Finding {
 			}
 		}
 		return out
-	case "D14":
-		if len(all) < 3 {
-			return nil
-		}
 	}
 	return all
 }
@@ -467,8 +478,15 @@ func sortRows(rule string, rows []Row) {
 		return
 	}
 	sort.SliceStable(rows, func(a, b int) bool {
-		if rows[a].Sessions != rows[b].Sessions && (rule == "D7") {
-			return rows[a].Sessions > rows[b].Sessions
+		switch rule {
+		case "D7": // retry shapes: the one seen in most sessions first
+			if rows[a].Sessions != rows[b].Sessions {
+				return rows[a].Sessions > rows[b].Sessions
+			}
+		case "D15", "D17", "D24": // counts: the most frequent first (a failed edit takes no time)
+			if rows[a].N != rows[b].N {
+				return rows[a].N > rows[b].N
+			}
 		}
 		return rows[a].TimeMs > rows[b].TimeMs
 	})
@@ -480,19 +498,11 @@ func shareFor(rule string, c *Card, scope *Scope) *Share {
 		if scope.RootElapsed > 0 {
 			return &Share{Pct: pct(c.Exposure.TimeMs, scope.RootElapsed), OfMs: scope.RootElapsed, Of: "elapsed"}
 		}
-	case "D3", "D4", "D7", "D9", "M1":
+	case "D3", "D4", "D7", "D9", "D11":
+		// the main thread's part over its time in turns: sub-agent turns, runs and compactions
+		// run in parallel and never join a root denominator (product rule 6)
 		if scope.RootInTurn > 0 {
-			return &Share{Pct: pct(c.Exposure.TimeMs, scope.RootInTurn), OfMs: scope.RootInTurn, Of: "in_turn"}
-		}
-	case "D11":
-		var root int64
-		for _, row := range c.Distribution {
-			if row.Label == "main thread" {
-				root = row.TimeMs
-			}
-		}
-		if scope.RootElapsed > 0 {
-			return &Share{Pct: pct(root, scope.RootElapsed), OfMs: scope.RootElapsed, Of: "elapsed"}
+			return &Share{Pct: pct(c.Exposure.MainMs, scope.RootInTurn), OfMs: scope.RootInTurn, Of: "in_turn"}
 		}
 	}
 	return nil
@@ -507,16 +517,18 @@ func pct(n, of int64) float64 {
 
 func conventionsFor(rule string) []string {
 	switch rule {
-	case "T1", "D1":
+	case "D1":
 		return []string{"gap buckets: " + strings.Join(GapBucketOrder(), ", ")}
-	case "D2", "D2b":
+	case "T1":
+		return []string{"gaps under 1 s are not breaks", "gap buckets: " + strings.Join(GapBucketOrder(), ", ")}
+	case "D2":
+		return []string{"gaps under 1 s are not replies", "long break = 4 h", "gap buckets: " + strings.Join(GapBucketOrder(), ", ")}
+	case "D2b":
 		return []string{"long break = 4 h", "gap buckets: " + strings.Join(GapBucketOrder(), ", ")}
 	case "T2":
 		return []string{"context buckets: " + strings.Join(ContextBucketOrder(), ", ")}
 	case "D9":
 		return []string{"command shapes that ran 2 or more times"}
-	case "D14":
-		return []string{"shown from 3 occurrences"}
 	}
 	return nil
 }
@@ -546,9 +558,10 @@ func statsFor(rule string, c *Card, all []Finding) {
 			c.Stats["count_"+k] = int64(row.N)
 		}
 	case "T1":
+		// a T1 finding carries the break as its interval (A, B) and no time exposure
 		var slow, slowUncached int64
 		for _, x := range all {
-			if x.TimeMs >= 15*60e3 {
+			if x.B-x.A >= 15*60e3 {
 				slow++
 				slowUncached += billable(x.Tokens) - tokensOutput(x.Tokens)
 			}
@@ -573,10 +586,6 @@ func statsFor(rule string, c *Card, all []Finding) {
 			}
 			c.Stats["count_"+k] = int64(row.N)
 			c.Stats["time_"+k] = row.TimeMs
-		}
-	case "D9", "D12", "D13", "D15":
-		for _, row := range c.Distribution {
-			c.Stats["count_"+row.Label] = int64(row.N)
 		}
 	}
 }

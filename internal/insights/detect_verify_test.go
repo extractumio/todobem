@@ -123,19 +123,21 @@ func TestRetryWindowPathsAndCompactionAndQuestionStats(t *testing.T) {
 	if len(r.Findings) != 2 || r.Stats["in_change_window"] != 1 || r.Stats["in_change_window_ms"] != 5000 || !strings.Contains(r.Findings[0].Note, "between two edits") || strings.Contains(r.Findings[1].Note, "between two edits") {
 		t.Fatalf("D11 %+v %+v", r.Stats, r.Findings)
 	}
-	// D1: a question after the first change
-	root := &model.Lane{ID: "R", Path: "/root", Started: 0, Ended: 10 * minute}
+	// D1: a question from a turn that had already changed files; a question from a later turn
+	// that changed nothing is a plain question even though the session had edits
+	root := &model.Lane{ID: "R", Path: "/root", Started: 0, Ended: 20 * minute}
 	root.Turns = []*model.Turn{
 		{ID: "t1", Start: 0, End: 3 * minute, Status: "completed", Trigger: "user"},
 		{ID: "t2", Start: 5 * minute, End: 10 * minute, Status: "completed", Trigger: "user"},
+		{ID: "t3", Start: 15 * minute, End: 20 * minute, Status: "completed", Trigger: "user"},
 	}
 	e := edit("e1", 1*minute)
 	e.Turn = "t1"
 	root.Ops = []*model.Operation{e}
-	root.Markers = []model.Marker{{T: 2 * minute, Kind: "question", Lane: "R", Turn: "t1"}}
+	root.Markers = []model.Marker{{T: 2 * minute, Kind: "question", Lane: "R", Turn: "t1"}, {T: 9 * minute, Kind: "question", Lane: "R", Turn: "t2"}}
 	f = Extract(session(t, root))
 	r = detectWaitingOnAnswer(&f)
-	if len(r.Findings) != 1 || r.Stats["after_changes"] != 1 || r.Stats["after_changes_ms"] != 2*minute || !strings.Contains(r.Findings[0].Note, "already been changed") {
+	if len(r.Findings) != 2 || r.Stats["after_changes"] != 1 || r.Stats["after_changes_ms"] != 2*minute || !strings.Contains(r.Findings[0].Note, "already changed files") || strings.Contains(r.Findings[1].Note, "already changed files") {
 		t.Fatalf("D1 %+v %+v", r.Stats, r.Findings)
 	}
 	// the catalogue holds the two checks in the verification group

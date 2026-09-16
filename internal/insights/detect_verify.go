@@ -30,7 +30,7 @@ func detectUnverifiedChanges(f *Facts) Result {
 	if d.BlindAfterLastChangeMs > 0 {
 		return Result{Reason: "an unknown command or a telemetry gap after the last edit"}
 	}
-	r := Result{Measurable: true, Stats: map[string]int64{"edit_turns": int64(d.EditTurns), "edit_turns_unverified": int64(d.EditTurnsUnverified)}}
+	r := Result{Measurable: true, Key: sourceLabel(f.Source), Stats: map[string]int64{"edit_turns": int64(d.EditTurns), "edit_turns_unverified": int64(d.EditTurnsUnverified)}}
 	if d.LastVerdictFailed {
 		r.Stats["last_verdict_failed"]++
 	}

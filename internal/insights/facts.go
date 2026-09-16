@@ -18,8 +18,11 @@ import (
 // time by subgroup. 5: the delivery walk (Delivery), recovery on retry windows, compactions
 // inside a change window, gaps after the first change, stop hooks among the long ops. 6:
 // unknown heads and shapes past env assignments and `export`. 7, 8: the same past a lone
-// shell separator (intermediate builds of the same change wrote 6 and 7).
-const FactsVersion = 8
+// shell separator (intermediate builds of the same change wrote 6 and 7). 9, 10: shapes from
+// the classifier's deciding segment (10: never a bare assignment), the root's no-telemetry
+// intervals (Blind), a gap's TurnChangedFiles instead of the session-level AfterFirstChange.
+// 11: the llm_error points dropped with the D14 card.
+const FactsVersion = 11
 
 // Facts is everything the detectors need about one session, in a few KB.
 type Facts struct {
@@ -43,16 +46,25 @@ type Facts struct {
 	Groups      []GroupFacts      `json:"groups"`
 	Compactions []CompactionFacts `json:"compactions"`
 	Background  []OpFacts         `json:"background"`
-	LongOps     []OpFacts         `json:"long_ops"`    // longest verdict-phase ops, all lanes
-	Failures    []OpFacts         `json:"failures"`    // failed steps in the code phase (edits, shell, git, network …); query misses and CI status waits excluded
-	Unknown     []HeadFacts       `json:"unknown"`     // unknown command heads
-	UnknownOps  []OpFacts         `json:"unknown_ops"` // longest unknown commands (evidence for D13)
-	UnknownMs   map[string]int64  `json:"unknown_ms"`  // unknown time by subgroup (script, tool, command), all lanes
-	ToolCalls   []ToolCallFacts   `json:"tool_calls"`  // the main thread's tool calls by phase and subgroup
-	LLMErrors   int               `json:"llm_errors"`
-	LLMErrorAt  []ErrorAt         `json:"llm_errors_at,omitempty"`
-	Cells       []CellFacts       `json:"cells"`    // lane kind × model × effort × lifecycle
-	Delivery    DeliveryFacts     `json:"delivery"` // the session as one delivery loop (facts_delivery.go)
+	LongOps     []OpFacts         `json:"long_ops"`        // longest verdict-phase ops, all lanes
+	Failures    []OpFacts         `json:"failures"`        // failed steps in the code phase (edits, shell, git, network …); query misses and CI status waits excluded
+	Unknown     []HeadFacts       `json:"unknown"`         // unknown command heads
+	UnknownOps  []OpFacts         `json:"unknown_ops"`     // longest unknown commands (evidence for D13)
+	UnknownMs   map[string]int64  `json:"unknown_ms"`      // unknown time by subgroup (script, tool, command), all lanes
+	ToolCalls   []ToolCallFacts   `json:"tool_calls"`      // the main thread's tool calls by phase and subgroup
+	Cells       []CellFacts       `json:"cells"`           // lane kind × model × effort × lifecycle
+	Delivery    DeliveryFacts     `json:"delivery"`        // the session as one delivery loop (facts_delivery.go)
+	Blind       []BlindFacts      `json:"blind,omitempty"` // the root's no_telemetry intervals, longest first (at most five)
+}
+
+// BlindFacts is one root no_telemetry segment: the time after a turn's last event that the log
+// says nothing about — the turn never closed (status open when the log ends) or the next prompt
+// arrived before it closed (orphaned). Neither work nor a wait: not measured (product rule 3).
+type BlindFacts struct {
+	Start  int64  `json:"start"`
+	End    int64  `json:"end"`
+	Turn   string `json:"turn,omitempty"`
+	Status string `json:"status,omitempty"` // open | orphaned
 }
 
 // RootFacts are the root lane's totals (the session's exclusive accounting).
@@ -124,7 +136,7 @@ type GapFacts struct {
 	Start            int64             `json:"start"`
 	End              int64             `json:"end"`
 	AfterQuestion    bool              `json:"after_question"`               // the turn before it asked the user
-	AfterFirstChange bool              `json:"after_first_change,omitempty"` // the session had already changed a file
+	TurnChangedFiles bool              `json:"turn_changed_files,omitempty"` // the turn before it had already changed a file (its own edit, or a sub-agent's inside it)
 	PrevTurn         string            `json:"prev_turn,omitempty"`
 	NextTurn         string            `json:"next_turn,omitempty"`
 	NextTrigger      string            `json:"next_trigger,omitempty"`
@@ -198,13 +210,6 @@ type OpFacts struct {
 	Turn   string      `json:"turn,omitempty"`
 }
 
-// ErrorAt is one invalid tool call (an llm_error marker): a point in time on a lane.
-type ErrorAt struct {
-	Lane int    `json:"lane"`
-	T    int64  `json:"t"`
-	Turn string `json:"turn,omitempty"`
-}
-
 type HeadFacts struct {
 	Head  string `json:"head"`
 	Count int    `json:"count"`
@@ -263,12 +268,8 @@ func Extract(s *model.Session) Facts {
 	for i, l := range s.Lanes {
 		questions := map[string]bool{}
 		for _, m := range l.Markers {
-			switch m.Kind {
-			case "question":
+			if m.Kind == "question" {
 				questions[m.Turn] = true
-			case "llm_error":
-				f.LLMErrors++
-				f.LLMErrorAt = append(f.LLMErrorAt, ErrorAt{Lane: i, T: m.T, Turn: m.Turn})
 			}
 		}
 		for _, t := range l.Turns {
@@ -284,7 +285,8 @@ func Extract(s *model.Session) Facts {
 	}
 	sort.SliceStable(f.Turns, func(a, b int) bool { return f.Turns[a].Start < f.Turns[b].Start })
 	f.Delivery = deliveryFacts(s, laneIndex)
-	f.Gaps = gapFacts(root, f.Delivery.FirstChangeAt)
+	f.Gaps = gapFacts(root, changedRootTurns(s))
+	f.Blind = blindFacts(root)
 	f.Waits = waitFacts(s, opByID)
 	f.Groups = groupFacts(s, laneIndex, opByID)
 	for i, l := range s.Lanes {
@@ -507,7 +509,50 @@ func scale(u *model.TokenUsage, num, den int64) *model.TokenUsage {
 	return &model.TokenUsage{Input: u.Input * num / den, Cached: u.Cached * num / den, CacheWrite: u.CacheWrite * num / den, Output: u.Output * num / den, Reasoning: u.Reasoning * num / den, Total: u.Total * num / den}
 }
 
-func gapFacts(root *model.Lane, firstChangeAt int64) []GapFacts {
+// changedRootTurns lists the root turns that changed a file: by their own change ops, or by a
+// sub-agent turn that ran inside them (session scope, as in the delivery walk).
+func changedRootTurns(s *model.Session) map[string]bool {
+	changed := map[string]bool{}
+	for i, l := range s.Lanes {
+		windows := changeWindows(l)
+		for _, t := range l.Turns {
+			if windows[t.ID] == nil {
+				continue
+			}
+			if i == 0 {
+				changed[t.ID] = true
+			} else if t.RootTurn != "" {
+				changed[t.RootTurn] = true
+			}
+		}
+	}
+	return changed
+}
+
+// blindFacts lists the root lane's no_telemetry segments with the turn each one follows (the
+// last turn to close at or before it that never closed properly), longest first, at most five.
+func blindFacts(root *model.Lane) []BlindFacts {
+	var out []BlindFacts
+	for _, sg := range root.Segments {
+		if sg.Phase != classify.NoTelemetry || sg.End <= sg.Start {
+			continue
+		}
+		b := BlindFacts{Start: sg.Start, End: sg.End}
+		for _, t := range root.Turns {
+			if t.End <= sg.Start && (t.Status == "open" || t.Status == "orphaned") {
+				b.Turn, b.Status = t.ID, t.Status
+			}
+		}
+		out = append(out, b)
+	}
+	sort.SliceStable(out, func(a, b int) bool { return out[a].End-out[a].Start > out[b].End-out[b].Start })
+	if len(out) > 5 {
+		out = out[:5]
+	}
+	return out
+}
+
+func gapFacts(root *model.Lane, changed map[string]bool) []GapFacts {
 	questions := map[string]bool{}
 	for _, m := range root.Markers {
 		if m.Kind == "question" {
@@ -519,11 +564,12 @@ func gapFacts(root *model.Lane, firstChangeAt int64) []GapFacts {
 		if sg.Phase != classify.WaitUser {
 			continue
 		}
-		g := GapFacts{Start: sg.Start, End: sg.End, AfterFirstChange: firstChangeAt > 0 && sg.Start > firstChangeAt}
+		g := GapFacts{Start: sg.Start, End: sg.End}
 		for _, t := range root.Turns {
 			if t.End <= sg.Start+1 && t.Start < sg.Start {
 				g.PrevTurn = t.ID
 				g.AfterQuestion = questions[t.ID]
+				g.TurnChangedFiles = changed[t.ID]
 			}
 			if g.NextTurn == "" && t.Start >= sg.End-1 {
 				g.NextTurn, g.NextTrigger, g.NextFirst = t.ID, t.Trigger, t.First
@@ -729,13 +775,35 @@ func prefixWord(w string) bool {
 }
 
 // Shape is the cross-session key of a command: its phase, head word and subcommand, taken from
-// the normalized identity ("<cwd>\n<command>"). Exact commands almost never recur across
-// sessions (temp paths, MR numbers), shapes do; retry groups themselves stay exact.
+// the normalized identity ("<cwd>\n<command>"). The words come from the classifier: the
+// top-level segment that decided the phase, past shell keywords, wrappers, env prefixes and
+// `bash -c` (`set -euo pipefail; run-tests.sh app` is `test run-tests.sh app`, not `test set`).
+// Exact commands almost never recur across sessions (temp paths, MR numbers), shapes do; retry
+// groups themselves stay exact.
 func Shape(phase model.Phase, identity string) string {
 	cmd := identity
 	if i := strings.IndexByte(cmd, '\n'); i >= 0 {
 		cmd = cmd[i+1:]
 	}
+	res := classify.Command(cmd, "")
+	seg := res.Segment
+	if seg == "" || phase != "hook" && res.Phase != phase {
+		// a regex rule or a heredoc decided, or the rules have moved since the op was
+		// classified (an overlay change re-derives the session anyway): the text's first words
+		return shapeWords(phase, cmd)
+	}
+	if head, sub := classify.HeadWords(seg); head != "" {
+		if sub != "" {
+			return string(phase) + " " + head + " " + sub
+		}
+		return string(phase) + " " + head
+	}
+	return shapeWords(phase, cmd)
+}
+
+// shapeWords is the fallback key when the classifier sees no command in the text (a heredoc
+// body, a bare assignment): the first two words past env assignments and wrappers.
+func shapeWords(phase model.Phase, cmd string) string {
 	var words []string
 	for _, w := range strings.Fields(cmd) {
 		if len(words) == 0 && prefixWord(w) {

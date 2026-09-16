@@ -23,7 +23,10 @@ func factsWithWait(t *testing.T, id string, ended int64, wait int64) Facts {
 	}
 	a := &model.Lane{ID: id + "-A", Path: "/root/a", Parent: root.ID, Depth: 1, Started: ended - 9*minute, Ended: ended}
 	a.Turns = []*model.Turn{{ID: "a1", Start: ended - 9*minute, End: ended - 9*minute + wait, Status: "completed"}}
-	s := &model.Session{ID: id, Source: "codex", Title: "session " + id, CWD: "/proj", Lanes: []*model.Lane{root, a}}
+	// a second sub-agent after the wait: two sub-agents that never overlapped (D4 applies)
+	b := &model.Lane{ID: id + "-B", Path: "/root/b", Parent: root.ID, Depth: 1, Started: ended - minute, Ended: ended}
+	b.Turns = []*model.Turn{{ID: "b1", Start: ended - minute, End: ended, Status: "completed"}}
+	s := &model.Session{ID: id, Source: "codex", Title: "session " + id, CWD: "/proj", Lanes: []*model.Lane{root, a, b}}
 	model.Derive(s, ended)
 	return Extract(s)
 }
@@ -177,15 +180,19 @@ func TestOneSessionReportHasNoFallback(t *testing.T) {
 func TestCheckCardsRankByAffectedSessionsAndSkipNotApplicable(t *testing.T) {
 	check := Detector{ID: "X1", Group: GroupFailures, Title: "A check", Class: ClassCheck}
 	results := []Result{
-		{Measurable: true, Findings: []Finding{{Session: "s1", TimeMs: 0, N: 1}}},
+		{Measurable: true, Key: "Codex", Findings: []Finding{{Session: "s1", Key: "Codex", TimeMs: 0, N: 1}}},
 		{NotApplicable: true},
 		{Measurable: false, Reason: "no records"},
-		{Measurable: true},
+		{Measurable: true, Key: "Claude Code"},
 	}
 	titles := map[string]string{"s1": "one"}
 	card, nd := buildCard(check, results, &Scope{RootInTurn: minute}, titles)
-	if card == nil || card.Sessions != 1 || card.Of != 2 || card.NoData != 1 || nd.Sessions != 1 {
+	if card == nil || card.Sessions != 1 || card.Of != 2 || card.NoData != 1 || card.NotApplicable != 1 || nd.Sessions != 1 {
 		t.Fatalf("card %+v nd %+v", card, nd)
+	}
+	// the row's own denominator: the measurable sessions of its key, with or without a finding
+	if len(card.Distribution) != 1 || card.Distribution[0].Label != "Codex" || card.Distribution[0].Of != 1 {
+		t.Fatalf("rows %+v", card.Distribution)
 	}
 	// D7's headline numbers are stats the detector emitted, D11's the finding's Value
 	if s := statsProbe(t, "D7", []Finding{{Note: "anything"}}, map[string]int64{"groups": 2, "attempts": 5}); s["groups"] != 2 || s["attempts"] != 5 {

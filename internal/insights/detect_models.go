@@ -89,6 +89,9 @@ func detectTokensByModel(f *Facts) Result {
 // T7 · Reasoning tokens. Signal: each lane's reasoning share of its output tokens, by effort.
 // A measurement (Info), keyed by effort.
 func detectReasoningShare(f *Facts) Result {
+	if f.Source == "claude" {
+		return Result{Reason: "Claude Code does not record reasoning tokens"}
+	}
 	r := Result{}
 	for i, a := range f.Agents {
 		if a.Tokens == nil || a.Tokens.Output <= 0 {

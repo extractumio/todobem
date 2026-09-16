@@ -1,6 +1,7 @@
 package insights
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/extractumio/todobem/internal/classify"
@@ -73,9 +74,7 @@ func TestRunsUnseenAndModelDetectors(t *testing.T) {
 	if r := detectUnknown(&f); len(r.Findings) != 1 || r.Findings[0].Key != "mytool" || r.Stats["unknown_ms"] != 2*minute {
 		t.Fatalf("D13 %+v stats %v", r.Findings, r.Stats)
 	}
-	if r := detectInvalidToolCalls(&f); len(r.Findings) != 1 || r.Findings[0].A != 2*minute {
-		t.Fatalf("D14 %+v", r.Findings)
-	}
+
 	if r := detectFailedEdits(&f); len(r.Findings) != 1 || r.Findings[0].Key != "code:edit" || r.Findings[0].Note != "edit x.go · edit" {
 		t.Fatalf("D15 %+v", r.Findings)
 	}
@@ -135,10 +134,17 @@ func TestRunsUnseenAndModelDetectors(t *testing.T) {
 	if r := detectReasoningShare(&f); !r.Measurable || len(r.Findings) != 1 || r.Findings[0].Key != "high" {
 		t.Fatalf("T7 %+v", r.Findings)
 	}
-	// no sub-agents: T6 is not measurable
-	if r := detectSpawnCost(&f); r.Measurable || r.Reason == "" {
+	// no sub-agents: T6 and D4 do not apply; a Claude Code session cannot carry T7
+	if r := detectSpawnCost(&f); !r.NotApplicable || r.Measurable {
 		t.Fatalf("T6 without sub-agents %+v", r)
 	}
+	if r := detectSerialDelegation(&f); !r.NotApplicable {
+		t.Fatalf("D4 without sub-agents %+v", r)
+	}
+	if f.Source = "claude"; detectReasoningShare(&f).Measurable {
+		t.Fatal("T7 must not measure a Claude Code session")
+	}
+	f.Source = "codex"
 	// a sub-agent with a first call: spawn cost; one without: no data
 	a := &model.Lane{ID: "A", Path: "/root/a", Parent: "R", Depth: 1, Started: minute, Ended: 5 * minute, Tokens: usage(1000, 500, 100)}
 	a.Turns = []*model.Turn{{ID: "a1", Start: minute, End: 5 * minute, Status: "completed", Tokens: usage(1000, 500, 100), First: usage(900, 450, 10)}}
@@ -148,6 +154,32 @@ func TestRunsUnseenAndModelDetectors(t *testing.T) {
 	r = detectSpawnCost(&f)
 	if !r.Measurable || len(r.Findings) != 1 || r.NoData != 1 || r.Stats["more_to_start"] != 1 || r.Findings[0].Tokens.Input != 900 {
 		t.Fatalf("T6 %+v", r)
+	}
+}
+
+// TestNoTelemetryIntervals: D18 lists the root's no_telemetry segments with the turn that never
+// closed; a session whose turns all closed has none.
+func TestNoTelemetryIntervals(t *testing.T) {
+	root := &model.Lane{ID: "R", Path: "/root", Started: 0, Ended: 3 * hour}
+	root.Turns = []*model.Turn{
+		{ID: "t1", Start: 0, End: 10 * minute, Status: "orphaned", Trigger: "user"}, // the next prompt arrived 2 h later
+		{ID: "t2", Start: 2*hour + 10*minute, End: 2*hour + 20*minute, Status: "completed", Trigger: "user"},
+		{ID: "t3", Start: 2*hour + 30*minute, End: 2*hour + 40*minute, Status: "open", Trigger: "user"}, // the log ends inside it
+	}
+	f := Extract(session(t, root))
+	if len(f.Blind) != 2 || f.Blind[0].Turn != "t1" || f.Blind[0].Status != "orphaned" || f.Blind[0].End-f.Blind[0].Start != 2*hour || f.Blind[1].Turn != "t3" || f.Blind[1].Status != "open" {
+		t.Fatalf("blind %+v", f.Blind)
+	}
+	r := detectNoTelemetry(&f)
+	if len(r.Findings) != 2 || r.Findings[0].Key != "Codex" || r.Findings[0].TimeMs != 2*hour || !strings.Contains(r.Findings[0].Note, "next prompt") || !strings.Contains(r.Findings[1].Note, "log ends") {
+		t.Fatalf("D18 %+v", r.Findings)
+	}
+	if f.Root.ByPhase["no_telemetry"] != r.Findings[0].TimeMs+r.Findings[1].TimeMs {
+		t.Fatalf("D18 findings %d ms, root no_telemetry %d ms", r.Findings[0].TimeMs+r.Findings[1].TimeMs, f.Root.ByPhase["no_telemetry"])
+	}
+	root.Turns[0].Status, root.Turns[2].Status = "completed", "completed"
+	if f = Extract(session(t, root)); len(f.Blind) != 0 {
+		t.Fatalf("closed turns leave no blind interval: %+v", f.Blind)
 	}
 }
 
@@ -193,30 +225,37 @@ func TestBuildAppliesInfoAndCrossSessionFilters(t *testing.T) {
 	if c, ok := cards["D9"]; !ok || c.Exposure.Count != 3 || c.Distribution[0].Sessions != 3 {
 		t.Fatalf("D9 %+v", c)
 	}
-	// invalid tool calls: three occurrences across sessions are shown, one is not
-	if c, ok := cards["D14"]; !ok || c.Exposure.Count != 3 {
-		t.Fatalf("D14 %+v", c)
-	}
-	r1 := Build(Params{CWD: "/proj", Period: Period{Kind: "30d"}.Resolve(now)}, []Input{mk("a")}, now)
-	for _, g := range r1.Groups {
-		for _, c := range g.Cards {
-			if c.Rule == "D14" {
-				t.Fatal("D14 shown below three occurrences")
-			}
-		}
-	}
-	// no-data rows: T6 cannot be measured without sub-agents
-	found := false
+
+	// without sub-agents T6 and D4 do not apply: no card, no no-data row
 	for _, nd := range r.NoData {
-		if nd.Rule == "T6" && nd.Sessions == 3 && nd.Reason != "" {
-			found = true
+		if nd.Rule == "T6" || nd.Rule == "D4" {
+			t.Fatalf("a not-applicable rule reached the no-data rows: %+v", nd)
 		}
 	}
-	if !found {
-		t.Fatalf("no-data rows %+v", r.NoData)
+	if _, ok := cards["T6"]; ok {
+		t.Fatal("T6 card without sub-agents")
+	}
+	// measurements of totals and of the user's own pace are info cards: never in the top findings
+	for _, id := range append(append([]string{}, r.TopTime...), r.TopTokens...) {
+		if id == "M1" || id == "T2" || id == "T3" || id == "D2" {
+			t.Fatalf("a measurement reached the top findings: %v %v", r.TopTime, r.TopTokens)
+		}
+	}
+	if cards["M1"].Class != ClassInfo || cards["T2"].Class != ClassInfo || cards["T3"].Class != ClassInfo || cards["D2"].Class != ClassInfo {
+		t.Fatal("M1, T2, T3 and D2 are measurements")
 	}
 	// D2 stats: median and p90 of the reply gaps
 	if c := cards["D2"]; c.Stats["median"] != 20*minute || c.Stats["p90"] != 20*minute || c.Share == nil || c.Share.Of != "elapsed" {
 		t.Fatalf("D2 %+v", c)
+	}
+	// T1 stats: the 20-minute break before t2 and the 5-hour break before t3 are starts after
+	// 15 minutes; their first calls read 100 + 490 uncached input tokens (a T1 finding carries
+	// the break as its interval, never as time exposure)
+	if c := cards["T1"]; c.Stats["starts_after_15m"] != 6 || c.Stats["uncached_after_15m"] != 3*590 {
+		t.Fatalf("T1 stats %v", c.Stats)
+	}
+	// D3: the share is the main thread's stopped turns over its time in turns
+	if c := cards["D3"]; c.Share == nil || c.Share.Of != "in_turn" || c.Share.OfMs != 3*(10*minute+10*minute+80*minute) || c.Stats["time_main"] != 3*80*minute {
+		t.Fatalf("D3 %+v", c)
 	}
 }

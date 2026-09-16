@@ -174,7 +174,7 @@ func TestWindowRecoveryCompactionWindowAndGapAfterChange(t *testing.T) {
 	if len(f.Compactions) != 2 || !f.Compactions[0].InChangeWindow || f.Compactions[1].InChangeWindow {
 		t.Fatalf("compactions %+v", f.Compactions)
 	}
-	// a gap before the first change and one after it
+	// a gap after a turn that changed nothing and one after a turn that edited a file
 	root = &model.Lane{ID: "R", Path: "/root", Started: 0, Ended: 10 * minute}
 	root.Turns = []*model.Turn{
 		{ID: "t1", Start: 0, End: 2 * minute, Status: "completed", Trigger: "user"},
@@ -185,7 +185,7 @@ func TestWindowRecoveryCompactionWindowAndGapAfterChange(t *testing.T) {
 	e.Turn = "t2"
 	root.Ops = []*model.Operation{e}
 	f = Extract(session(t, root))
-	if len(f.Gaps) != 2 || f.Gaps[0].AfterFirstChange || !f.Gaps[1].AfterFirstChange {
+	if len(f.Gaps) != 2 || f.Gaps[0].TurnChangedFiles || !f.Gaps[1].TurnChangedFiles {
 		t.Fatalf("gaps %+v", f.Gaps)
 	}
 	// a stop hook is listed among the long ops under its command's shape

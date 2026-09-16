@@ -48,6 +48,11 @@ func TestSerialDelegationMeasuresSoloWaitOnly(t *testing.T) {
 	if r := detectSerialDelegation(&f); len(r.Findings) != 0 {
 		t.Fatalf("expected no solo wait, got %+v", r.Findings)
 	}
+	// a single sub-agent: nothing could have run in parallel, the rule does not apply
+	f = Extract(session(t, root, a))
+	if r := detectSerialDelegation(&f); !r.NotApplicable || len(r.Findings) != 0 {
+		t.Fatalf("one sub-agent must be not applicable, got %+v", r)
+	}
 }
 
 func TestRetryLoopsNeedAFailedAttemptAndCarryWindowTokens(t *testing.T) {
@@ -105,14 +110,18 @@ func TestCacheAfterBreakBucketsGapsAndCountsNoData(t *testing.T) {
 	root := &model.Lane{ID: "R", Path: "/root", Started: 0, Ended: 100 * minute}
 	root.Turns = []*model.Turn{
 		{ID: "t1", Start: 0, End: 10 * minute, Status: "completed", Tokens: usage(100, 90, 10), First: usage(100, 90, 10)},
-		{ID: "t2", Start: 30 * minute, End: 40 * minute, Status: "completed", Trigger: "user", Tokens: usage(200, 100, 10), First: usage(200, 100, 10)}, // 20 min gap
-		{ID: "t3", Start: 42 * minute, End: 50 * minute, Status: "completed", Trigger: "user", Tokens: usage(210, 205, 10)},                             // 2 min gap, no first call recorded
-		{ID: "t4", Start: 55 * minute, End: 60 * minute, Status: "completed", Trigger: "system", Tokens: usage(1, 1, 1), First: usage(1, 1, 1)},         // harness-triggered: not a reply
+		{ID: "t2", Start: 30 * minute, End: 40 * minute, Status: "completed", Trigger: "user", Tokens: usage(200, 100, 10), First: usage(200, 100, 10)},     // 20 min gap
+		{ID: "t3", Start: 42 * minute, End: 50 * minute, Status: "completed", Trigger: "user", Tokens: usage(210, 205, 10)},                                 // 2 min gap, no first call recorded
+		{ID: "t4", Start: 55 * minute, End: 60 * minute, Status: "completed", Trigger: "system", Tokens: usage(1, 1, 1), First: usage(1, 1, 1)},             // harness-triggered: not a reply
+		{ID: "t5", Start: 60*minute + 400, End: 70 * minute, Status: "completed", Trigger: "user", Tokens: usage(300, 290, 10), First: usage(300, 290, 10)}, // 0.4 s gap: a queued message, not a break
 	}
 	f := Extract(session(t, root))
 	r := detectCacheAfterBreak(&f)
 	if !r.Measurable || len(r.Findings) != 1 || r.NoData != 1 {
 		t.Fatalf("result %+v", r)
+	}
+	if r := detectReplyLatency(&f); len(r.Findings) != 2 || r.Findings[0].TimeMs != 20*minute || r.Findings[1].TimeMs != 2*minute {
+		t.Fatalf("D2 must count the 20 and 2 minute gaps only: %+v", r.Findings)
 	}
 	fd := r.Findings[0]
 	if fd.Key != "15-60 min" || fd.TimeMs != 0 || fd.Tokens.Input != 200 || fd.Note != "break of 20m; first call after it: 0 k input, 0 k not cached" {
@@ -156,5 +165,25 @@ func TestExtractLaneKindsGapsAndShapes(t *testing.T) {
 	}
 	if got := Shape(classify.Test, "/p\nmake -j8 test"); got != "test make" {
 		t.Fatalf("shape %q", got)
+	}
+	// the deciding segment names the shape, not the first word of the text
+	for _, c := range []struct {
+		phase    model.Phase
+		identity string
+		want     string
+	}{
+		{classify.Test, "/p\nset -euo pipefail; skills/run-remote-tests.sh candidate-local > out.log 2>&1", "test skills/run-remote-tests.sh candidate-local"},
+		{classify.Release, "/p\nexport GIT_SSH_COMMAND='ssh -o ServerAliveInterval=30'\ngit push origin main", "release git push"},
+		{classify.Test, "/p\nwhile ! skills/run-remote-tests.sh app; do sleep 5; done", "test skills/run-remote-tests.sh app"},
+		{classify.Test, "/p\nbash -o pipefail -c 'skills/run-remote-tests.sh app 2>&1 | rg x'", "test skills/run-remote-tests.sh app"},
+		{classify.Test, "/p\ncat > /tmp/t.sh <<'SH'\ngo test ./...\nSH\nbash /tmp/t.sh", "test bash /tmp/t.sh"},
+		// the classifier disagrees with the op's phase (a rule the test process lacks): the text's first words
+		{classify.Test, "/p\nexport PATH=\"$HOME/bin:$PATH\"; rojo test", "test rojo test"},
+		// a bare assignment segment never names the shape
+		{classify.Release, "/p\nR=/tmp/ship.log && ./release-app macos-ship > \"$R\"", "release ./release-app macos-ship"},
+	} {
+		if got := Shape(c.phase, c.identity); got != c.want {
+			t.Errorf("Shape(%q) = %q, want %q", c.identity, got, c.want)
+		}
 	}
 }

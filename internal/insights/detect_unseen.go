@@ -21,13 +21,19 @@ func detectUnknown(f *Facts) Result {
 	return r
 }
 
-// D14 · Tool calls the harness could not parse. Signal: an llm_error marker — the harness
-// rejected a tool call's arguments. Exposure: the count; each is a point in time. The log
-// records the rejection, not its cause (the model, the tool's schema or description, the CLI).
-func detectInvalidToolCalls(f *Facts) Result {
+// D18 · Time with no telemetry. Signal: a root turn that never closed — the log ends inside it
+// (status open) or the next prompt arrived before it closed (orphaned) — and the time after its
+// last event that the log says nothing about (the no_telemetry phase). A measurement (Info) so
+// the reader can find it: one finding per interval, keyed by source. Says nothing about what
+// happened then: a crash, a kill and a closed laptop leave the same record (product rule 1).
+func detectNoTelemetry(f *Facts) Result {
 	r := Result{Measurable: true}
-	for _, e := range f.LLMErrorAt {
-		r.Findings = append(r.Findings, Finding{Lane: f.lanePath(e.Lane), LaneID: f.laneID(e.Lane), A: e.T, B: e.T, Key: "rejected tool call", Note: "the harness rejected the tool call's arguments"})
+	for _, b := range f.Blind {
+		note := "the log ends inside this turn"
+		if b.Status == "orphaned" {
+			note = "the next prompt arrived before this turn closed"
+		}
+		r.Findings = append(r.Findings, Finding{Lane: f.lanePath(0), LaneID: f.laneID(0), A: b.Start, B: b.End, TimeMs: b.End - b.Start, Key: sourceLabel(f.Source), Note: note})
 	}
 	return r
 }

@@ -37,6 +37,9 @@ type Result struct {
 	Reason        string           `json:"reason,omitempty"`
 	NoData        int              `json:"no_data,omitempty"`
 	Stats         map[string]int64 `json:"stats,omitempty"` // rule-specific numbers, summed over sessions by the report
+	// Key is the distribution row this measurable session belongs to whether or not it has a
+	// finding (D17: its source); the report counts it into that row's own denominator (Row.Of).
+	Key string `json:"key,omitempty"`
 }
 
 // Card classes. An exposure card is ranked by the time or tokens the pattern consumed and adds
@@ -90,7 +93,7 @@ const (
 // Catalogue lists every detector in rule order.
 var Catalogue = []Detector{
 	{ID: "D1", Group: GroupYou, Title: "The agent waited for your answer", Run: detectWaitingOnAnswer},
-	{ID: "D2", Group: GroupYou, Title: "Time to your reply", Run: detectReplyLatency},
+	{ID: "D2", Group: GroupYou, Title: "Time to your reply", Class: ClassInfo, Run: detectReplyLatency},
 	{ID: "D2b", Group: GroupYou, Title: "Long breaks (4 hours or more)", Class: ClassInfo, Run: detectLongBreaks},
 	{ID: "D3", Group: GroupYou, Title: "Turns you stopped", Run: detectStoppedTurns},
 	{ID: "T1", Group: GroupYou, Title: "Cache after a break", Run: detectCacheAfterBreak},
@@ -101,15 +104,16 @@ var Catalogue = []Detector{
 	{ID: "D7", Group: GroupFailures, Title: "Commands that fail and get retried", Run: detectRetryLoops},
 	{ID: "D15", Group: GroupFailures, Title: "Tool calls that failed", Class: ClassInfo, Run: detectFailedEdits},
 	{ID: "D16", Group: GroupTools, Title: "What the tool calls did", Class: ClassInfo, Run: detectToolCalls},
-	{ID: "D14", Group: GroupFailures, Title: "Tool calls the harness could not parse", Class: ClassInfo, Run: detectInvalidToolCalls},
+
 	{ID: "D9", Group: GroupLongRuns, Title: "Long tool runs", Run: detectLongRuns},
 	{ID: "D12", Group: GroupLongRuns, Title: "Processes left running", Run: detectBackground},
 	{ID: "D11", Group: GroupContext, Title: "Context compaction pauses", Run: detectCompactions},
-	{ID: "T2", Group: GroupContext, Title: "Context size", Run: detectContextSize},
-	{ID: "M1", Group: GroupModels, Title: "Model time by model, effort and stage", Run: detectModelTime},
-	{ID: "T3", Group: GroupModels, Title: "Tokens by model, effort and agent type", Run: detectTokensByModel},
+	{ID: "T2", Group: GroupContext, Title: "Context size", Class: ClassInfo, Run: detectContextSize},
+	{ID: "M1", Group: GroupModels, Title: "Model time by model, effort and stage", Class: ClassInfo, Run: detectModelTime},
+	{ID: "T3", Group: GroupModels, Title: "Tokens by model, effort and agent type", Class: ClassInfo, Run: detectTokensByModel},
 	{ID: "T7", Group: GroupModels, Title: "Reasoning tokens", Class: ClassInfo, Run: detectReasoningShare},
 	{ID: "D13", Group: GroupUnseen, Title: "Commands no rule matched", Class: ClassInfo, Run: detectUnknown},
+	{ID: "D18", Group: GroupUnseen, Title: "Time with no telemetry", Class: ClassInfo, Run: detectNoTelemetry},
 }
 
 // RunAll runs every detector of the catalogue on one session.

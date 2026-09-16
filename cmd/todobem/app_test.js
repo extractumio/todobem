@@ -1097,7 +1097,7 @@ test('a 401 while opening a session keeps the lock screen (no "Could not load se
 /* ---------- Insights page ---------- */
 function insightsReport({ sessions = 3, fallback = '', pending = [] } = {}) {
   const card = (rule, group, time_ms, tokens, extra = {}) => ({
-    rule, group, title: rule, exposure: { time_ms, count: 2, tokens }, sessions: 2, of: sessions, no_data: 0,
+    rule, group, title: rule, exposure: { time_ms, main_ms: time_ms, count: 2, tokens }, sessions: 2, of: sessions, no_data: 0,
     distribution: [{ label: rule === 'T1' ? 'under 5 min' : '/root/a', n: 2, time_ms, tokens, sessions: 2 }],
     evidence: [
       { session: 'S1', title: 'First session', lane: '/root', lane_id: 'L1', a: 2000, b: 3000, time_ms: 1000, note: 'one sub-agent at a time' },
@@ -1149,7 +1149,7 @@ test('a check card is ranked by sessions, wears its chip, counts sessions and re
   report.groups.push({ id: 'verification', time_ms: 0, tokens: { input: 0, cached: 0, output: 0 }, order_time: 2, order_tokens: 2, cards: [{
     rule: 'D17', group: 'verification', title: 'D17', class: 'check', exposure: { time_ms: 0, count: 3, tokens: null }, sessions: 3, of: 20, no_data: 1, reason: 'an unknown command after the last edit',
     stats: { edit_turns: 12, edit_turns_unverified: 7, verified_by_hook: 2, last_verdict_failed: 1 },
-    distribution: [{ label: 'Codex', n: 2, time_ms: 0, sessions: 2 }, { label: 'Claude Code', n: 1, time_ms: 0, sessions: 1 }],
+    distribution: [{ label: 'Codex', n: 2, time_ms: 0, sessions: 2, of: 12 }, { label: 'Claude Code', n: 1, time_ms: 0, sessions: 1, of: 8 }],
     evidence: [{ session: 'S1', title: 'First session', lane: '/root', lane_id: 'L1', a: 2000, b: 62000, time_ms: 0, note: '4 edits; no test ran in this session' }],
   }] });
   await openInsights(h, report);
@@ -1161,8 +1161,9 @@ test('a check card is ranked by sessions, wears its chip, counts sessions and re
   assert.match(html, /D17 · 0[0-9]<\/span>/);
   assert.doesNotMatch(html, /D17 · info/);
   assert.match(html, /In 3 of 20 sessions with changes, no test passed after the last edit\. 7 of 12 turns with edits had no passing test after their last edit\. In 1 session the last test failed\. 2 sessions were verified by a stop hook\. No data in 1 session \(an unknown command after the last edit\)\./);
-  // distribution rows count sessions, the evidence row shows the interval's length
-  assert.match(html, /<span class="label" title="Codex">Codex<\/span>[\s\S]*?2 of 20/);
+  // distribution rows count sessions over their own denominator, the evidence row shows the interval's length
+  assert.match(html, /<span class="label" title="Codex">Codex<\/span>[\s\S]*?2 of 12/);
+  assert.match(html, /<span class="label" title="Claude Code">Claude Code<\/span>[\s\S]*?1 of 8/);
   assert.match(html, /data-a="2000" data-b="62000"[\s\S]*?<span class="mono">1m<\/span>/);
   // the top findings strip lists the check after the time-ranked cards, valued in sessions
   const strip = html.slice(html.indexOf('class="top-findings"'), html.indexOf('class="insight-groups"'));
@@ -1176,7 +1177,7 @@ test('the model-time card names lifecycle stages by their readable label, not th
   const report = insightsReport();
   // an M1 card carrying model-output time split across stages, incl. the text-only-turn `llm` key
   report.groups.push({ id: 'models_and_effort', time_ms: 90e3, tokens: { input: 0, cached: 0, output: 0 }, order_time: 2, order_tokens: 2, cards: [{
-    rule: 'M1', group: 'models_and_effort', title: 'M1', exposure: { time_ms: 90e3, count: 3, tokens: { input: 0, cached: 0, output: 0 } }, sessions: 1, of: 3, no_data: 0,
+    rule: 'M1', group: 'models_and_effort', title: 'M1', class: 'info', exposure: { time_ms: 90e3, main_ms: 90e3, count: 3, tokens: { input: 0, cached: 0, output: 0 } }, sessions: 1, of: 3, no_data: 0,
     distribution: [], evidence: [],
     stats: { stage_implement: 60e3, stage_review: 20e3, stage_llm: 10e3 },
   }] });

@@ -128,20 +128,20 @@ const INSIGHT_TEXT = {
     D1: {
       title: 'The agent waited for your answer',
       signal: 'A wait for you right after a turn in which the agent asked a question.',
-      measured: 'The length of each such wait. How many questions came after the agent had already changed files.',
+      measured: 'The length of each such wait. How many questions came from a turn that had already changed files.',
       happened: c => {
         const s = c.stats || {};
         const parts = [`The agent asked you a question ${c.exposure.count} ${c.exposure.count === 1 ? 'time' : 'times'} and waited ${fmt(c.exposure.time_ms)} in total${shareText(c)}.`];
-        if (s.after_changes) parts.push(`${plural(s.after_changes, 'question')} came after files had already been changed, ${fmt(s.after_changes_ms || 0)} of waiting.`);
+        if (s.after_changes) parts.push(`${plural(s.after_changes, 'question')} came from a turn that had already changed files, ${fmt(s.after_changes_ms || 0)} of waiting.`);
         parts.push(inSessions(c));
         return parts.join(' ');
       },
-      todo: 'Reply sooner. Or write the default answers into the instructions file (AGENTS.md) so the agent does not need to ask. A question asked after edits began is a decision to settle before the work starts. Put it in the task or in plan mode.',
+      todo: 'Reply sooner. Or write the default answers into the instructions file (AGENTS.md) so the agent does not need to ask. A question asked after the turn began editing is a decision to settle before the work starts. Put it in the task or in plan mode.',
     },
     D2: {
       title: 'Time to your reply',
-      signal: 'A wait for you shorter than 4 hours, ended by a turn you started.',
-      measured: 'The length of each wait: total, median and buckets.',
+      signal: 'A wait for you shorter than 4 hours, ended by a turn you started. A gap under 1 second is a queued message, not a wait.',
+      measured: 'The length of each wait: total, median and buckets. Your own pace, shown for the picture and never ranked as a loss.',
       happened: c => {
         const s = c.stats || {};
         const parts = [`You replied ${c.exposure.count} times. The agent waited ${fmt(c.exposure.time_ms)} in total${shareText(c)}.`];
@@ -162,8 +162,16 @@ const INSIGHT_TEXT = {
     D3: {
       title: 'Turns you stopped',
       signal: 'A turn with status aborted.',
-      measured: 'The time inside each stopped turn and its tokens.',
-      happened: c => `You stopped ${c.exposure.count} ${c.exposure.count === 1 ? 'turn' : 'turns'}. The agent had worked ${fmt(c.exposure.time_ms)} inside them${shareText(c)}. ${inSessions(c)}`,
+      measured: 'The time inside each stopped turn and its tokens. Sub-agent turns stopped with the main thread are counted apart: their time runs in parallel.',
+      happened: c => {
+        const s = c.stats || {};
+        const main = s.count_main || 0;
+        const sub = s.count_sub || 0;
+        const parts = [`You stopped ${plural(main, 'turn')} on the main thread. The agent had worked ${fmt(s.time_main || 0)} inside them${shareText(c)}.`];
+        if (sub) parts.push(`${plural(sub, 'sub-agent turn')} stopped with them, ${fmt(s.time_sub || 0)} in parallel.`);
+        parts.push(inSessions(c));
+        return parts.join(' ');
+      },
       todo: 'Before a long task, ask for a plan first (plan mode). Ask the agent to report at checkpoints. Tell it when to stop.',
     },
     D9: {
@@ -172,8 +180,8 @@ const INSIGHT_TEXT = {
       measured: 'The time of each run, by command shape. A stop hook is listed under its own command, marked hook.',
       happened: c => {
         const top = c.distribution && c.distribution[0];
-        const first = top ? ` The longest shape: \`${shapeText(top.label)}\`, ${top.n} runs, ${fmt(top.time_ms)}.` : '';
-        return `Commands that ran two or more times took ${fmt(c.exposure.time_ms)} in total${shareText(c)}.${first} ${inSessions(c)}`;
+        const first = top ? ` The longest shape: \`${shapeText(top.label)}\`, ${top.n} runs, ${fmt(top.time_ms)}, ${fmt(top.time_ms / Math.max(1, top.n), true)} per run.` : '';
+        return `Commands that ran two or more times took ${mainText(c)}.${parallelNote(c)}${first} ${inSessions(c)}`;
       },
       todo: 'Try a faster or incremental version. Or start it early and let the agent do other work while it runs. A slow stop hook holds every turn: narrow it or move it to a pre-commit step.',
     },
@@ -181,42 +189,49 @@ const INSIGHT_TEXT = {
       title: 'Processes left running',
       signal: 'A command that kept running after its turn ended (a server, a watcher).',
       measured: 'How long each kept running.',
-      happened: c => `A server or watcher kept running after its turn ended ${c.exposure.count} ${c.exposure.count === 1 ? 'time' : 'times'}, ${fmt(c.exposure.time_ms)} in total. ${inSessions(c)}`,
+      happened: c => `A server or watcher kept running after its turn ended ${c.exposure.count} ${c.exposure.count === 1 ? 'time' : 'times'}, ${fmt(c.exposure.main_ms || 0)} on the main thread.${parallelNote(c)} ${inSessions(c)}`,
       todo: 'Stop it, or run it under the harness process manager.',
     },
     D13: {
       title: 'Commands no rule matched',
       signal: 'A command the classifier could not match to any rule (phase unknown). It may be an opaque script, a Claude Code tool without a mapping, or a command no rule knows.',
-      measured: 'The time of each such command, by its first word. How it splits between scripts, unmapped tools and unmatched commands. How much of it sat inside the main thread\'s edit loops. The time with no telemetry is a number on the card.',
+      measured: 'The time of each such command on every lane, by its first word. How it splits between scripts, unmapped tools and unmatched commands. How much of it sat inside the main thread\'s edit loops.',
       happened: c => {
         const s = c.stats || {};
         const top = c.distribution && c.distribution[0];
-        const parts = [`${fmt(s.unknown_ms || c.exposure.time_ms)} went to commands that matched no rule.`];
-        const split = [['unknown_script_ms', 'opaque scripts'], ['unknown_tool_ms', 'tools without a mapping'], ['unknown_command_ms', 'unmatched commands']].filter(([k]) => s[k] > 0).map(([k, name]) => `${fmt(s[k])} ${name}`);
+        // the total and its split are the same measure: every lane's unknown ops, raw op-sum
+        const kinds = [['unknown_script_ms', 'opaque scripts'], ['unknown_tool_ms', 'tools without a mapping'], ['unknown_command_ms', 'unmatched commands']];
+        const all = kinds.reduce((n, [k]) => n + (s[k] || 0), 0) || c.exposure.time_ms;
+        const parts = [`${fmt(all)} went to commands that matched no rule, on every lane.`];
+        const split = kinds.filter(([k]) => s[k] > 0).map(([k, name]) => `${fmt(s[k])} ${name}`);
         if (split.length > 1) parts.push(`Of that: ${split.join(', ')}.`);
-        if (s.unknown_in_change_window_ms) parts.push(`${fmt(s.unknown_in_change_window_ms)} of it sat between the first and the last edit of a turn, where a rule pays off first.`);
-        if (top) parts.push(`The most common: \`${top.label}\`, ${top.n} ${top.n === 1 ? 'time' : 'times'}.`);
-        if (s.no_telemetry_ms) parts.push(`${fmt(s.no_telemetry_ms)} had no telemetry at all.`);
+        if (s.unknown_in_change_window_ms) parts.push(`${fmt(s.unknown_in_change_window_ms)} on the main thread sat between the first and the last edit of a turn, where a rule pays off first.`);
+        if (top) parts.push(`The most time: \`${top.label}\`, ${top.n} ${top.n === 1 ? 'run' : 'runs'}, ${fmt(top.time_ms)}.`);
         parts.push(inSessions(c));
         return parts.join(' ');
       },
       todo: 'Add rules for these commands in the rules file (~/.todobem/rules.json). After a rule change, all cached sessions are analyzed again.',
     },
-    D14: {
-      title: 'Tool calls the harness could not parse',
-      signal: 'The harness rejected the arguments of a tool call. Shown from three occurrences.',
-      measured: 'The count. The log records the rejection, not its cause.',
-      happened: c => `The harness rejected ${plural(c.exposure.count, 'tool call')}. ${inSessions(c)}`,
-      todo: 'If it repeats with one tool, check that tool\'s description and examples in your setup. The cause can be the model, the tool schema or the CLI version; the log does not say which.',
+    D18: {
+      title: 'Time with no telemetry',
+      signal: 'A turn on the main thread that never closed: the log ends inside it, or the next prompt arrived before it closed. The time after its last event is not measured.',
+      measured: 'That time, with the interval of each such turn. It is neither work nor waiting, and it is never counted as either.',
+      happened: c => {
+        const top = (c.evidence || [])[0];
+        const longest = top ? ` The longest: ${fmt(top.time_ms)} in one session.` : '';
+        return `${fmt(c.exposure.time_ms)} of the period has no telemetry, in ${plural(c.exposure.count, 'interval')}.${longest} ${inSessions(c)}`;
+      },
+      todo: 'Check how these sessions ended. A killed or crashed CLI leaves the turn open. A prompt sent days later leaves the earlier turn unclosed. Nothing here is counted as work or as waiting.',
     },
+
     D15: {
       title: 'Tool calls that failed',
       signal: 'A failed edit, patch, script, shell, git, code-hosting or network call. Reads and searches that found nothing are answers, not failures. So is a CI status check still pending.',
       measured: 'The count, by what the call did (editing files, shell, git, …); the command and its kind on each row.',
       happened: c => {
-        const top = c.distribution && c.distribution[0];
+        const top = c.distribution && c.distribution[0]; // rows come sorted by count
         const kind = top ? ` Most often: ${subgroupText(top.label).toLowerCase()}, ${top.n} ${top.n === 1 ? 'time' : 'times'}.` : '';
-        return `${c.exposure.count} tool calls failed.${kind} ${inSessions(c)}`;
+        return `${plural(c.exposure.count, 'tool call')} failed.${kind} ${inSessions(c)}`;
       },
       todo: 'For edits: ask the agent to read the file right before it edits, and keep patches small. For shell, git and network calls: the evidence rows name the command.',
     },
@@ -232,7 +247,9 @@ const INSIGHT_TEXT = {
         const top = rows.slice(0, 3).map(r => `${subgroupText(r.label).toLowerCase()} ${r.n}`);
         const head = calls ? `${calls} tool calls on the main thread, ${fmt(c.exposure.time_ms)} of tool time.${top.length ? ` Most of them: ${top.join(', ')}.` : ''}` : 'No tool calls on the main thread.';
         const miss = misses ? ` ${misses} ${misses === 1 ? 'call' : 'calls'} found nothing (a search with no match, a read of a missing path, a CI status still pending).` : '';
-        return `${head}${miss} ${inSessions(c)}`;
+        const polling = rows.find(r => r.label === 'wait_worker:polling');
+        const poll = polling && polling.time_ms ? ` ${fmt(polling.time_ms)} went to polling: sleep, CI status and process waits on the main thread.` : '';
+        return `${head}${miss}${poll} ${inSessions(c)}`;
       },
       todo: 'Many searches that find nothing, or repeated reads of the same files, mean the agent lacks a map of the code. Keep the project\'s instruction file current and name the files in the prompt.',
     },
@@ -301,7 +318,7 @@ const INSIGHT_TEXT = {
       title: 'Sub-agents ran one after another',
       signal: 'The main thread waited for sub-agents while at most one sub-agent was inside a turn.',
       measured: 'The part of each wait with at most one sub-agent working.',
-      happened: c => `The main thread waited ${fmt(c.exposure.time_ms)} while only one sub-agent was working${shareText(c)}. ${inSessions(c)}`,
+      happened: c => `The main thread waited ${fmt(c.exposure.main_ms)} while only one sub-agent was working${shareText(c)}. ${inSessions(c)}`,
       todo: 'If the sub-agents did not depend on each other, start them together and wait once. Both harnesses block the main thread on the wait, so it never works meanwhile. The log does not show whether they depended on each other.',
     },
     D17: {
@@ -315,6 +332,7 @@ const INSIGHT_TEXT = {
         if (s.last_verdict_failed) parts.push(`In ${plural(s.last_verdict_failed, 'session')} the last test failed.`);
         if (s.verified_by_hook) parts.push(`${plural(s.verified_by_hook, 'session')} ${s.verified_by_hook === 1 ? 'was' : 'were'} verified by a stop hook.`);
         if (c.no_data) parts.push(INSIGHT_TEXT.states.noData(c.no_data, c.reason || ''));
+        if (c.not_applicable) parts.push(`${plural(c.not_applicable, 'session')} changed no files.`);
         parts.push('The log does not say what the test covered.');
         return parts.join(' ');
       },
@@ -329,6 +347,7 @@ const INSIGHT_TEXT = {
         const parts = [INSIGHT_TEXT.states.checkSessions(c.sessions, c.of, 'with a review, files changed after the last review ended')];
         if (s.edits_after_review) parts.push(`${plural(s.edits_after_review, 'edit')} came after the last review.`);
         if (c.no_data) parts.push(INSIGHT_TEXT.states.noData(c.no_data, c.reason || ''));
+        if (c.not_applicable) parts.push(`${plural(c.not_applicable, 'session')} had no recorded review run.`);
         parts.push('The log does not say what the review looked at.');
         return parts.join(' ');
       },
@@ -342,7 +361,7 @@ const INSIGHT_TEXT = {
         const s = c.stats || {};
         const groups = s.groups || c.exposure.count;
         const top = c.distribution && c.distribution[0];
-        const parts = [`Commands failed and were run again in ${c.sessions} of ${c.of} sessions. ${plural(groups, 'retry group')} took ${fmt(c.exposure.time_ms)} in retries and fixes${shareText(c)}.`];
+        const parts = [`Commands failed and were run again in ${c.sessions} of ${c.of} sessions. Retries and fixes in ${plural(groups, 'retry group')} took ${mainText(c)}.${parallelNote(c)}`];
         if (top) parts.push(`The most common command shape: \`${shapeText(top.label)}\`, in ${plural(top.sessions, 'session')}.`);
         if (s.windows) {
           const blind = s.windows_blind || 0;
@@ -363,7 +382,7 @@ const INSIGHT_TEXT = {
         const rootN = s.count_main || 0;
         const subN = s.count_sub || 0;
         const ctx = s.context_median ? ` at about ${Math.round(s.context_median / 1000)} k tokens each time` : '';
-        const root = rootN ? `${fmt(s.time_main || 0)} on the main thread${c.share ? ` (${c.share.pct.toFixed(1)} % of its elapsed time)` : ''}` : 'no time on the main thread';
+        const root = rootN ? `${fmt(s.time_main || 0)} on the main thread${c.share ? ` (${c.share.pct.toFixed(1)} % of its time in turns)` : ''}` : 'no time on the main thread';
         const sub = subN ? `, ${fmt(s.time_sub || 0)} in sub-agents (in parallel)` : '';
         const loop = s.in_change_window ? ` ${s.in_change_window} of them happened between two edits of one turn, in the middle of the work.` : '';
         return `The harness compacted the context ${c.exposure.count} times (main thread ${rootN}, sub-agents ${subN})${ctx}. This took ${root}${sub}.${loop} ${inSessions(c)}`;
@@ -413,6 +432,16 @@ const SHARE_OF = { in_turn: 'main thread time in turns', elapsed: 'main thread e
 function shareText(c) {
   if (!c.share || !c.share.of_ms) return '';
   return ` (of ${fmt(c.share.of_ms)} ${SHARE_OF[c.share.of] || c.share.of}, ${c.share.pct.toFixed(1)} %)`;
+}
+// mainText words a multi-lane exposure's main-thread part with its share; parallelNote is the
+// sentence about the sub-agents' part, which ran in parallel and never joins a root total
+// (product rule 6). Empty when every finding sat on the main thread.
+function mainText(c) {
+  return `${fmt(c.exposure.main_ms || 0)} on the main thread${shareText(c)}`;
+}
+function parallelNote(c) {
+  const sub = (c.exposure.time_ms || 0) - (c.exposure.main_ms || 0);
+  return sub > 0 ? ` Sub-agents add ${fmt(sub)} in parallel.` : '';
 }
 
 // subgroupText names a "phase:subgroup" key the way the session breakdown does ("code:read" →
@@ -749,7 +778,7 @@ function reportBodyHTML(ins) {
   const topHTML = top.length ? `<section class="top-findings" aria-label="${esc(T.strip.top)}"><div class="eyebrow">${esc(T.strip.top)}</div>${top.map((rule, i) => {
     const c = cardsByRule.get(rule);
     if (!c) return '';
-    const value = isCheck(c) ? T.card.checkValue(c.sessions, c.of) : ins.axis === 'tokens' ? fmtTok(billableOf(c.exposure.tokens)) : fmt(c.exposure.time_ms);
+    const value = isCheck(c) ? T.card.checkValue(c.sessions, c.of) : ins.axis === 'tokens' ? fmtTok(billableOf(c.exposure.tokens)) : fmt(c.exposure.main_ms);
     return `<button data-action="ins-top" data-rule="${esc(rule)}" style="${toneStyle(c.group)}"><span class="rank">${pad2(i + 1)}</span><span><i class="tone-mark" aria-hidden="true"></i><b>${esc(ruleTitle(c))}</b> · ${esc(T.groups[c.group] ? T.groups[c.group].name : c.group)}</span><span class="mono">${esc(value)}</span></button>`;
   }).join('')}</section>` : '';
   let rank = 0;
@@ -758,7 +787,7 @@ function reportBodyHTML(ins) {
   const maxGroup = Math.max(1, ...groups.map(groupValue));
   const groupsHTML = `<div class="insight-groups">${groups.map((g, gi) => {
     const def = T.groups[g.id] || { name: g.id, question: '' };
-    const cards = (g.cards || []).slice().sort((a, b) => classRank(a) - classRank(b) || (isCheck(a) ? (b.sessions - a.sessions || b.exposure.count - a.exposure.count) : (ins.axis === 'tokens' ? billableOf(b.exposure.tokens) - billableOf(a.exposure.tokens) : b.exposure.time_ms - a.exposure.time_ms)));
+    const cards = (g.cards || []).slice().sort((a, b) => classRank(a) - classRank(b) || (isCheck(a) ? (b.sessions - a.sessions || b.exposure.count - a.exposure.count) : (ins.axis === 'tokens' ? billableOf(b.exposure.tokens) - billableOf(a.exposure.tokens) : b.exposure.main_ms - a.exposure.main_ms)));
     const ranked = cards.filter(c => !isInfo(c) && !isCheck(c));
     const unseen = g.id === 'not_measured' && noData.length ? `<div class="nodata"><div class="part-label">${esc(T.card.noDataTitle)}</div><ul>${noData.map(nd => `<li><b>${esc(nd.rule)} · ${esc(ruleTitle(nd))}</b>: ${nd.sessions ? esc(T.states.noData(nd.sessions, nd.reason || '')) : ''}${nd.items ? ' ' + esc(T.states.noDataItems(nd.items)) : ''}</li>`).join('')}</ul></div>` : '';
     const has = cards.length > 0 || unseen !== '';
@@ -813,9 +842,10 @@ function cardHTML(ins, c, rank) {
     let v = ins.axis === 'tokens' ? billableOf(x.tokens) : x.time_ms;
     let shown = ins.axis === 'tokens' ? fmtTok(v) : fmt(x.time_ms);
     if (isCheck(c)) {
-      // a check row counts sessions: no time or tokens to show (the sessions suffix follows)
+      // a check row counts sessions over its own denominator when the rule keeps one per row
+      // (D17: the measurable sessions of that source), else the card's
       v = x.n;
-      shown = `${x.n} of ${c.of}`;
+      shown = `${x.n} of ${x.of || c.of}`;
     }
     if (c.rule === 'T1' && x.tokens && x.tokens.input) {
       // a cache row: the bar is the share not served from cache, the value says both numbers
@@ -867,12 +897,13 @@ function sessionInsightsHTML(rep, m) {
   for (const g of rep.groups || []) {
     for (const c of g.cards || []) cards.push(c);
   }
-  cards.sort((a, b) => b.exposure.time_ms - a.exposure.time_ms);
+  // the session's biggest findings by the main thread's time; measurements and checks are not findings
+  const ranked = cards.filter(c => !isInfo(c) && !isCheck(c)).sort((a, b) => b.exposure.main_ms - a.exposure.main_ms);
   const link = `<button class="text-btn" data-action="ins-project" data-cwd="${esc(m.cwd || '')}">${esc(T.sessionCard.project)}</button>`;
-  if (!cards.length) return `<p class="muted-note">${esc(T.sessionCard.none)}</p>${link}`;
-  return cards.slice(0, 3).map(c => {
+  if (!ranked.length) return `<p class="muted-note">${esc(T.sessionCard.none)}</p>${link}`;
+  return ranked.slice(0, 3).map(c => {
     const r = T.rules[c.rule] || { title: c.title, happened: () => '' };
-    return `<div class="si-row"><div><b>${esc(r.title)}</b><p class="muted-note">${esc(r.happened(c))}</p></div><span class="mono">${fmt(c.exposure.time_ms)}</span></div>`;
+    return `<div class="si-row"><div><b>${esc(r.title)}</b><p class="muted-note">${esc(r.happened(c))}</p></div><span class="mono">${fmt(c.exposure.main_ms)}</span></div>`;
   }).join('') + link;
 }
 
@@ -890,15 +921,17 @@ function insightsGuideHTML() {
 // card, so the plain-English checks in app_test.js run over one list.
 function insightsTextSamples() {
   const sample = {
-    rule: 'D4', group: 'sub_agents', title: 'x', sessions: 4, of: 7, no_data: 2, reason: 'CLI < 0.153',
-    exposure: { time_ms: 24060000, count: 12, tokens: { input: 5e6, cached: 4e6, output: 1e5 } },
+    rule: 'D4', group: 'sub_agents', title: 'x', sessions: 4, of: 7, no_data: 2, not_applicable: 3, reason: 'CLI < 0.153',
+    exposure: { time_ms: 24060000, main_ms: 18000000, count: 12, tokens: { input: 5e6, cached: 4e6, output: 1e5 } },
     share: { pct: 27.7, of_ms: 87240000, of: 'in_turn' },
     distribution: [
       { label: 'under 5 min', n: 40, tokens: { input: 2566000, cached: 2013000, output: 0 } },
       { label: '1-4 h', n: 5, tokens: { input: 540000, cached: 321000, output: 0 } },
       { label: '4 h or more', n: 7, tokens: { input: 1118000, cached: 32000, output: 0 } },
       { label: 'infra docker run', n: 12, sessions: 6, time_ms: 5340000 },
+      { label: 'wait_worker:polling', n: 30, sessions: 6, time_ms: 900000 },
     ],
+    evidence: [{ session: 'S1', title: 'First session', lane: '/root', lane_id: 'L1', a: 2000, b: 3000, time_ms: 7200000, note: 'the log ends inside this turn' }],
     stats: { groups: 9, attempts: 30, no_tool_call_ms: 120000, unknown_script_ms: 300000, unknown_tool_ms: 60000, misses_code_search: 41, context_median: 212000, count_main: 59, count_sub: 81, time_main: 10440000, time_sub: 6360000, starts_after_15m: 25, uncached_after_15m: 5000000, median: 240000, p90: 2460000, unknown_ms: 7080000, no_telemetry_ms: 120000, stage_implement: 15000000, stage_review: 6900000, more_to_start: 3 , windows: 14, windows_blind: 3, windows_after_user: 1, retries_failed_again: 4, in_change_window: 6, after_changes: 2, after_changes_ms: 600000, unknown_in_change_window_ms: 120000, edit_turns: 12, edit_turns_unverified: 7, verified_by_hook: 2, last_verdict_failed: 1, edits_after_review: 9 },
   };
   sample.distribution.push({ label: '200 k or more', n: 2, tokens: { input: 5e6, cached: 4.5e6, output: 2e5 } });

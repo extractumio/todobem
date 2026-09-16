@@ -325,7 +325,21 @@ func printInsights(m *model.Session) {
 	for _, d := range insights.Catalogue {
 		r := results[d.ID]
 		sum := insights.Summarize(r)
-		fmt.Printf("RULE\t%s\t%s\tmeasurable=%v\tfindings=%d\tno_data=%d\ttime=%s\tuncached_in=%d\toutput=%d\t%s\n", d.ID, d.Title, r.Measurable, sum.Count, r.NoData, fmtd(sum.TimeMs), sum.Tokens.Input-sum.Tokens.Cached, sum.Tokens.Output, r.Reason)
+		class := d.Class
+		if class == "" {
+			class = insights.ClassExposure
+		}
+		// the stats are the numbers the page's headline reads (sorted, so runs diff)
+		keys := make([]string, 0, len(r.Stats))
+		for k := range r.Stats {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		stats := ""
+		for _, k := range keys {
+			stats += fmt.Sprintf("\t%s=%d", k, r.Stats[k])
+		}
+		fmt.Printf("RULE\t%s\t%s\tclass=%s\tmeasurable=%v\tnot_applicable=%v\tfindings=%d\tno_data=%d\ttime=%s\tuncached_in=%d\toutput=%d\t%s%s\n", d.ID, d.Title, class, r.Measurable, r.NotApplicable, sum.Count, r.NoData, fmtd(sum.TimeMs), sum.Tokens.Input-sum.Tokens.Cached, sum.Tokens.Output, r.Reason, stats)
 		for _, x := range r.Findings {
 			var unc, out int64
 			if x.Tokens != nil {

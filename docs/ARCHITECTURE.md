@@ -719,7 +719,11 @@ agents (path, role, kind `root` / `read_only` / `worker` from literal op content
 intervals); turns (status, trigger, model, effort, stage, tokens, responses, first call, context
 peak, root turn, model-output time and its split by stage); root gaps with what preceded them;
 worker waits with the number of sub-agents active; retry groups with their command *shape*
-(phase + head word + subcommand: exact commands almost never recur across sessions, shapes do);
+(phase + head word + subcommand of the top-level segment that decided the phase, as the
+classifier saw it — past shell keywords, wrappers, env prefixes and `bash -c`, so `set -euo
+pipefail; run-tests.sh app` is `test run-tests.sh app`; exact commands almost never recur
+across sessions, shapes do); the root's no-telemetry intervals with the turn that never closed
+(`Blind`: status open or orphaned, the five longest);
 compactions (context, re-read); background ops; the longest verdict-phase ops; failed code-phase
 ops with their subgroup; unknown heads and unknown time by subgroup; the main thread's tool calls
 by phase and subgroup (calls, exclusive time, query misses, failures); lifecycle × model ×
@@ -734,9 +738,10 @@ verification after their last edit, unknown time inside the root's change window
 scope: a sub-agent's edit is the session's edit and a sub-agent's test verifies it. Retry
 windows carry what the lane ran between the failure and the retry (`Recovery`: none, fix,
 infra, worker, mixed), whether the retry failed again and whether a user turn started inside;
-compactions whether they sat between two edits of one turn; gaps whether the session had
-already changed a file; stop hooks are among the long ops under their command's shape (`hook
-go test`). `FactsVersion` bumps whenever Extract's output changes.
+compactions whether they sat between two edits of one turn; gaps whether the turn before them
+had already changed a file (its own edit, or a sub-agent's inside it); stop hooks are among the
+long ops under their command's shape (`hook go test`). `FactsVersion` bumps whenever Extract's
+output changes.
 
 ### 10.2 The catalogue
 
@@ -750,39 +755,47 @@ denominator nor in "no data" — the page says "of M sessions with changes".
 
 | id | group | class | signal (literal structure) | exposure |
 |---|---|---|---|---|
-| D1 | You and the agent | exposure | a root turn that asked a question, and the gap until the answer; the questions asked after the session had changed a file are a stat | the gap |
-| D2 · D2b | You and the agent | exposure · info | the gap before each user-triggered turn (D2b: breaks of 4 h or more) | the gap, by bucket |
-| D3 | You and the agent | exposure | a root turn the user stopped | the turn's time and tokens |
-| T1 | You and the agent | exposure | the first model call after a break: its uncached input | tokens, by gap bucket |
-| D4 | Sub-agents | exposure | worker waits during which only one sub-agent was active (both harnesses block the thread on the wait call, so the root never works meanwhile) | the wait |
-| T6 | Sub-agents | exposure | a sub-agent's first call (its instructions and context) | tokens; how many spent more to start than to work |
-| D17 | Verification loop | check | the session changed a file and no verification (a successful test op, or a test-running stop hook without error) started at or after its last change; not measurable with unknown / no-telemetry time after the last change; not applicable without a change op | sessions, keyed by source; stats: turns with edits and those unverified, last verdict failed, verified by a stop hook |
+| D1 | You and the agent | exposure | a root turn that asked a question, and the gap until the answer; the questions asked by a turn that had already changed a file are a stat | the gap |
+| D2 · D2b | You and the agent | info · info | the gap before each user-triggered turn, from 1 s (a shorter gap is a queued message, not a wait; D2b: breaks of 4 h or more) — the user's own pace, never ranked as a loss | the gap, by bucket |
+| D3 | You and the agent | exposure | a turn the user stopped (a sub-agent turn stopped with it is a row of its own) | the turn's time and tokens; the share and the group total take the main thread's turns only |
+| T1 | You and the agent | exposure | the first model call after a break of 1 s or more: its uncached input | tokens, by gap bucket; stats: the starts after breaks of 15 min or more and their uncached input |
+| D4 | Sub-agents | exposure | worker waits during which at most one sub-agent was inside a turn (both harnesses block the thread on the wait call, so the root never works meanwhile); not applicable with fewer than two sub-agents | the wait, keyed "one sub-agent at a time" / "several, one at a time" / "no sub-agent inside a turn" (the lane in the note) |
+| T6 | Sub-agents | exposure | a sub-agent's first call (its instructions and context); not applicable without a sub-agent | tokens; how many spent more to start than to work |
+| D17 | Verification loop | check | the session changed a file and no verification (a successful test op, or a test-running stop hook without error) started at or after its last change; not measurable with unknown / no-telemetry time after the last change; not applicable without a change op | sessions, keyed by source, each row over the measurable sessions of its source (`of_<source>`); stats: turns with edits and those unverified, last verdict failed, verified by a stop hook |
 | D24 | Verification loop | check | a review run ended before the session's last change op; not applicable without a review run | sessions, keyed by the number of edits after the review (1, 2–5, more) |
-| D7 | Failures and retries | exposure | a retry group with a failed attempt; per failed-to-retry window, what ran between the failure and the retry (nothing, a fix, an infra step, a wait, a user turn) and whether the retry failed again | the failed-to-retry windows, by shape |
+| D7 | Failures and retries | exposure | a retry group with a failed attempt; per failed-to-retry window, what ran between the failure and the retry (nothing, a fix, an infra step, a wait, a user turn) and whether the retry failed again | the retry, fix, recovery and queue time, by shape; a group on a sub-agent lane is parallel time |
 | D15 | Failures and retries | info | a failed step in the code phase (edit, patch, script, shell, git, hosting, network); query misses and CI status waits excluded | count, by subgroup |
-| D14 | Failures and retries | info | an `llm_error` marker (from three occurrences): the harness rejected a tool call's arguments — the log records the rejection, not its cause | count |
+
 | D16 | Tool calls | info | the main thread's tool calls by phase and subgroup, with query misses and failures | exclusive time, calls (own group) |
-| D9 | Long tool runs | exposure | the longest verdict-phase ops and stop hooks, for shapes that ran at least twice in the period | their time, by shape (a hook under its command, marked) |
-| D12 | Long tool runs | exposure | background ops | how long they kept running |
-| D11 | Context size | exposure | compaction events; how many sat between two edits of one turn is a stat | their pauses; context before, re-read after |
-| T2 | Context size | exposure | each turn's context peak | the turn's tokens, by context bucket |
-| M1 | Models and effort | exposure | the main thread's model-output segments × model × effort | that time; the split by the stage each segment served; output of tool-less turns stated apart as "not a stage" |
-| T3 | Models and effort | exposure | each agent's tokens × model × effort × agent kind | tokens |
-| T7 | Models and effort | info | reasoning tokens per effort | share |
-| D13 | Not measured | info | unknown commands (by head and by subgroup) and time with no telemetry; the unknown time inside the root's change windows is a stat | time (always last) |
+| D9 | Long tool runs | exposure | the longest verdict-phase ops and stop hooks, for shapes that ran at least twice in the period | their time, by shape (a hook under its command, marked); the per-run average of the longest shape on the card; sub-agent runs are parallel time |
+| D12 | Long tool runs | exposure | background ops | how long they kept running; sub-agent ops are parallel time |
+| D11 | Context size | exposure | compaction events; how many sat between two edits of one turn is a stat | their pauses; context before, re-read after; the share over the main thread's time in turns |
+| T2 | Context size | info | each turn's context peak | the turn's tokens, by context bucket (a measurement of every turn: never ranked) |
+| M1 | Models and effort | info | the main thread's model-output segments × model × effort | that time; the split by the stage each segment served; output of tool-less turns stated apart as "not a stage" (a measurement: the model's work, never ranked as a loss) |
+| T3 | Models and effort | info | each agent's tokens × model × effort × agent kind | tokens (a measurement of every token: never ranked) |
+| T7 | Models and effort | info | reasoning tokens per effort; a Claude Code session cannot carry the signal (no reasoning usage is recorded) | share |
+| D13 | Not measured | info | unknown commands (by head and by subgroup); the unknown time inside the root's change windows and the time with no telemetry are stats | time (always last) |
+| D18 | Not measured | info | a root turn that never closed (status open: the log ends inside it; orphaned: the next prompt arrived first) and the no-telemetry time after its last event | that time, keyed by source, one evidence row per interval; never work, never a wait |
 
 Named display conventions (printed on the card, never explaining anything): the long-break
-split at 4 h and the gap buckets 5 / 15 / 60 / 240 min.
+split at 4 h, the 1 s floor under which a gap is not a reply, and the gap buckets 5 / 15 / 60 /
+240 min.
 
 ### 10.3 The report and the scanner
 
 `Build(params, facts)` selects the closed sessions whose last activity lies inside the period
 (`7d`, `30d` default, `90d`, `all`, `custom`, `session`; live sessions never count unless asked),
 optionally narrowed to sources; runs every detector; aggregates findings per rule and per key
-(a finding may stand for several calls, `Finding.N`); computes exposure, distribution, shares
-with their denominator, no-data counts ("did not happen", "could not be measured" and "does not
-apply" are different: a session that cannot carry a signal for its CLI version is listed, never
-counted; a session the rule does not apply to is in neither count); headline numbers come from
+(a finding may stand for several calls, `Finding.N`); computes exposure (`time_ms` over every
+lane, the raw op-sum, and `main_ms`, the main thread's part: the number every share, group
+total and the time ranking use, because sub-agent turns, runs and compactions run in parallel
+and never join a root denominator — product rule 6; the page words the rest as "in parallel"),
+distribution (a row carries its own denominator `of` when the rule keys its measurable sessions
+through `Result.Key`, as D17 does by source), shares with their denominator, no-data counts ("did
+not happen", "could not be measured" and "does not apply" are different: a session that cannot
+carry a signal for its CLI version is listed, never counted; a session the rule does not apply
+to is in neither count and is reported apart as `not_applicable`, so a check can say how many
+sessions changed no files or had no review run); headline numbers come from
 the detectors' `Result.Stats` and `Finding.Value`, never parsed from a note; arranges cards in
 nine groups ordered by exposure on the chosen axis (time, or uncached input + output tokens),
 inside a group exposure cards first, then checks by sessions affected, measurements last, checks
@@ -920,3 +933,26 @@ simulation (the three Claude Code sessions matched to the second).
   an agent the user backgrounded on purpose). A policy overlay (required stages, role limits)
   is not planned: conformance to a declared process is another product. Headline numbers moved
   from `Sscanf` over notes to `Result.Stats`.
+- **2026-09-16, the report read as a pragmatist (reviewed by the `pragmatic` agent).** On a
+  73-session corpus the top findings were measurements of totals (model time, all tokens, every
+  turn's context) and the real losses never reached the strip: M1, T2 and T3 became info cards.
+  Exposure gained the main thread's part (`main_ms`): D3 had added 8 h of stopped sub-agent turns
+  to a root denominator, D9 / D7 / D12 the same with sub-agent runs. A card's "not applicable"
+  sessions are counted and printed (D4 needs two sub-agents, T6 one, D17 a change, D24 a review),
+  a check row carries its own denominator (D17 by source). Command shapes come from the
+  classifier's deciding segment (`test set`, `release -o ServerAliveInterval=30` and `test bash`
+  were the first three shapes of the corpus). A gap under 1 s is a queued message, not a reply
+  (a sixth of D2's replies; the median doubled). T1's "starts after 15 min" stat had never fired
+  (it read a field the finding does not set). D1's "after changes" became turn-level (session-level
+  it was 19 of 20 — true of any long session). A Claude Code assistant line with the model
+  `<synthetic>` no longer names the turn's model (9 h of model time sat under it). Claude Code
+  sessions are not measurable for T7 (no reasoning usage). The 43 h of no-telemetry time the D13
+  card printed as one number are a card of their own (D18) with the interval and the turn that
+  never closed, one session holding 38 h of it. Exit 130 / 143 is a stopped command, not a
+  failed step. The owner's decisions on the same day: an orphaned turn's tail stays
+  `no_telemetry` (the log does not say when the agent stopped, so it is neither work nor a
+  wait); D2 "time to your reply" is an info card (the user's own pace, not a harness loss; D1
+  stays ranked because its remedy is in the harness); D14 "tool calls the harness could not
+  parse" is dropped (neither harness records the tool, so the card had no action; the
+  `llm_error` marker stays on the timeline); no `todobem insights` CLI for now (`cmd/dump
+  -insights` covers the developer's need; the report's sentences live in the page).

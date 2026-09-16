@@ -6,9 +6,14 @@ import "fmt"
 // breaks" (D2b): 4 hours. It never explains anything; it is printed on both cards.
 const LongBreakMs = 4 * 3600e3
 
+// MinReplyMs is the convention below which a gap between two turns is not a reply (D2) nor a
+// break the cache could expire in (T1): the next message was on its way before the turn ended
+// (a queued prompt is stamped at delivery). One second; printed on both cards.
+const MinReplyMs = 1000
+
 // D1 · The agent waited for your answer. Signal: a wait for the user right after a turn in
-// which the agent asked a question. Exposure: the wait. Stats: the questions asked after the
-// session had already changed a file, and their waits (a decision that arrived mid-work).
+// which the agent asked a question. Exposure: the wait. Stats: the questions asked by a turn
+// that had already changed a file, and their waits (a decision that arrived mid-work).
 func detectWaitingOnAnswer(f *Facts) Result {
 	r := Result{Measurable: true, Stats: map[string]int64{}}
 	for _, g := range f.Gaps {
@@ -16,8 +21,8 @@ func detectWaitingOnAnswer(f *Facts) Result {
 			continue
 		}
 		note := "the agent asked a question before this wait"
-		if g.AfterFirstChange {
-			note += "; files had already been changed"
+		if g.TurnChangedFiles {
+			note += "; that turn had already changed files"
 			r.Stats["after_changes"]++
 			r.Stats["after_changes_ms"] += g.End - g.Start
 		}
@@ -26,13 +31,14 @@ func detectWaitingOnAnswer(f *Facts) Result {
 	return r
 }
 
-// D2 · Time to your reply. Signal: a wait for the user shorter than the long-break convention,
-// ended by a turn you started. Exposure: the wait; the card shows count, median and buckets.
+// D2 · Time to your reply. Signal: a wait for the user of at least MinReplyMs and shorter than
+// the long-break convention, ended by a turn you started. Exposure: the wait; the card shows
+// count, median and buckets.
 func detectReplyLatency(f *Facts) Result {
 	r := Result{Measurable: true}
 	for _, g := range f.Gaps {
 		gap := g.End - g.Start
-		if g.NextTurn == "" || g.NextTrigger == "system" || gap >= LongBreakMs {
+		if g.NextTurn == "" || g.NextTrigger == "system" || gap < MinReplyMs || gap >= LongBreakMs {
 			continue
 		}
 		r.Findings = append(r.Findings, Finding{Lane: f.lanePath(0), LaneID: f.laneID(0), A: g.Start, B: g.End, TimeMs: gap, Key: GapBucket(gap)})
