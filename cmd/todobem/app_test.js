@@ -508,7 +508,8 @@ test('a clipped agent message is completed from its source event', async () => {
   assert.equal(h.node('lanePromptNote').textContent, '');
   h.take('/api/event?file=%2Fsynthetic%2Flate.jsonl&off=7&len=11').resolve({ payload: { content: [{ type: 'input_text', text: long }] } });
   await opening;
-  assert.equal(h.node('lanePromptText').textContent, long);
+  // the completed text goes through the prose view, not textContent: rendered, one paragraph
+  assert.equal(h.node('lanePromptText').innerHTML, `<p>${long}</p>`);
 });
 
 test('phase and retry-role quick filters are mutually exclusive', async () => {
@@ -908,8 +909,8 @@ test('the recorded request and the recorded answer share one prose style and one
   model.lanes[0].turns = [{ id: 'turn', start: 1000, end: 60000, status: 'completed', final: 'Done.' }];
   await h.open('session', model);
   const main = h.node('main').innerHTML;
-  assert.match(main, /<div class="answer-head"><span class="eyebrow">First user message · [^<]*<\/span><\/div><p class="prose-block scroll-fade">Do the thing\.<\/p>/);
-  assert.match(main, /<div class="answer-block prose-block scroll-fade" tabindex="0">Done\.<\/div>/);
+  assert.match(main, /<div id="firstMessage"><div class="answer-head"><span class="eyebrow">First user message · [^<]*<\/span><div class="answer-actions"><button [^>]*data-action="text-view"[^>]*>Show raw<\/button><\/div><\/div><div class="prose-block scroll-fade prose-md"><p>Do the thing\.<\/p><\/div>/);
+  assert.match(main, /<div class="answer-block prose-block scroll-fade prose-md" tabindex="0"><p>Done\.<\/p><\/div>/);
   // a live session without an answer yet keeps the same header, so the two eyebrows still align
   const live = { ...session('live'), live: true };
   live.lanes[0].markers = [{ kind: 'user_message', t: 1000, text: 'Do the thing.' }];
@@ -958,6 +959,51 @@ test('the session list marks a session whose agent is waiting for an answer, wit
   assert.doesNotMatch(row('done'), /chip ask/, 'a session with no recorded question carries no chip');
   // the mobile tile carries it too
   assert.equal((rows.match(/class="qmark"/g) || []).length, 2);
+});
+
+test('an age reads in seconds, minutes, hours, and in days from two days on', async () => {
+  const h = await harness().ready();
+  const now = Date.now();
+  assert.equal(h.run(`ago(${now - 20e3})`), '20s ago');
+  assert.equal(h.run(`ago(${now - 59 * 60e3})`), '59m ago');
+  assert.equal(h.run(`ago(${now - 47 * 3600e3})`), '47h ago');
+  assert.equal(h.run(`ago(${now - 245 * 3600e3})`), '10d ago');
+});
+
+test('the default order puts active sessions first, then those waiting for an answer, then the rest by update time; an explicit sort ignores the rank', async () => {
+  const h = await harness().ready();
+  h.run("go('sessions')");
+  const now = Date.now();
+  h.take('/api/sessions').resolve([
+    { id: 'fresh', title: 'Fresh', cwd: '/synthetic', started: now - 3600e3, updated: now - 20 * 60e3, bytes: 30, agents: 0 },
+    { id: 'ask', title: 'Needs you', cwd: '/synthetic', started: now - 5 * 3600e3, updated: now - 2 * 3600e3, bytes: 10, agents: 0, question: now - 2 * 3600e3 },
+    { id: 'live', title: 'Running', cwd: '/synthetic', started: now - 3600e3, updated: now - 60e3, bytes: 20, agents: 0 },
+    { id: 'old', title: 'Old', cwd: '/synthetic', started: now - 9 * 3600e3, updated: now - 8 * 3600e3, bytes: 40, agents: 0 },
+  ]);
+  await flush();
+  const order = () => [...h.node('fleetRows').innerHTML.matchAll(/<tr><td><button class="session-link" data-action="session" data-id="([^"]+)"/g)].map(m => m[1]);
+  assert.deepEqual(order(), ['live', 'ask', 'fresh', 'old']);
+  h.run("state.fleetSort = 'size'; renderFleetRows()");
+  assert.deepEqual(order(), ['old', 'fresh', 'live', 'ask']);
+});
+
+test('the session page wears the waiting chip in its top bar while the question has no answer, and drops it once the summaries say it was answered', async () => {
+  const h = harness({ hash: '#session/ask' });
+  const now = Date.now();
+  const summary = { id: 'ask', title: 'Needs you', cwd: '/synthetic', started: now - 3 * 3600e3, updated: now - 2 * 3600e3, bytes: 10, agents: 0, question: now - (2 * 3600e3 + 13 * 60e3) };
+  h.take('/api/auth').resolve({ enabled: false, authenticated: true }); await flush();
+  h.take('/api/sessions').resolve([summary]); await flush();
+  h.take('/api/sessions/ask').resolve(session('ask')); await flush();
+  assert.equal(h.errors.length, 0);
+  assert.match(h.node('liveLabel').innerHTML, /Session closed · [^<]*<\/span> <span class="chip ask" title="[^"]*"><i class="qmark" aria-hidden="true">\?<\/i>waiting 2h 13m<\/span>$/);
+  // the file grew (the answer): the session reloads, then the summaries, and the chip is gone
+  const polling = h.poll();
+  h.take('/api/sessions/ask/version').resolve({ version: 'v2' }); await flush();
+  h.take('/api/sessions/ask').resolve({ ...session('ask'), version: 'v2' }); await flush();
+  h.take('/api/sessions').resolve([{ ...summary, question: undefined }]); await flush();
+  await polling;
+  assert.equal(h.errors.length, 0);
+  assert.doesNotMatch(h.node('liveLabel').innerHTML, /chip ask/);
 });
 
 test('the session list shows the last completed answer as its description, verbatim; the session page leaves it to the Last answer panel', async () => {
@@ -1627,4 +1673,173 @@ test('the session view names the log file of the main thread and of every agent'
   assert.match(h.node('inspector').innerHTML, /<dt>Log file<\/dt><dd class="mono">\/home\/synthetic\/\.codex\/sessions\/2026\/09\/12\/rollout-2026-09-12T10-00-10-early\.jsonl<\/dd>/);
   h.run("inspectLane('lane')");
   assert.match(h.node('inspector').innerHTML, /rollout-2026-09-12T10-00-00-session\.jsonl/);
+});
+
+test('the select list steps over disabled options, stops at the ends, jumps by letter and marks the opening value', async () => {
+  const h = await harness().ready();
+  h.run('var ddOptions = [{ index: 0, label: "Last 24 hours", disabled: false }, { index: 1, label: "Last 7 days", disabled: true }, { index: 2, label: "All time", disabled: false }, { index: 3, label: "Custom dates…", disabled: false }]');
+  // arrows skip the disabled row and stay put at either end
+  assert.equal(h.run('Dropdown.nextIndex(ddOptions, 0, 1)'), 2);
+  assert.equal(h.run('Dropdown.nextIndex(ddOptions, 2, -1)'), 0);
+  assert.equal(h.run('Dropdown.nextIndex(ddOptions, 3, 1)'), 3);
+  assert.equal(h.run('Dropdown.nextIndex(ddOptions, 0, -1)'), 0);
+  // Home and End are steps from outside the list
+  assert.equal(h.run('Dropdown.nextIndex(ddOptions, -1, 1)'), 0);
+  assert.equal(h.run('Dropdown.nextIndex(ddOptions, ddOptions.length, -1)'), 3);
+  // type-ahead: the next match after the current row, wrapping, never a disabled one
+  assert.equal(h.run('Dropdown.matchIndex(ddOptions, 0, "a")'), 2);
+  assert.equal(h.run('Dropdown.matchIndex(ddOptions, 2, "L")'), 0);
+  assert.equal(h.run('Dropdown.matchIndex(ddOptions, 0, "z")'), -1);
+  // the row of the value the select opened with carries the check; the highlight is separate
+  const html = h.run('Dropdown.render(ddOptions, 2, 3)');
+  assert.match(html, /<div class="dropdown-option" role="option" data-index="2" aria-selected="true">All time<\/div>/);
+  assert.match(html, /<div class="dropdown-option active" role="option" data-index="3" aria-selected="false">Custom dates…<\/div>/);
+  assert.match(html, /data-index="1" aria-selected="false" aria-disabled="true">Last 7 days</);
+  assert.equal(h.errors.length, 0);
+});
+
+/* ---------- markdown.js: the rendered view of a recorded message ---------- */
+
+const md = (h, text) => h.run(`Markdown.render(${JSON.stringify(text)})`);
+
+test('the renderer covers the GFM subset the agents write', async () => {
+  const h = harness();
+  assert.equal(md(h, '## Done\n\nSee **bold**, *em*, ~~old~~ and `code`.'), '<h2>Done</h2><p>See <strong>bold</strong>, <em>em</em>, <del>old</del> and <code>code</code>.</p>');
+  // a newline inside a paragraph stays a newline (the block is pre-wrap), leading spaces stay
+  assert.equal(md(h, 'line one\n  line two\n\npara two'), '<p>line one\n  line two</p><p>para two</p>');
+  assert.equal(md(h, '- one\n- two\n  - nested\n- three'), '<ul><li>one</li><li>two<ul><li>nested</li></ul></li><li>three</li></ul>');
+  assert.equal(md(h, '3. c\n4. d'), '<ol start="3"><li>c</li><li>d</li></ol>');
+  // a blank line between items makes the list loose: the items' paragraphs are wrapped
+  assert.equal(md(h, '1. first\n\n2. second\n   wrapped'), '<ol><li><p>first</p></li><li><p>second\nwrapped</p></li></ol>');
+  assert.equal(md(h, '- [ ] todo\n- [x] done'), '<ul><li>☐ todo</li><li>☑ done</li></ul>');
+  // Codex style: a bold line, then bullets directly under it, then a list under a paragraph line
+  assert.equal(md(h, '**Changes**\n- a\n- b\nNext:\n1. c'), '<p><strong>Changes</strong></p><ul><li>a</li><li>b\nNext:</li></ul><ol><li>c</li></ol>');
+  assert.equal(md(h, 'Changes:\n- a\n- b'), '<p>Changes:</p><ul><li>a</li><li>b</li></ul>');
+  // a number that is not 1 does not turn a paragraph line into a list
+  assert.equal(md(h, 'In\n2024. A year'), '<p>In\n2024. A year</p>');
+  assert.equal(md(h, '> quoted\n> more\n\nafter'), '<blockquote><p>quoted\nmore</p></blockquote><p>after</p>');
+  assert.equal(md(h, '| a | b |\n|---|:-:|\n| 1 | 2 |\n| 3 |'), '<table><thead><tr><th>a</th><th style="text-align:center">b</th></tr></thead><tbody><tr><td>1</td><td style="text-align:center">2</td></tr><tr><td>3</td><td style="text-align:center"></td></tr></tbody></table>');
+  assert.equal(md(h, 'Summary\n---\n* * *'), '<p>Summary</p><hr><hr>');
+  assert.equal(md(h, '```go\nfunc main() {\n\tx := "<b>"\n}\n```\nafter'), '<pre><code class="lang-go">func main() {\n\tx := &quot;&lt;b&gt;&quot;\n}\n</code></pre><p>after</p>');
+  // an unclosed fence runs to the end; a fence inside a list item is parsed with the item
+  assert.equal(md(h, '```\nls'), '<pre><code>ls\n</code></pre>');
+  assert.equal(md(h, '- run:\n  ```\n  ls\n  ```\n- next'), '<ul><li>run:<pre><code>ls\n</code></pre></li><li>next</li></ul>');
+  assert.equal(md(h, 'a ``x`y`` b \\*not em\\*'), '<p>a <code>x`y</code> b *not em*</p>');
+  // intraword underscores (paths, identifiers) and lone stars are literal; the rule of three holds
+  assert.equal(md(h, '~/foo_bar_baz and session_test.go and ls *.go'), '<p>~/foo_bar_baz and session_test.go and ls *.go</p>');
+  assert.equal(md(h, '***both*** and **bold *em* bold** and *a**'), '<p><strong><em>both</em></strong> and <strong>bold <em>em</em> bold</strong> and <em>a</em>*</p>');
+  assert.equal(h.errors.length, 0);
+});
+
+test('links: web links open in a new tab, file references are a tooltip, images are never fetched, bare URLs are trimmed', async () => {
+  const h = harness();
+  const web = '<a href="https://example.com/a?b=1" target="_blank" rel="noopener noreferrer">docs</a>';
+  assert.equal(md(h, '[docs](https://example.com/a?b=1 "title")'), `<p>${web}</p>`);
+  assert.equal(md(h, '[mail](mailto:dev@example.com)'), '<p><a href="mailto:dev@example.com" target="_blank" rel="noopener noreferrer">mail</a></p>');
+  // Claude Code's file reference: the text, the path on hover, no navigation
+  assert.equal(md(h, 'see [app.js:12](/home/synthetic/app.js) and [rel](./x.md)'), '<p>see <span class="md-ref" title="/home/synthetic/app.js">app.js:12</span> and <span class="md-ref" title="./x.md">rel</span></p>');
+  assert.equal(md(h, '![shot](https://example.com/s.png)'), '<p><a href="https://example.com/s.png" target="_blank" rel="noopener noreferrer">shot</a></p>');
+  assert.equal(md(h, '**http://127.0.0.1:7799/** and (https://x.org/p(1)), <https://x.org/q>.'), '<p><strong><a href="http://127.0.0.1:7799/" target="_blank" rel="noopener noreferrer">http://127.0.0.1:7799/</a></strong> and (<a href="https://x.org/p(1)" target="_blank" rel="noopener noreferrer">https://x.org/p(1)</a>), <a href="https://x.org/q" target="_blank" rel="noopener noreferrer">https://x.org/q</a>.</p>');
+  // link text never nests a link; a destination with a space is not a link at all
+  assert.equal(md(h, '[see https://a.b](https://c.d) [x](not a url)'), '<p><a href="https://c.d" target="_blank" rel="noopener noreferrer">see https://a.b</a> [x](not a url)</p>');
+  assert.equal(h.errors.length, 0);
+});
+
+// safeHTML is the structural guarantee: every tag is one of the renderer's own, every attribute
+// one it writes, every href a web or mail scheme; no other `<` or `&` survives unescaped
+function safeHTML(html) {
+  const tags = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'a', 'strong', 'em', 'del', 'hr', 'span']);
+  const attrs = {
+    a: /^href="(https?:\/\/|mailto:)[^"\s]*" target="_blank" rel="noopener noreferrer"$/i,
+    span: /^class="md-ref" title="[^"]*"$/, code: /^class="lang-[\w.+-]+"$/, ol: /^start="\d+"$/,
+    td: /^style="text-align:(left|right|center)"$/, th: /^style="text-align:(left|right|center)"$/,
+  };
+  for (const [, close, name, rest] of html.matchAll(/<(\/?)([a-z0-9]*)([^>]*)>/g)) {
+    assert.ok(tags.has(name), `tag <${close}${name}> in ${html.slice(0, 80)}`);
+    if (rest.trim()) assert.match(rest.trim(), attrs[name] || /^$/, `attributes on <${name}>: ${rest}`);
+  }
+  assert.doesNotMatch(html, /<(?![\/a-z])/, 'a bare <');
+  assert.doesNotMatch(html, /&(?!(amp|lt|gt|quot|#39);)/, 'a bare &');
+}
+
+test('whatever the text tries, the output holds only the renderer\'s own tags and web links', async () => {
+  const h = harness();
+  const nasty = [
+    '<script>alert(1)</script><img src=https://evil.example/p.png onerror=alert(1)>',
+    '[x](javascript:alert(1)) [y](JavaScript:alert(1)) [z](java\tscript:alert(1)) [w](&#106;avascript:alert(1)) [v](data:text/html,x) [u](vbscript:x)',
+    '![tracker](https://evil.example/t.gif) <https://a.b/"onmouseover="alert(1)> https://a.b/x"y',
+    '[t](https://a.b/x"onclick="alert(1)) [t](https://a.b/x\'onclick=\'alert(1))',
+    '```html\n<script>x</script>\n```\n`<b>` | <i> |\n|---|---|\n| <u> | & |',
+    '# <h1 onclick=x>\n> <div>\n- <li>\n\n**<em>**',
+    '*'.repeat(30000), '['.repeat(30000), '`'.repeat(30000), ('[a](b) ' + '**' + '_').repeat(4000),
+  ];
+  const started = Date.now();
+  for (const text of nasty) safeHTML(md(h, text));
+  assert.ok(Date.now() - started < 2000, 'pathological input renders in bounded time');
+  // and the escapes are the right ones
+  assert.equal(md(h, '<script>x</script> & "q"'), '<p>&lt;script&gt;x&lt;/script&gt; &amp; &quot;q&quot;</p>');
+  assert.equal(md(h, '[x](javascript:alert(1))'), '<p><span class="md-ref" title="javascript:alert(1)">x</span></p>');
+  assert.equal(h.errors.length, 0);
+});
+
+test('every prose panel renders Markdown and one switch shows every text as recorded', async () => {
+  const h = await harness().ready();
+  const model = session();
+  const request = 'Fix `session_test.go`:\n- first\n- second';
+  const answer = '## Done\n\nSee [app.js:1](/synthetic/app.js).';
+  model.lanes[0].markers = [
+    { kind: 'user_message', t: 1000, text: request }, { kind: 'system_message', t: 1500, text: 'ref\n<hook> text' },
+    { kind: 'question', t: 30000, text: 'Ship **now**?' }, { kind: 'final_answer', t: 60000, text: answer },
+  ];
+  model.lanes[0].turns = [{ id: 'turn', start: 1000, end: 60000, status: 'completed', final: answer }];
+  await h.open('session', model);
+  const rendered = () => h.node('main').innerHTML;
+  assert.match(rendered(), /<div class="prose-block scroll-fade prose-md"><p>Fix <code>session_test.go<\/code>:<\/p><ul><li>first<\/li><li>second<\/li><\/ul><\/div>/);
+  assert.match(rendered(), /<div class="answer-block prose-block scroll-fade prose-md" tabindex="0"><h2>Done<\/h2><p>See <span class="md-ref" title="\/synthetic\/app.js">app.js:1<\/span>\.<\/p><\/div>/);
+  const conv = () => h.node('conversation').innerHTML;
+  assert.match(conv(), /<div class="conv-text prose-md "><p>Ship <strong>now<\/strong>\?<\/p><\/div>/);
+  // a harness message is never Markdown, in either view
+  assert.match(conv(), /<div class="conv-text prose-raw ">ref\n&lt;hook&gt; text<\/div>/);
+  // the clamp button hides for a short text and shows for a long one
+  assert.match(conv(), /<button class="text-btn" data-action="conv-toggle" data-key="60000:final_answer" style="margin-top:4px" hidden>Show all<\/button>/);
+  const long = { ...model, lanes: [{ ...model.lanes[0], markers: [{ kind: 'user_message', t: 1000, text: 'x'.repeat(400) }] }] };
+  await h.open('long', long);
+  assert.match(conv(), /data-key="1000:user_message" style="margin-top:4px" >Show all</);
+  await h.open('session', model);
+  // the switch: every block turns raw and says so, the buttons flip, the marker dialog follows
+  h.action('text-view');
+  assert.equal(h.run('state.rawText'), true);
+  const blocks = () => h.node('firstMessage').innerHTML + h.node('lastRecorded').innerHTML + h.node('convActions').innerHTML;
+  assert.match(blocks(), /<div class="prose-block scroll-fade prose-raw">Fix `session_test.go`:\n- first\n- second<\/div>/);
+  assert.match(blocks(), /<div class="answer-block prose-block scroll-fade prose-raw" tabindex="0">## Done\n\nSee \[app.js:1\]\(\/synthetic\/app.js\)\.<\/div>/);
+  assert.match(conv(), /<div class="conv-text prose-raw ">Ship \*\*now\*\*\?<\/div>/);
+  assert.doesNotMatch(blocks(), /Show raw/);
+  assert.equal((blocks().match(/>Show rendered</g) || []).length, 3, 'first message, last answer, conversation');
+  h.run("inspectMarker('lane:30000:question')");
+  assert.match(h.node('inspector').innerHTML, /<div class="prose-block prose-log prose-raw">Ship \*\*now\*\*\?<\/div>/);
+  h.action('text-view');
+  assert.match(h.node('inspector').innerHTML, /<div class="prose-block prose-log prose-md"><p>Ship <strong>now<\/strong>\?<\/p><\/div>/);
+  assert.match(conv(), /<div class="conv-text prose-md "><p>Ship <strong>now<\/strong>\?<\/p><\/div>/);
+  // a marker that is not a message stays as recorded and offers no switch
+  h.run("inspectMarker('lane:1500:system_message')");
+  assert.match(h.node('inspector').innerHTML, /<div class="prose-block prose-log prose-raw">ref\n&lt;hook&gt; text<\/div>/);
+  assert.doesNotMatch(h.node('inspector').innerHTML, /text-view/);
+  assert.equal(h.errors.length, 0);
+});
+
+test('the grain rasters for a dense screen are laid exactly as app.css lays the SVG tile', async () => {
+  const h = harness();
+  await h.ready();
+  // a 1x screen (the harness reports none) keeps the stylesheet's own value
+  assert.equal(h.run('Grain.density()'), 1);
+  const css = readFileSync(join(__dirname, 'web/app.css'), 'utf8');
+  const declared = css.match(/--grain:([^;]+);/)[1];
+  assert.equal(h.run('Grain.value(["grain.svg", "grain.svg"])'), declared);
+  // the rasters take the SVG's place layer by layer: same offsets, same sizes
+  assert.equal(h.run('Grain.value(["blob:a", "blob:b"])'), declared.replace('url("grain.svg")', 'url("blob:a")').replace('url("grain.svg")', 'url("blob:b")'));
+});
+
+test('the session list description keeps underscores inside identifiers', async () => {
+  const h = harness();
+  assert.equal(h.run("descriptionOf('Fix **session_test.go** and __init__.py, see _notes_.\\n\\nMore.', 100)"), 'Fix session_test.go and init.py, see notes.');
 });

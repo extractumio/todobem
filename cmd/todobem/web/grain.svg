@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- The surface grain of the UI (the grain custom property in app.css): one seamless 512px tile of
+       monochrome specks over a transparent ground, so it composites normally (no blend mode: a blend
+       works per channel and tints mid-tone colours). Three noise fields at three frequencies give
+       specks of about 1, 2 and 3 px with irregular outlines; each field is thresholded through the
+       alpha row of a colour matrix (alpha = k*channel - c, clamped), so only its crests survive as
+       dots; the dark set reads the red channel, the light set the green one (independent fields), so
+       they never coincide. app.css lays the tile twice, at 512px and at 571px (coprime, so the two
+       grids never line up): each layer alone repeats, the pair does not, and each carries about half
+       the specks. No network, no raster asset: it ships in the binary. -->
+  <filter id="specks" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="1.1" numOctaves="2" seed="3" stitchTiles="stitch" result="f1"/>
+    <feTurbulence type="fractalNoise" baseFrequency=".55" numOctaves="2" seed="7" stitchTiles="stitch" result="f2"/>
+    <feTurbulence type="fractalNoise" baseFrequency=".34" numOctaves="2" seed="11" stitchTiles="stitch" result="f3"/>
+    <!-- Dust: here and there the 1 px specks gather into a thread 5 to 8 px long. The threads are
+         the zero crossings of a coarse turbulence field (thin curved valleys, random directions),
+         kept only inside rare patches of a second field so they come out as short pieces; the mask
+         is added to the fine noise before its threshold, which crowds the specks along the thread.
+         The noise is made opaque first, so the arithmetic composite works on straight values. -->
+    <feColorMatrix in="f1" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0 1" result="f1o"/>
+    <feTurbulence type="turbulence" baseFrequency=".05" numOctaves="1" seed="5" stitchTiles="stitch" result="veins"/>
+    <feColorMatrix in="veins" values="-12 0 0 0 1  -12 0 0 0 1  -12 0 0 0 1  0 0 0 0 1" result="lines"/>
+    <feTurbulence type="fractalNoise" baseFrequency=".11" numOctaves="1" seed="9" stitchTiles="stitch" result="blobs"/>
+    <feColorMatrix in="blobs" values="0 0 9 0 -6.6  0 0 9 0 -6.6  0 0 9 0 -6.6  0 0 0 0 1" result="patches"/>
+    <feComposite in="lines" in2="patches" operator="arithmetic" k1="1" result="threads"/>
+    <feComposite in="f1o" in2="threads" operator="arithmetic" k2="1" k3=".26" result="f1d"/>
+    <!-- and a faint white glow along the thread itself, under the dots, so a thread reads a little
+         brighter than the loose specks around it -->
+    <feColorMatrix in="threads" values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  .5 0 0 0 0" result="glow"/>
+    <feColorMatrix in="f1d" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  6 0 0 0 -4.08" result="d1"/>
+    <feColorMatrix in="f2" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  6 0 0 0 -4.38" result="d2"/>
+    <feColorMatrix in="f3" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  6 0 0 0 -4.68" result="d3"/>
+    <feColorMatrix in="f1d" values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 3 0 0 -2.04" result="l1"/>
+    <feColorMatrix in="f2" values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 3 0 0 -2.19" result="l2"/>
+    <feColorMatrix in="f3" values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 3 0 0 -2.34" result="l3"/>
+    <feMerge>
+      <feMergeNode in="d3"/><feMergeNode in="d2"/><feMergeNode in="d1"/>
+      <feMergeNode in="l3"/><feMergeNode in="l2"/><feMergeNode in="glow"/><feMergeNode in="l1"/>
+    </feMerge>
+  </filter>
+  <rect width="512" height="512" filter="url(#specks)"/>
+</svg>

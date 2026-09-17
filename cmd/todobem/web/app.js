@@ -106,9 +106,9 @@ const railSwatch = color => `<i class="color-rail" style="background:${color}"><
 const swatchFor = def => def.work ? railSwatch(def.color) : `<i class="color-square" style="background:${def.color}"></i>`;
 const ROLES = { background: { name: 'Background process', color: '#8a6d3b' }, parallel: { name: 'Parallel runs (same command)', color: '#7fa6c9' }, first: { name: 'First runs', color: '#d9bc3d' }, retry_after_failure: { name: 'Retry after failure', color: '#d77729' }, rerun: { name: 'Reruns (after pass)', color: '#e2cf6a' }, fix: { name: 'Fix between attempts', color: '#b22998' }, infra_recovery: { name: 'Infra recovery', color: '#c4956e' }, worker_queue: { name: 'Worker queue', color: '#48aa8c' }, single: { name: 'Single runs', color: '#b3a04a' }, remote: { name: 'On remote runner', color: '#8fb8d8' } };
 const ROLE_ORDER = ['first', 'retry_after_failure', 'rerun', 'parallel', 'fix', 'infra_recovery', 'worker_queue', 'single', 'remote'];
-const MARKS = { llm_error: { glyph: 'x', color: '#f0a742', name: 'LLM failure (invalid tool call)' }, system_message: { glyph: 'sys', color: '#7d8fa1', name: 'Harness message' }, user_message: { glyph: 'user', color: '#f3f6f8', name: 'User message' }, question: { glyph: 'q', color: '#f2a7b2', name: 'Question to user' }, final_answer: { glyph: 'check', color: '#4aa65f', name: 'Final answer' }, interrupted: { glyph: 'x', color: '#d76368', name: 'Interrupted' }, compaction: { glyph: 'diamond', color: '#c08a45', name: 'Context compaction' }, plan: { glyph: 'plan', color: '#c9b2ff', name: 'Plan update' }, skill: { glyph: 'skill', color: LIFECYCLES.review.color, name: 'Skill invoked' }, result_returned: { glyph: 'result', color: '#48aa8c', name: 'Sub-agent result' }, agent_started: { glyph: 'spawn', color: '#86d0b9', name: 'Sub-agent spawned' }, agent_interacted: { glyph: 'tick', color: '#86d0b9', name: 'Message to sub-agent' }, agent_completed: { glyph: 'done', color: '#86d0b9', name: 'Sub-agent turn completed' }, agent_interrupted: { glyph: 'x', color: '#d76368', name: 'Sub-agent interrupted' } };
+const MARKS = { llm_error: { glyph: 'x', color: '#f0a742', name: 'LLM failure (invalid tool call, API error)' }, system_message: { glyph: 'sys', color: '#7d8fa1', name: 'Harness message' }, user_message: { glyph: 'user', color: '#f3f6f8', name: 'User message' }, question: { glyph: 'q', color: '#f2a7b2', name: 'Question to user' }, final_answer: { glyph: 'check', color: '#4aa65f', name: 'Final answer' }, interrupted: { glyph: 'x', color: '#d76368', name: 'Interrupted' }, compaction: { glyph: 'diamond', color: '#c08a45', name: 'Context compaction' }, plan: { glyph: 'plan', color: '#c9b2ff', name: 'Plan update' }, skill: { glyph: 'skill', color: LIFECYCLES.review.color, name: 'Skill invoked' }, result_returned: { glyph: 'result', color: '#48aa8c', name: 'Sub-agent result' }, agent_started: { glyph: 'spawn', color: '#86d0b9', name: 'Sub-agent spawned' }, agent_interacted: { glyph: 'tick', color: '#86d0b9', name: 'Message to sub-agent' }, agent_completed: { glyph: 'done', color: '#86d0b9', name: 'Sub-agent turn completed' }, agent_interrupted: { glyph: 'x', color: '#d76368', name: 'Sub-agent interrupted' } };
 
-const state = { locked: false, authEnabled: false, page: 'sessions', id: null, model: null, sessions: [], a: 0, b: 0, follow: false, interval: 60, expanded: new Set(), hiddenLanes: new Set(), phase: 'all', sub: 'all', role: 'all', lifecycle: 'all', lane: 'all', sort: 'longest', listShown: 60, metricsOpen: false, openRuns: new Set(), search: '', fleetSort: 'updated', fleetFilter: { kind: '30d', from: '', to: '', cwd: '', sources: {} }, selected: null, groups: true, inTurn: false, allLanes: false, failedOnly: false, breakdownSort: 'longest', convOpen: new Set(), version: null, lastRefresh: 0, pollTimer: null, tick: null, focus: null, insights: null, pendingFocus: null };
+const state = { locked: false, authEnabled: false, page: 'sessions', id: null, model: null, sessions: [], a: 0, b: 0, follow: false, interval: 60, expanded: new Set(), hiddenLanes: new Set(), phase: 'all', sub: 'all', role: 'all', lifecycle: 'all', lane: 'all', sort: 'longest', listShown: 60, metricsOpen: false, openRuns: new Set(), search: '', fleetSort: 'updated', fleetFilter: { kind: '30d', from: '', to: '', cwd: '', sources: {} }, selected: null, groups: true, inTurn: false, allLanes: false, failedOnly: false, breakdownSort: 'longest', convOpen: new Set(), rawText: false, reopen: null, version: null, lastRefresh: 0, pollTimer: null, tick: null, focus: null, insights: null, pendingFocus: null };
 let geometry = null, overviewDrag = null, plotDrag = null, lastDragTime = 0, toastTimer, resizeTimer, tipTimer, focusTimer;
 // Async work may finish after navigation, another selection, or a newer refresh.
 let navigationRequest = 0, sessionRequest = 0, sessionsRequest = 0, inspectorRequest = 0, pollSchedule = 0, pollBusy = false;
@@ -121,7 +121,8 @@ function stamp(t, withDate = true) { const d = new Date(t); return (withDate ? `
 function stampS(t) { const d = new Date(t); return `${pad(d.getDate())} ${MONTHS[d.getMonth()]} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
 function spanLabel(a, b) { const x = new Date(a), y = new Date(b); return `${stamp(a)} → ${stamp(b, x.toDateString() !== y.toDateString())}`; }
 const TZ = (() => { try { return new Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (e) { return 'local'; } })();
-function ago(ms) { const s = Math.round((Date.now() - ms) / 1000); return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`; }
+// ago: a rough age — seconds, minutes, hours, and days from two days on (as fmt counts them)
+function ago(ms) { const s = Math.round((Date.now() - ms) / 1000); return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : s < 48 * 3600 ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 86400)}d ago`; }
 function shortPath(p) { if (!p) return ''; const parts = p.split('/'); return parts.length > 2 ? '…/' + parts.slice(-2).join('/') : p; }
 function modelOf(o) { const m = current(); const l = m.laneById.get(o.lane); const t = l && l.turns.find(t => t.id === o.turn); return (t && t.model) || (l && l.model) || ''; }
 function effortOf(o) { const m = current(); const l = m.laneById.get(o.lane); const t = l && l.turns.find(t => t.id === o.turn); return (t && t.effort) || ''; }
@@ -232,6 +233,7 @@ async function loadSession(id, { keepWindow = false, isCurrent = () => true, ref
   if (!ownsRequest()) return false;
   m = prepare(m);
   const prev = state.model;
+  if (state.id !== id) resetProse();
   state.model = m; state.id = id; state.version = m.version; state.lastRefresh = Date.now();
   if (!keepWindow || !prev || prev.id !== id) { state.a = m.started; state.b = m.ended; state.expanded = new Set(); state.hiddenLanes = new Set(); state.phase = 'all'; state.sub = 'all'; state.role = 'all'; state.lifecycle = 'all'; state.lane = 'all'; state.listShown = LIST_CHUNK; state.openRuns = new Set(); state.selected = null; state.follow = m.live; }
   else if (state.follow) { const span = state.b - state.a; state.b = m.ended; state.a = Math.max(m.started, m.ended - span); }
@@ -307,10 +309,14 @@ function nav() {
   document.title = `${state.page === 'session' && m ? m.title : state.page === 'insights' ? 'Insights' : state.page === 'settings' ? 'Settings' : 'Sessions'} · todobem`;
   liveLabel();
 }
+// liveLabel: the session's state in the top bar — live or closed, and the same pulsing chip
+// the list wears while a question of the agent has no answer (from the list's summary of this
+// session; the poll reloads the summaries when the session changes, so an answer clears it)
 function liveLabel() {
   const m = current(), el = $('#liveLabel');
   if (!m || state.page !== 'session') { el.innerHTML = ''; return; }
-  el.innerHTML = m.live ? `<span class="chip live"><i class="dot"></i>LIVE · refreshed ${ago(state.lastRefresh)}</span>` : `<span class="chip">${icon('check', true)}Session closed · ${ago(m.ended)}</span>`;
+  const summary = state.sessions.find(s => s.id === m.id);
+  el.innerHTML = (m.live ? `<span class="chip live"><i class="dot"></i>LIVE · refreshed ${ago(state.lastRefresh)}</span>` : `<span class="chip">${icon('check', true)}Session closed · ${ago(m.ended)}</span>`) + (summary ? askChip(summary, Date.now()) : '');
 }
 function setHash(h) { try { if (location.hash !== h) history.pushState(null, '', h); } catch (e) { } }
 function go(page, id) {
@@ -438,6 +444,8 @@ function schedulePoll() {
         const applied = await loading;
         if (!applied || !ownsPoll()) return;
         keepPlace(render); toast(current().live ? 'Live update applied.' : 'Session updated.');
+        // the summaries too: a question answered in this change leaves the top bar
+        if (await loadSessions() && ownsPoll()) liveLabel();
       } else { state.lastRefresh = Date.now(); liveLabel(); }
     } catch (e) { if (ownsPoll() && request === sessionRequest) console.warn(e); }
     finally { pollBusy = false; }
@@ -489,8 +497,19 @@ function fleetPage() {
 <section class="fleet-summary" id="fleetSummary"></section>
 <section class="card"><div id="fleetRows"></div></section>${footer()}`;
 }
+// ACTIVE_WINDOW: a session written this recently is active (the "active" chip, the summary tile).
+const ACTIVE_WINDOW = 10 * 60e3;
+const isActive = (s, now) => now - s.updated < ACTIVE_WINDOW;
+// fleetRank: under the default order the rows that need the reader come first — the active
+// sessions, then those whose agent is waiting for an answer — then everything else; an
+// explicit sort (size, agents, started) keeps its own order alone.
+const fleetRank = (s, now) => isActive(s, now) ? 0 : s.question ? 1 : 2;
 // fleetCompare orders the rows for the chosen sort.
-function fleetCompare(a, b) {
+function fleetCompare(a, b, now) {
+  if (state.fleetSort === 'updated') {
+    const rank = fleetRank(a, now) - fleetRank(b, now);
+    if (rank) return rank;
+  }
   switch (state.fleetSort) {
     case 'size': return b.bytes - a.bytes;
     case 'agents': return b.agents - a.agents;
@@ -518,8 +537,8 @@ function renderFleetRows() {
   const T = FLEET_TEXT;
   const q = state.search.toLowerCase(), f = state.fleetFilter, now = Date.now();
   const matches = s => filterKeeps(f, s, now) && `${s.title} ${s.cwd} ${s.branch || ''} ${s.id} ${sourceName(s)}`.toLowerCase().includes(q);
-  const rows = state.sessions.filter(matches).sort(fleetCompare);
-  const recent = s => now - s.updated < 10 * 60e3;
+  const rows = state.sessions.filter(matches).sort((a, b) => fleetCompare(a, b, now));
+  const recent = s => isActive(s, now);
   const count = $('#fleetCount');
   if (count) count.textContent = rows.length === state.sessions.length ? plural(rows.length, 'session') : `${rows.length} of ${plural(state.sessions.length, 'session')}`;
   const tiles = [
@@ -635,7 +654,8 @@ function descriptionOf(text, max) {
   const flat = stripMd(para);
   return flat.length > max ? flat.slice(0, max - 1).trimEnd() + '…' : flat;
 }
-function stripMd(t) { return (t || '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[*_`#>]+/g, '').replace(/\s+/g, ' ').trim(); }
+// an underscore run inside a word (session_test.go) is not emphasis and stays
+function stripMd(t) { return (t || '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[*`#>]+|(?<!\w)_+(?=\w)|(?<=\w)_+(?!\w)/g, '').replace(/\s+/g, ' ').trim(); }
 async function copyText(t) {
   try { await navigator.clipboard.writeText(t); return true; }
   catch (e) {
@@ -653,9 +673,10 @@ function lastState() {
   if (!r.segments.length) return '<p class="muted-note">No activity recorded.</p>';
   const fin = [...r.markers].reverse().find(k => k.kind === 'final_answer');
   let html = '';
-  // The agent's final answer, verbatim and scrollable, with a one-click copy.
+  // The agent's final answer, rendered (the recorded text one toggle away), scrollable, with a
+  // one-click copy of the recorded text.
   if (fin) {
-    html += `<div class="answer-head"><span class="eyebrow">Last answer · ${stamp(fin.t)}</span><div class="answer-actions"><button class="btn tiny" data-action="copy-answer">${icon('copy', true)}Copy</button><button class="btn tiny ghost" data-action="focus-at" data-t="${fin.t}">${icon('expand', true)}In timeline</button></div></div><div class="answer-block prose-block scroll-fade" tabindex="0">${esc(fin.text)}</div>`;
+    html += `<div class="answer-head"><span class="eyebrow">Last answer · ${stamp(fin.t)}</span><div class="answer-actions"><button class="btn tiny" data-action="copy-answer">${icon('copy', true)}Copy</button><button class="btn tiny ghost" data-action="focus-at" data-t="${fin.t}">${icon('expand', true)}In timeline</button>${viewToggle()}</div></div><div class="answer-block prose-block scroll-fade ${proseView()}" tabindex="0">${prose(fin.text)}</div>`;
   } else {
     html += `<div class="answer-head"><span class="eyebrow">Last answer</span></div><p class="muted-note">No final answer recorded${m.live ? ' yet — the session is still in progress.' : ' (the last turn produced no final message).'}</p>`;
   }
@@ -673,14 +694,20 @@ function rolloutPath() {
   const r = root();
   return `<dl class="session-summary rollout-path"><div><dt>Log file</dt><dd><span class="path" title="${esc(r.file || '')}">${esc(r.file || '—')}</span></dd></div></dl>`;
 }
+// firstMessage is the request card's first block: the message that started the session,
+// rendered, with the view toggle in its head
+function firstMessage() {
+  const firstUser = firstRequest(root());
+  return `<div class="answer-head"><span class="eyebrow">First user message · ${firstUser ? stamp(firstUser.t) : 'not recorded'}</span><div class="answer-actions">${viewToggle()}</div></div><div class="prose-block scroll-fade ${proseView()}">${prose(firstUser?.text || '—')}</div>`;
+}
 function sessionPage() {
-  const m = current(), r = root(), firstUser = firstRequest(r);
+  const m = current(), r = root();
   const status = m.live ? `<span class="chip live"><i class="dot"></i>Live · turn in progress</span>` : `<span class="chip">${icon('check', true)}Completed · ${r.turns.length} turns</span>`;
   // the phase legend in two rows by kind: what the agent did, then waiting, overhead and gaps
   const legend = kinds => PHASE_ORDER.filter(k => k !== 'idle' && kinds.includes(PHASES[k].kind)).map(k => `<span class="row">${swatch(k)}${PHASES[k].name}</span>`).join('');
   const railLegend = LIFECYCLE_ORDER.filter(k => LIFECYCLES[k].work).map(k => `<span class="row">${railSwatch(LIFECYCLES[k].color)}${LIFECYCLES[k].name}</span>`).join('');
   return `<section class="page-heading"><div><div class="eyebrow"><span class="source-tag source-${sourceOf(m)}">${esc(sourceName(m))}</span> Session ${esc(m.id.slice(0, 8))} · ${esc(m.model || '?')} · ${esc(sourceName(m))} ${esc(m.cli || '?')}</div><h1>${esc(m.title)}</h1><p class="subtitle">${icon('repo', true)}${esc(m.cwd)}${m.branch ? `<span>·</span>${esc(m.branch)}` : ''}<span>·</span>${stamp(m.started)} — ${stamp(m.ended)} ${esc(TZ)}</p></div><div class="heading-actions">${status}<label class="chip">Refresh <select class="select compact" id="intervalSelect">${[[30, '30s'], [60, '1 min'], [120, '2 min'], [300, '5 min']].map(([v, l]) => `<option value="${v}" ${state.interval === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label><button class="btn" data-action="refresh">${icon('refresh', true)}Refresh now</button></div></section>
-<section class="request-card" aria-label="Recorded user request"><div class="request-icon">${icon('target')}</div><div class="request-copy"><div class="answer-head"><span class="eyebrow">First user message · ${firstUser ? stamp(firstUser.t) : 'not recorded'}</span></div><p class="prose-block scroll-fade">${esc(firstUser?.text || '—')}</p>${sessionSummary()}</div><div class="recorded-state"><div id="lastRecorded">${lastState()}</div></div>${rolloutPath()}</section>
+<section class="request-card" aria-label="Recorded user request"><div class="request-icon">${icon('target')}</div><div class="request-copy"><div id="firstMessage">${firstMessage()}</div>${sessionSummary()}</div><div class="recorded-state"><div id="lastRecorded">${lastState()}</div></div>${rolloutPath()}</section>
 <div class="metrics-body"><div id="sessionMetrics">${metricsHTML()}</div>
 <section class="card" aria-labelledby="siTitle"><div class="card-head"><div><h2 id="siTitle">${esc(INSIGHT_TEXT.sessionCard.title)}</h2><p>${esc(INSIGHT_TEXT.sessionCard.subtitle)}</p></div><span class="scope">${esc(INSIGHT_TEXT.page.title)}</span></div><div id="sessionInsights" class="session-insights"><p class="muted-note">${esc(INSIGHT_TEXT.states.loading)}</p></div></section>${lifecycleRingHTML(m)}</div>
 <section class="card timeline-card" aria-labelledby="timelineTitle"><div class="card-head"><div><h2 id="timelineTitle">Session timeline</h2><p><span id="totalOps">${m.totals.ops}</span> operations · ${m.groups.length} retry groups · <span id="laneCount">${m.lanes.length - 1} sub-agent lanes</span> · ${m.totals.user_messages} user messages${m.totals.failed_ops ? ` · <span title="failed steps: tests, builds, releases, infra, edits and scripts with a non-zero exit">${m.totals.failed_ops} failed</span>` : ''}${m.totals.query_misses ? ` · <span title="reads, searches, listings and probes that answered with a non-zero exit; recorded as failed by the harness, not counted as failures">${m.totals.query_misses} query misses</span>` : ''}</p></div><div class="actions"><button class="btn ghost" data-action="fit" title="Show the entire session">${icon('expand', true)}Fit all</button><button class="btn ghost ${state.follow ? 'active' : ''}" data-action="follow" id="followBtn" aria-pressed="${state.follow}">${icon('latest', true)}Follow latest</button></div></div>
@@ -689,10 +716,10 @@ function sessionPage() {
 <div class="range-bar"><span class="range-label" id="rangeLabel"></span><div class="nav-arrows"><button class="btn icon-only" data-action="pan" data-dir="-1" aria-label="Move to earlier time">${icon('left', true)}</button><button class="btn icon-only" data-action="pan" data-dir="1" aria-label="Move to later time">${icon('right', true)}</button></div></div>
 <div class="timeline-plot" id="plot" tabindex="0" role="group" aria-label="Interactive session timeline"><svg id="chartSvg" aria-hidden="true"></svg><div class="agent-scroll" id="agentScroll" hidden><svg id="agentSvg" aria-hidden="true"></svg></div></div>
 
-<div class="chart-footer"><span class="chart-note" id="chartNote"></span><span class="chart-shortcuts"><kbd>+</kbd> <kbd>−</kbd> zoom · <kbd>←</kbd> <kbd>→</kbd> pan · <kbd>Home</kbd> fit · drag to pan</span></div><div class="legend legend-marks" id="legendMarks"><span class="row"><svg width="12" height="12">${userGlyph(6, 0, MARKS.user_message.color, .85)}</svg>User message</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="#4aa65f"/></svg>Final answer</span><span class="row"><svg width="14" height="12"><rect x="0" y="5" width="14" height="3" rx="1.5" fill="#c9a15c"/></svg>Background process</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5.5" fill="#4aa65f"/><path d="M3 6l2 2 4-4" stroke="#0f1b23" stroke-width="1.6" fill="none"/></svg>Turn completed</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5.5" fill="#d76368"/><path d="M3.5 3.5l5 5m0-5l-5 5" stroke="#0f1b23" stroke-width="1.6"/></svg>Interrupted</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="#22313d" stroke="#7d8fa1" stroke-width="1.5"/><path d="M2.5 9.5l7-7" stroke="#7d8fa1" stroke-width="1.5"/></svg>Never closed</span><span class="row"><svg width="14" height="12"><rect x="0" y="1" width="14" height="5" rx="1" fill="${LIFECYCLES.implement.color}" opacity=".35"/><rect x="0" y="5" width="14" height="2" fill="${LIFECYCLES.implement.color}"/><rect x="0" y="8" width="14" height="4" rx="1" fill="#22313d"/></svg>Stage band (the SDLC stage the time served, above the raw fill; colours above)</span><span class="row"><svg width="12" height="12"><path d="M2 2l8 8m0-8l-8 8" stroke="#e5484d" stroke-width="2.4" stroke-linecap="round"/></svg>Tool failure (non-zero exit)</span><span class="row"><svg width="12" height="12"><path d="M2 2l8 8m0-8l-8 8" stroke="#f0a742" stroke-width="2.4" stroke-linecap="round"/></svg>LLM failure: invalid tool call / broken exec script</span></div></section>
+<div class="chart-footer"><span class="chart-note" id="chartNote"></span><span class="chart-shortcuts"><kbd>+</kbd> <kbd>−</kbd> zoom · <kbd>←</kbd> <kbd>→</kbd> pan · <kbd>Home</kbd> fit · drag to pan</span></div><div class="legend legend-marks" id="legendMarks"><span class="row"><svg width="12" height="12">${userGlyph(6, 0, MARKS.user_message.color, .85)}</svg>User message</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="#4aa65f"/></svg>Final answer</span><span class="row"><svg width="14" height="12"><rect x="0" y="5" width="14" height="3" rx="1.5" fill="#c9a15c"/></svg>Background process</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5.5" fill="#4aa65f"/><path d="M3 6l2 2 4-4" stroke="#0f1b23" stroke-width="1.6" fill="none"/></svg>Turn completed</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5.5" fill="#d76368"/><path d="M3.5 3.5l5 5m0-5l-5 5" stroke="#0f1b23" stroke-width="1.6"/></svg>Interrupted</span><span class="row"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="#22313d" stroke="#7d8fa1" stroke-width="1.5"/><path d="M2.5 9.5l7-7" stroke="#7d8fa1" stroke-width="1.5"/></svg>Never closed</span><span class="row"><svg width="14" height="12"><rect x="0" y="1" width="14" height="5" rx="1" fill="${LIFECYCLES.implement.color}" opacity=".35"/><rect x="0" y="5" width="14" height="2" fill="${LIFECYCLES.implement.color}"/><rect x="0" y="8" width="14" height="4" rx="1" fill="#22313d"/></svg>Stage band (the SDLC stage the time served, above the raw fill; colours above)</span><span class="row"><svg width="12" height="12"><path d="M2 2l8 8m0-8l-8 8" stroke="#e5484d" stroke-width="2.4" stroke-linecap="round"/></svg>Tool failure (non-zero exit)</span><span class="row"><svg width="12" height="12"><path d="M2 2l8 8m0-8l-8 8" stroke="#f0a742" stroke-width="2.4" stroke-linecap="round"/></svg>LLM failure: invalid tool call / broken exec script / API error</span></div></section>
 <div class="analysis-grid"><section class="card" id="breakdownCard" aria-labelledby="breakdownTitle"><div class="card-head"><div><h2 id="breakdownTitle">Time in this window</h2><p id="breakdownScope"></p></div><span class="scope" id="breakdownScopeChip">Main thread · exclusive</span></div><div id="breakdownBody" class="breakdown-body"></div><div class="panel-foot">${icon('info', true)}Sub-agent time runs in parallel and is listed separately. Gaps are unknown, not idle.</div></section>
 <section class="card fill" id="operationsCard" aria-labelledby="operationsTitle"><div class="card-head"><div><h2 id="operationsTitle">Operations in view</h2><p id="operationCount"></p></div><span class="scope">All lanes</span></div><div class="operation-tools"><select class="select" id="phaseSelect" aria-label="Filter by phase"><option value="all">All phases</option>${PHASE_ORDER.map(k => `<option value="${k}">${PHASES[k].name}</option>`).join('')}</select><select class="select" id="laneSelect" aria-label="Filter by lane"><option value="all">All lanes</option>${m.lanes.map(l => `<option value="${esc(l.id)}">${esc(l.path)}</option>`).join('')}</select><select class="select" id="sortSelect" aria-label="Sort operations"><option value="longest">Longest in window</option><option value="latest">Latest first</option><option value="earliest">Earliest first</option><option value="failed">Failed first</option></select><label class="row chip" style="cursor:pointer"><input type="checkbox" id="failedOnly" ${state.failedOnly ? 'checked' : ''}>Failures only</label></div><div id="roleFilter"></div><div class="operation-list scroll-fade" id="operationList"></div></section></div>
-<div class="analysis-grid"><section class="card" aria-labelledby="convTitle"><div class="card-head"><div><h2 id="convTitle">Conversation</h2><p>User messages, questions and final answers, verbatim. Select one to jump there.</p></div><span class="scope">${m.totals.user_messages} inputs</span></div><div class="conv scroll-fade" id="conversation"></div></section>
+<div class="analysis-grid"><section class="card" aria-labelledby="convTitle"><div class="card-head"><div><h2 id="convTitle">Conversation</h2><p>User messages, questions and final answers as recorded — rendered as Markdown, the recorded text one toggle away. Select one to jump there.</p></div><div class="actions" id="convActions">${viewToggle()}<span class="scope">${m.totals.user_messages} inputs</span></div></div><div class="conv scroll-fade" id="conversation"></div></section>
 <section class="card" aria-labelledby="agentsTitle"><div class="card-head"><div><h2 id="agentsTitle">Agents</h2><p>One lane per thread. Active time = the thread's own turns.</p></div><span class="scope">${m.lanes.length} lanes</span></div><div class="agents-wrap scroll-fade"><table class="agents-table" id="agentsTable"></table></div></section></div>
 ${footer()}`;
 }
@@ -1245,10 +1272,34 @@ function showMoreOperations() {
   renderOperations();
 }
 function renderConversation() {
-  const r = root(); const items = r.markers.filter(k => ['user_message', 'question', 'final_answer', 'system_message'].includes(k.kind));
+  const r = root();
+  const items = r.markers.filter(k => ['user_message', 'question', 'final_answer', 'system_message'].includes(k.kind));
   const cls = k => k.kind === 'user_message' ? 'user' : k.kind === 'question' ? 'question' : k.kind === 'system_message' ? 'system' : 'final';
   const label = k => k.kind === 'user_message' ? 'User' : k.kind === 'question' ? 'Agent asks' : k.kind === 'system_message' ? 'Harness' : 'Final answer';
-  $('#conversation').innerHTML = items.length ? items.map((k, i) => { const key = `${k.t}:${k.kind}`, open = state.convOpen.has(key), inWin = k.t >= state.a && k.t <= state.b; return `<div class="conv-item ${cls(k)}" style="${inWin ? '' : 'opacity:.55'}"><button class="conv-time" data-action="jump" data-t="${k.t}" title="Jump to this moment"><b>${label(k)}</b>${stamp(k.t)}</button><div><div class="conv-text ${open ? 'open' : ''}">${esc(k.text)}</div>${k.text.length > 380 ? `<button class="text-btn" data-action="conv-toggle" data-key="${esc(key)}" style="margin-top:4px">${open ? 'Show less' : 'Show all'}</button>` : ''}</div></div>`; }).join('') : `<div class="empty"><p>No user messages recorded.</p></div>`;
+  // a harness message (a reference and a clipped, tag-heavy text) is never Markdown
+  const body = k => k.kind === 'system_message' ? esc(k.text) : prose(k.text);
+  const view = k => k.kind === 'system_message' ? 'prose-raw' : proseView();
+  const item = k => {
+    const key = `${k.t}:${k.kind}`;
+    const open = state.convOpen.has(key);
+    const inWin = k.t >= state.a && k.t <= state.b;
+    const long = k.text.length > 380;
+    return `<div class="conv-item ${cls(k)}" style="${inWin ? '' : 'opacity:.55'}"><button class="conv-time" data-action="jump" data-t="${k.t}" title="Jump to this moment"><b>${label(k)}</b>${stamp(k.t)}</button><div><div class="conv-text ${view(k)} ${open ? 'open' : ''}">${body(k)}</div><button class="text-btn" data-action="conv-toggle" data-key="${esc(key)}" style="margin-top:4px" ${long || open ? '' : 'hidden'}>${open ? 'Show less' : 'Show all'}</button></div></div>`;
+  };
+  $('#conversation').innerHTML = items.length ? items.map(item).join('') : `<div class="empty"><p>No user messages recorded.</p></div>`;
+  // a short text that renders taller than the clamp (a table, a few headings) gets the button too
+  for (const el of document.querySelectorAll('#conversation .conv-text:not(.open)')) if (el.scrollHeight > el.clientHeight) el.nextElementSibling.hidden = false;
+}
+// renderProse draws every recorded message again after the Raw / rendered switch: the request
+// card's two blocks, the conversation, and the open dialog through the function that opened it
+function renderProse() {
+  if (state.page === 'session' && state.model) {
+    $('#firstMessage').innerHTML = firstMessage();
+    $('#lastRecorded').innerHTML = lastState();
+    $('#convActions').innerHTML = `${viewToggle()}<span class="scope">${current().totals.user_messages} inputs</span>`;
+    renderConversation();
+  }
+  if ($('#inspector').open && state.reopen) state.reopen();
 }
 function renderAgents() {
   const m = current();
@@ -1457,6 +1508,7 @@ document.addEventListener('click', e => {
   if (a === 'focus-at') { const t = Number(el.dataset.t); focusInterval(t, t); return; }
   if (a === 'focus-group') { const g = m.groupById.get(el.dataset.group); if (g) focusInterval(g.start, g.end); return; }
   if (a === 'jump') { const t = Number(el.dataset.t); if ($('#inspector').open) $('#inspector').close(); chooseSpan(Math.min(state.b - state.a, 3600e3), t); revealPlot(); return; }
+  if (a === 'text-view') { state.rawText = !state.rawText; renderProse(); return; }
   if (a === 'conv-toggle') { const k = el.dataset.key; state.convOpen.has(k) ? state.convOpen.delete(k) : state.convOpen.add(k); renderConversation(); return; }
   if (a === 'lane-focus') { state.lane = state.lane === el.dataset.lane ? 'all' : el.dataset.lane; state.listShown = LIST_CHUNK; renderTimeline(); renderOperations(); renderAgents(); return; }
   if (a === 'lane-card') return inspectLane(el.dataset.lane);

@@ -5,6 +5,7 @@
 async function inspect(id) {
   const m = current(), o = m.opById.get(id); if (!o) return; state.selected = id; hideTooltip();
   const request = ++inspectorRequest;
+  state.reopen = null;
   const l = m.laneById.get(o.lane), g = o.group ? m.groupById.get(o.group) : null, role = roleOf(o.kind);
   const dlg = $('#inspector');
   const facts = [['Duration', fmt(o.end - o.start, true) + (o.open ? ' · still open' : '')], ['Started', stampS(o.start)], [o.open ? 'Observed until' : 'Ended', stampS(o.end)], ['Lane', l ? l.path : o.lane], ['Phase · kind', `${PHASES[o.phase].name}${o.sub ? ' › ' + subgroupName(o.phase, o.sub) : ''} · ${baseKind(o.kind)}`], ['Lifecycle stage', `${(LIFECYCLES[lifecycleOf(o)] || LIFECYCLES.unknown).name} · ${o.lc_rule || 'phase default'}`], ['Model', modelOf(o) ? `${modelOf(o)}${effortOf(o) ? ' · effort ' + effortOf(o) : ''}` : '—'], ['Status', `${o.status}${o.exit != null ? ' · exit ' + o.exit : ''}${o.query_miss ? ' · query miss (not counted as a failure)' : ''}`], ['Rule', o.rule || '—'], ['Retry group', g ? `${g.id} · attempt ${o.attempt || '—'} of ${g.attempts}` : 'none (no repeated identity)'], ['Flags', [o.background ? 'background process: outlived its turn, excluded from totals' : '', o.remote ? 'remote runner' : '', o.queued ? 'poll loop before work' : '', role ? ROLES[role]?.name || role : '', o.parallel ? `${o.parallel} parallel commands` : ''].filter(Boolean).join(', ') || '—']];
@@ -22,8 +23,11 @@ async function inspect(id) {
 async function inspectMarker(key) {
   const m = current(); const [lane, t, kind] = key.split(':'); const l = m.laneById.get(lane); const mk = l?.markers.find(k => String(k.t) === t && k.kind === kind); if (!mk) return;
   const request = ++inspectorRequest;
+  state.reopen = () => inspectMarker(key);
   const dlg = $('#inspector'); const def = MARKS[kind] || { name: kind, color: '#aaa' };
-  dlg.innerHTML = `<div class="dialog-head"><span class="eyebrow">Marker</span><button class="btn icon-only ghost" data-action="close-inspector" aria-label="Close" autofocus>${icon('close')}</button></div><div class="dialog-body"><span class="chip"><i class="color-square" style="background:${def.color}"></i>${esc(def.name)}</span><h2 id="inspectorTitle">${stampS(mk.t)} · ${esc(l.path)}</h2>${mk.ref && m.laneById.get(mk.ref) ? `<p class="desc">Sub-agent: ${esc(m.laneById.get(mk.ref).path)}</p>` : ''}<div class="prose-block prose-log">${esc(mk.text || '(no text)')}</div><div class="dialog-actions"><button class="btn primary" data-action="jump" data-t="${mk.t}">${icon('expand', true)}Zoom around this moment</button></div><details class="json-details"><summary>Source event (raw)</summary><pre class="event-log" id="mkSource">loading…</pre></details></div>`;
+  // a user message, a question and a final answer are prose; every other marker is shown as recorded
+  const message = ['user_message', 'question', 'final_answer'].includes(kind);
+  dlg.innerHTML = `<div class="dialog-head"><span class="eyebrow">Marker</span><div class="answer-actions">${message ? viewToggle() : ''}<button class="btn icon-only ghost" data-action="close-inspector" aria-label="Close" autofocus>${icon('close')}</button></div></div><div class="dialog-body"><span class="chip"><i class="color-square" style="background:${def.color}"></i>${esc(def.name)}</span><h2 id="inspectorTitle">${stampS(mk.t)} · ${esc(l.path)}</h2>${mk.ref && m.laneById.get(mk.ref) ? `<p class="desc">Sub-agent: ${esc(m.laneById.get(mk.ref).path)}</p>` : ''}<div class="prose-block prose-log ${message ? proseView() : 'prose-raw'}">${message ? prose(mk.text || '(no text)') : esc(mk.text || '(no text)')}</div><div class="dialog-actions"><button class="btn primary" data-action="jump" data-t="${mk.t}">${icon('expand', true)}Zoom around this moment</button></div><details class="json-details"><summary>Source event (raw)</summary><pre class="event-log" id="mkSource">loading…</pre></details></div>`;
   if (!dlg.open) dlg.showModal();
   const source = $('#mkSource');
   const ownsRequest = () => request === inspectorRequest && dlg.open && state.page === 'session' && current()?.id === m.id;
@@ -53,7 +57,8 @@ function inspectWait(laneId, ta, tb) {
   const label = isUser ? 'Waiting for user' : 'Idle (awaiting parent)';
   const lastHead = isUser ? 'Last message from the agent before it waited' : 'Last message from this sub-agent before it went idle';
   const dlg = $('#inspector');
-  dlg.innerHTML = `<div class="dialog-head"><span class="eyebrow">Interval</span><button class="btn icon-only ghost" data-action="close-inspector" aria-label="Close" autofocus>${icon('close')}</button></div><div class="dialog-body"><span class="chip"><i class="color-square" style="background:${PHASES[isUser ? 'wait_user' : 'idle'].color}"></i>${label}</span><h2 id="inspectorTitle">${fmt(tb - ta, true)} · ${esc(l.path)}</h2><p class="desc">${esc(stampS(ta))} → ${esc(stampS(tb))}. No agent activity in this span — the model had produced its answer and was waiting.</p><h3>${lastHead}</h3><div class="prose-block prose-log">${esc(finalText || '(no final message recorded for the preceding turn)')}</div><div class="dialog-actions"><button class="btn" data-action="jump" data-t="${Math.round(finalT)}">${icon('expand', true)}Jump to that moment</button></div><h3>${isUser ? 'Next user message' : 'Next instruction from the parent'}</h3><div class="prose-block prose-log">${nextUser ? esc(nextUser.text) : '(the session ended while waiting)'}</div></div>`;
+  state.reopen = () => inspectWait(laneId, ta, tb);
+  dlg.innerHTML = `<div class="dialog-head"><span class="eyebrow">Interval</span><div class="answer-actions">${viewToggle()}<button class="btn icon-only ghost" data-action="close-inspector" aria-label="Close" autofocus>${icon('close')}</button></div></div><div class="dialog-body"><span class="chip"><i class="color-square" style="background:${PHASES[isUser ? 'wait_user' : 'idle'].color}"></i>${label}</span><h2 id="inspectorTitle">${fmt(tb - ta, true)} · ${esc(l.path)}</h2><p class="desc">${esc(stampS(ta))} → ${esc(stampS(tb))}. No agent activity in this span — the model had produced its answer and was waiting.</p><h3>${lastHead}</h3><div class="prose-block prose-log ${proseView()}">${prose(finalText || '(no final message recorded for the preceding turn)')}</div><div class="dialog-actions"><button class="btn" data-action="jump" data-t="${Math.round(finalT)}">${icon('expand', true)}Jump to that moment</button></div><h3>${isUser ? 'Next user message' : 'Next instruction from the parent'}</h3><div class="prose-block prose-log ${proseView()}">${prose(nextUser ? nextUser.text : '(the session ended while waiting)')}</div></div>`;
   if (!dlg.open) dlg.showModal();
 }
 // lanePrompt finds the message that started a thread. The root lane's is its first user message.
@@ -78,7 +83,7 @@ function laneFinal(l) {
   return mk ? mk.text : '';
 }
 // inspectLane is the agent card: who the thread is (path, nickname, model), when it ran, the
-// prompt it was started with and its final answer — verbatim from the lane's own markers.
+// prompt it was started with and its final answer — from the lane's own markers, rendered.
 async function inspectLane(id) {
   const m = current();
   const l = m.laneById.get(id);
@@ -113,12 +118,13 @@ async function inspectLane(id) {
     : l.depth && claude ? `The Agent tool's prompt · ${prompt.marker.text.length} chars.`
     : '';
   const dlg = $('#inspector');
-  dlg.innerHTML = `<div class="dialog-head"><span class="eyebrow">${l.depth ? 'Sub-agent' : 'Mother agent'}</span><button class="btn icon-only ghost" data-action="close-inspector" aria-label="Close" autofocus>${icon('close')}</button></div>`
+  state.reopen = () => inspectLane(id);
+  dlg.innerHTML = `<div class="dialog-head"><span class="eyebrow">${l.depth ? 'Sub-agent' : 'Mother agent'}</span><div class="answer-actions">${viewToggle()}<button class="btn icon-only ghost" data-action="close-inspector" aria-label="Close" autofocus>${icon('close')}</button></div></div>`
     + `<div class="dialog-body"><span class="chip">${icon('agents', true)}${esc(l.path)}</span><h2 id="inspectorTitle">${esc(name)}${l.nickname ? ` · ${esc(l.nickname)}` : ''}</h2>`
     + `<dl class="facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd class="mono">${esc(v)}</dd></div>`).join('')}</dl>`
     + `<div class="dialog-actions"><button class="btn primary" data-action="zoom-lane" data-lane="${esc(l.id)}">${icon('expand', true)}Zoom to this agent</button></div>`
-    + `<h3>${promptHead}${prompt ? ' · ' + stampS(prompt.marker.t) : ''}</h3><p class="desc" id="lanePromptNote">${esc(promptNote)}</p><div class="prose-block prose-log" id="lanePromptText">${esc(prompt ? prompt.marker.text : '(not recorded)')}</div>`
-    + `<h3>Final answer</h3><div class="prose-block prose-log">${esc(final || '(no final answer recorded)')}</div>`
+    + `<h3>${promptHead}${prompt ? ' · ' + stampS(prompt.marker.t) : ''}</h3><p class="desc" id="lanePromptNote">${esc(promptNote)}</p><div class="prose-block prose-log ${proseView()}" id="lanePromptText">${prose(prompt ? prompt.marker.text : '(not recorded)')}</div>`
+    + `<h3>Final answer</h3><div class="prose-block prose-log ${proseView()}">${prose(final || '(no final answer recorded)')}</div>`
     + (prompt && prompt.marker.src ? `<details class="json-details"><summary>Source event of the prompt (raw)</summary><pre class="event-log" id="laneSource">loading…</pre></details>` : '')
     + `</div>`;
   if (!dlg.open) dlg.showModal();
@@ -135,7 +141,7 @@ async function inspectLane(id) {
     if (!prompt.headerOnly) {
       // the marker text of an agent message is clipped; the source event has all of it
       const full = content.filter(c => typeof c.text === 'string').map(c => c.text).join('');
-      if (full.length > prompt.marker.text.length) $('#lanePromptText').textContent = full;
+      if (full.length > prompt.marker.text.length) $('#lanePromptText').innerHTML = prose(full);
       return;
     }
     const sealed = content.find(c => c.type === 'encrypted_content');

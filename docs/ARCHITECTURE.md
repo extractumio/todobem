@@ -57,7 +57,7 @@ built from; Insights reads the derived model and never a log line.
 |---|---|
 | `cmd/todobem/main.go` | entry point, flags (`-addr`, `-codex`, `-claude`, `-settings`, `-open`, `-rules`, `-cache`, `-auth`), subcommands `token`, `cache`, `unknown`; embeds `web/` |
 | `cmd/todobem/unknown.go` | `todobem unknown`: unmatched commands and telemetry gaps across sessions, the loop the `resolve-unknown` skill runs |
-| `cmd/todobem/web/` | `index.html`, `app.js` (session list, timeline, breakdown, inspector), `inspector.js`, `filter.js` (period + project + source filter), `settings.js`, `insights.js`, `app.css`; `cmd/todobem/app_test.js` runs the SPA under `node --test` |
+| `cmd/todobem/web/` | `index.html`, `app.js` (session list, timeline, breakdown, inspector), `inspector.js`, `filter.js` (period + project + source filter), `settings.js`, `insights.js`, `dropdown.js` (the list of every `select.select`, drawn by the page over the native control, which keeps its value and its `change` event), `markdown.js` (the rendered view of a recorded message: a small GFM-subset renderer that escapes everything and links only http/https/mailto, plus the Show raw / Show rendered switch every prose panel carries), `app.css` (the surface finish: `grain.svg` is the one texture tile it lays over the page; `grain.js` re-lays it on a dense screen as rasters scaled to the screen, so a speck stays one CSS pixel), `fonts/` (Fira Sans, self-hosted); `cmd/todobem/app_test.js` runs the SPA under `node --test` |
 | `cmd/dump/` | developer tool: totals, per-lane partition checks, stage runs, groups, longest and unknown ops, `-ops` TSV, `-insights` facts and findings |
 | `internal/source/` | the seam: `Meta`, `Source`, `Session` (joiner), `LaneParser`, `Multi`, `Summaries`, `TailReader`, text helpers |
 | `internal/codex/` | Codex adapter: `index.go`, `reader.go` (line typing by prefix), `lane.go` (turns, ops, markers), `tokens.go` |
@@ -108,7 +108,7 @@ for names; sub-agent files are attached to their root by the parent chain.
 | line `type` / item | used for |
 |---|---|
 | `session_meta` | lane identity, cwd, branch, CLI, base instructions |
-| `event_msg/task_started`, `task_complete` (`last_agent_message`), `turn_aborted` | turn boundaries, final answer, interrupts |
+| `event_msg/task_started`, `task_complete` (`last_agent_message`; an `error` when the turn ended on a usage limit or a provider failure), `turn_aborted` | turn boundaries, final answer, interrupts; the error's message is an `llm_error` marker (the turn closes as completed, with no answer) |
 | `item_completed` · `UserMessage` | user-message markers (harness injections such as `<codex_internal_context>` and `<subagent_notification>` are `system_message`) |
 | `CommandExecution` (`command`, `parsed_cmd[]`, `exit_code`, `status`, `started_at_ms`, `completed_at_ms`) | command operations with exact timing |
 | `FileChange`, `apply_patch` | `code/edit` operations |
@@ -118,7 +118,7 @@ for names; sub-agent files are attached to their root by the parent chain.
 | `ContextCompaction` | `compaction` operations, with the context before and the re-read after |
 | `McpToolCall`, `WebSearch`, `view_image` | `code/mcp`, `code/web_search`, `code/image` |
 | `update_plan` | a `plan` marker; a call that *creates* a plan (no step completed) is an instantaneous `llm/plan` op pinned to the planning stage |
-| `request_user_input` | `wait_user/question` |
+| `request_user_input` / `request_user_input_async` | `wait_user/question` (an open op while unanswered) / a `question` marker only (the agent keeps working; the harness's `{"accepted":true}` output is not the answer — a later user message is, so the list's pending question survives it and the end of the turn) |
 | `response_item/function_call` + `function_call_output` (old format: `exec_command`, `write_stdin` polls) | tool-call envelopes; old-format command timing stitched from the call and its polls |
 | `response_item/custom_tool_call` `exec` (a JS script fanning out `tools.exec_command`) | parallel commands inside one call (`Operation.Parallel`); provisional ops synthesized from the literal `cmd:` strings when the call returns before its commands finish, replaced by the real items |
 | `message` with `skills.selected_skill_instructions` | a `skill` marker and `Turn.Skill`: the harness's record that a skill was invoked (never the words of a prompt) |
@@ -645,17 +645,38 @@ only new or changed files have their head re-read.
 ## 9. UI (`cmd/todobem/web`)
 
 Pages (hash routes): the lock screen (on a 401), **Sessions** (the list with source marks,
-last answer, a pulsing `?` for a pending question, the period / project / source filter of
-`filter.js`), **Session**, **Insights**, **Settings**, and the guide dialog ("How to read")
+last answer, a pulsing `?` for a pending question — under the default order the active sessions
+come first, then those with a pending question, then the rest by update time; an explicit sort
+is its key alone — the period / project / source filter of `filter.js`), **Session**, **Insights**, **Settings**, and the guide dialog ("How to read")
 that lists the live rule tables from `/api/rules`.
 
 ### 9.1 The session page
 
 Header (title, cwd, branch, model, CLI, created / first message, elapsed, tokens, the last
-answer verbatim with a copy button, the SDLC ring over `by_lifecycle`), the overview (drag to
+answer with a copy button, the SDLC ring over `by_lifecycle`), the overview (drag to
 select a window; a strip of the lifecycle partition under it; errors below), the timeline, the
-breakdown, the operations list, the conversation (user messages, questions, final answers
-verbatim), the agents table, the per-session Insights cards.
+breakdown, the operations list, the conversation (user messages, questions, final answers),
+the agents table, the per-session Insights cards. The top bar says live or closed and wears the
+list's pulsing `?` while a question of the agent has no answer (from the session's list summary,
+reloaded whenever the session changes).
+
+Recorded messages — the first user message, the last answer, the conversation, the prompt and
+final answer of an agent card, the two messages of a waiting interval, a message marker — are
+shown rendered as Markdown by `markdown.js`, with the recorded text one toggle away (Show raw /
+Show rendered, one switch for every panel and open dialog; the copy button always copies the
+recorded text). The renderer is the project's own, not a library: a GFM subset (paragraphs,
+ATX headings, fences, nested and numbered lists, task boxes, quotes, pipe tables, rules, code
+spans, emphasis, strikethrough, links) with guarantees by construction — every character
+passes through `esc()`, the tags come from a fixed set, a link is only http/https/mailto
+(checked on the raw destination), any other destination (Claude Code's `[app.js:12](/abs/path)`
+file references) is a reference with the path as its tooltip, an image is a link and never an
+`<img>`, and a newline or leading space inside a paragraph or list item stays (pre-wrap): the
+line structure of a chat message is part of the record. A harness message is never rendered.
+`index.html` carries a Content-Security-Policy meta (`default-src 'self'`, images `'self'`,
+`data:` and `blob:` — the last for the grain rasters `grain.js` makes in the page — inline styles
+allowed, no inline scripts) as the backstop: a renderer bug cannot become a script or an outbound
+request. `app_test.js` holds the structural invariant (only the
+renderer's tags and attributes, only web hrefs) under hostile inputs.
 
 ### 9.2 The timeline
 
@@ -896,6 +917,14 @@ simulation (the three Claude Code sessions matched to the second).
   partition-balance tests. Kept against the recommendation, then changed after real use: the
   stage strip that drew model time in the next call's colour hid that ~90 % of in-turn time is
   the model generating — lane fills show the raw partition.
+- **2026-09-17, Markdown in the message panels.** Rendered by default, the recorded text one
+  toggle away. No library: `marked` ships without a sanitizer and `markdown-it` is ~100 KB of
+  minified code for a narrow vocabulary; a ~470-line renderer of our own is reviewable and its
+  output is provable (the invariant test) — measured on the local cache, 13.6 k messages /
+  21 MB render in under half a second with no invariant violation. A single newline stays a
+  newline (pre-wrap) rather than a `<br>` or a soft break: 26 % of user messages carry one and
+  their line structure is part of the record. File references (85 % of link targets) are
+  tooltips, not links; the CSP meta is the backstop.
 - **From real sessions.** A dev server left running for 33 h painted a session unknown → the
   background rule. Scripts written then executed hid 23-minute remote test runs → classification
   by the literal body. Harness-injected user messages are `system_message`, and idle time before

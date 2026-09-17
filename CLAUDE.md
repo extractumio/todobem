@@ -42,9 +42,10 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
   loop the `resolve-unknown` skill runs (`.claude/skills/resolve-unknown/`, symlinked from
   `.codex/skills/`) to grow the user overlay. `cmd/todobem/web/` — the SPA
   (`index.html`, `app.js` timeline/breakdown/inspector, `app.css`, `filter.js` the period +
-  project + source filter shared by the session list and the Insights report, and `SOURCES` —
-  the source names and marks); `cmd/todobem/app_test.js` — its regressions (`node --test`, no
-  dependencies).
+  project + source filter shared by the session list and the Insights report, `markdown.js` the
+  renderer of recorded messages (a GFM subset, escapes everything, web links only) and the Show
+  raw switch, `grain.js` the surface grain rasterized for a dense screen, and `SOURCES` — the source names and marks); `cmd/todobem/app_test.js` — its
+  regressions (`node --test`, no dependencies).
 - `cmd/dump/` — dev tool: totals, per-lane partition check, groups, longest and unknown ops.
 - `internal/source/` — the seam between the server and the formats: `Meta` (one session file
   as the list and the cache see it), the `Source` interface (index of one format), the shared
@@ -123,7 +124,8 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
 ## Product rules — every number's credibility rests on these
 
 1. Never infer the *cause* of a delay from its duration. Long operations are listed, not explained.
-2. Never compute "goal achieved". Show user messages and final answers verbatim.
+2. Never compute "goal achieved". Show user messages and final answers as recorded: rendered
+   as Markdown by default, the recorded text one toggle away, never summarized or reworded.
 3. Unknown is honest: unmatched commands are `unknown`, intervals without events are
    `no_telemetry`. A wrong `code` is worse than an honest `unknown`. No guessing.
 4. Classification is deterministic: a rule table over literal command text (head word +
