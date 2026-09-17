@@ -44,7 +44,8 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
   (`index.html`, `app.js` timeline/breakdown/inspector, `app.css`, `filter.js` the period +
   project + source filter shared by the session list and the Insights report, `markdown.js` the
   renderer of recorded messages (a GFM subset, escapes everything, web links only) and the Show
-  raw switch, `grain.js` the surface grain rasterized for a dense screen, and `SOURCES` — the source names and marks); `cmd/todobem/app_test.js` — its
+  raw switch, `grain.js` the surface grain rasterized for a dense screen, `build.js` the reload onto a new
+  server build, and `SOURCES` — the source names and marks); `cmd/todobem/app_test.js` — its
   regressions (`node --test`, no dependencies).
 - `cmd/dump/` — dev tool: totals, per-lane partition check, groups, longest and unknown ops.
 - `internal/source/` — the seam between the server and the formats: `Meta` (one session file
@@ -192,9 +193,10 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
   Follow mode) and check the console. Tests and source reading do not replace this.
 - Seeing a change in the browser: `./scripts/deploy.sh` — it builds, replaces the instance on
   `:7788` (one started by hand is adopted, a lost pidfile rebuilt from the port) and prints a
-  login link; an open tab follows the new build by itself (`X-Todobem-Build`). Never start a
+  login link; an open tab follows the new build by itself on its next request or when it comes
+  back into view (`X-Todobem-Build`, `build.js`; only the session page polls). Never start a
   second instance on another port or from a scratchpad, and nothing you start outlives the
-  task: `./scripts/deploy.sh status` lists strays.
+  task: `./scripts/deploy.sh status` lists every todobem listening.
 - Report what changed, why, how it was verified, what was excluded and **Noticed, not fixed** —
   the last list holds only items that need a decision (see "Leave it better"); anything else
   noticed was fixed. Unverified work is unfinished; a missing gate is absent, never passing.

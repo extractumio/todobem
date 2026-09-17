@@ -13,6 +13,7 @@
 # todobem started by hand (or one whose pidfile was lost) is adopted into it, so stop, status
 # and a restart always find the server the browser is talking to. `start` replaces it, and the
 # open tab follows the new build by itself (the server names its build on every answer).
+# Finding the listener needs lsof (macOS, most Linux); without it the pidfile is all there is.
 #
 # It KEEPS the loopback bind (127.0.0.1) from the security model  nothing is exposed off-host.
 # For a remote host, tunnel it:  ssh -L 7788:127.0.0.1:7788 <host>   then open the URL locally.
@@ -45,29 +46,31 @@ need_go() {
 
 port=${ADDR##*:}
 cmdline() { ps -o command= -p "$1" 2>/dev/null; }
-# listener prints the pid listening on ADDR's port (lsof: macOS and most Linux; none → nothing)
+# is_todobem: the process's command word is a todobem binary (`todobem`, `./todobem`,
+# `.../exe/todobem` under go run, `todobem-preview`) — not any command line that merely
+# mentions the name, such as an ssh tunnel to a host alias containing it
+is_todobem() { case "$(cmdline "$1")" in todobem*|*/todobem*) return 0 ;; esac; return 1; }
+# listener prints the pid listening on ADDR's port (none → nothing)
 listener() { lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | head -n 1; }
 # running: the pidfile's process when it is still a todobem, else the todobem on the port,
 # adopted into the pidfile. Anything else on the port is not ours: `busy` names it.
 running() {
   pid=$(cat "$PIDFILE" 2>/dev/null || true)
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    case "$(cmdline "$pid")" in *todobem*) return 0 ;; esac
-  fi
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && is_todobem "$pid"; then return 0; fi
   rm -f "$PIDFILE"
   pid=$(listener)
   [ -n "$pid" ] || return 1
-  case "$(cmdline "$pid")" in *todobem*) echo "$pid" >"$PIDFILE"; return 0 ;; esac
+  if is_todobem "$pid"; then echo "$pid" >"$PIDFILE"; return 0; fi
   return 1
 }
 busy() { pid=$(listener); [ -n "$pid" ] && echo "$pid $(cmdline "$pid")"; }
-# strays: every other todobem server on this machine — a preview left on another port, say.
-# Nothing started for a task may outlive it; this is where a leftover shows up.
+# strays: every other todobem server listening on this machine — a preview left on another
+# port, say. Listed, never stopped: an instance pinned to a test folder is legitimate. Nothing
+# started for a task may outlive it; this is where a leftover shows up.
 strays() {
   mine=$(cat "$PIDFILE" 2>/dev/null || echo 0)
-  for pid in $(pgrep -f '^[^ ]*todobem[^ /]* .*-addr' 2>/dev/null); do
-    [ "$pid" = "$mine" ] && continue
-    echo "  other todobem server: pid $pid  $(cmdline "$pid")"
+  lsof -nP -iTCP -sTCP:LISTEN -a -c todobem 2>/dev/null | awk -v mine="$mine" 'NR > 1 && $2 != mine { print $2, $9 }' | sort -u | while read -r pid addr; do
+    echo "  other todobem server: pid $pid on $addr  $(cmdline "$pid")"
   done
 }
 
@@ -110,7 +113,7 @@ login_hint() {
 case "$CMD" in
   stop) stop ;;
   status)
-    if running; then echo "running (pid $(cat "$PIDFILE"))  log: $LOGFILE"
+    if running; then pid=$(cat "$PIDFILE"); echo "running (pid $pid)  $(cmdline "$pid")  log: $LOGFILE"
     elif other=$(busy); then echo "not running; $ADDR is taken by: $other"
     else echo "not running"; fi
     strays ;;

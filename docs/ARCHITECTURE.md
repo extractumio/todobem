@@ -57,7 +57,7 @@ built from; Insights reads the derived model and never a log line.
 |---|---|
 | `cmd/todobem/main.go` | entry point, flags (`-addr`, `-codex`, `-claude`, `-settings`, `-open`, `-rules`, `-cache`, `-auth`), subcommands `token`, `cache`, `unknown`; embeds `web/` |
 | `cmd/todobem/unknown.go` | `todobem unknown`: unmatched commands and telemetry gaps across sessions, the loop the `resolve-unknown` skill runs |
-| `cmd/todobem/web/` | `index.html`, `app.js` (session list, timeline, breakdown, inspector), `inspector.js`, `filter.js` (period + project + source filter), `settings.js`, `insights.js`, `dropdown.js` (the list of every `select.select`, drawn by the page over the native control, which keeps its value and its `change` event), `markdown.js` (the rendered view of a recorded message: a small GFM-subset renderer that escapes everything and links only http/https/mailto, plus the Show raw / Show rendered switch every prose panel carries), `app.css` (the surface finish: `grain.svg` is the one texture tile it lays over the page; `grain.js` re-lays it on a dense screen as rasters scaled to the screen, so a speck stays one CSS pixel), `fonts/` (Fira Sans, self-hosted); `cmd/todobem/app_test.js` runs the SPA under `node --test` |
+| `cmd/todobem/web/` | `index.html`, `app.js` (session list, timeline, breakdown, inspector), `inspector.js`, `filter.js` (period + project + source filter), `settings.js`, `insights.js`, `dropdown.js` (the list of every `select.select`, drawn by the page over the native control, which keeps its value and its `change` event), `markdown.js` (the rendered view of a recorded message: a small GFM-subset renderer that escapes everything and links only http/https/mailto, plus the Show raw / Show rendered switch every prose panel carries), `app.css` (the surface finish: `grain.svg` is the one texture tile it lays over the page; `grain.js` re-lays it on a dense screen as rasters scaled to the screen, so a speck stays one CSS pixel), `build.js` (the reload onto a new server build, §8), `fonts/` (Fira Sans, self-hosted); `cmd/todobem/app_test.js` runs the SPA under `node --test` |
 | `cmd/dump/` | developer tool: totals, per-lane partition checks, stage runs, groups, longest and unknown ops, `-ops` TSV, `-insights` facts and findings |
 | `internal/source/` | the seam: `Meta`, `Source`, `Session` (joiner), `LaneParser`, `Multi`, `Summaries`, `TailReader`, text helpers |
 | `internal/codex/` | Codex adapter: `index.go`, `reader.go` (line typing by prefix), `lane.go` (turns, ops, markers), `tokens.go` |
@@ -635,10 +635,12 @@ link to the terminal, never to the log.
 | `/api/insights/report`, `scan`, `status`, `rules` | §10 |
 
 Every response carries `X-Todobem-Build`, a 12-hex fingerprint of the embedded `web/` tree
-(`build.go`). The page keeps the first value it sees and reloads itself when a later answer
-carries another one: a deploy (`scripts/deploy.sh`) replaces the binary under an open tab, and
-the tab follows within a poll, or as soon as it comes back into view (a tab returning asks the
-gate's state; the list page has no poll of its own); a restart of the same binary never reloads it.
+(`build.go`). The page (`build.js`) keeps the first value it sees and reloads itself when a
+later answer carries another one, and that answer is never used (the call never settles): a
+deploy (`scripts/deploy.sh`) replaces the binary under an open tab, and the tab follows on its
+next request — within a poll on the session page, the only page that polls — or as soon as it
+comes back into view (a tab returning asks the gate's state); a restart of the same binary
+never reloads it.
 
 Pools: an LRU of 6 parser-backed sessions (`opened`, expensive, refreshed on demand) and a
 separate pool of 32 cache-served read-only models, so browsing history never evicts a live

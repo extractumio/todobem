@@ -162,20 +162,9 @@ function baseKind(kind) { const i = (kind || '').indexOf('|'); return i >= 0 ? k
 
 /* ---------- data ---------- */
 class AuthError extends Error {}
-// followBuild keeps the page on the server's build: every answer names the UI the server was
-// built with (X-Todobem-Build); the first one seen is this page's, a different one later means
-// the binary was replaced under the tab — the page reloads, its place kept in the hash, so a
-// deploy is never watched through stale scripts. A server without the header changes nothing.
-let pageBuild = null;
-function followBuild(r) {
-  const build = r.headers?.get('X-Todobem-Build');
-  if (!build) return;
-  if (pageBuild === null) pageBuild = build;
-  else if (build !== pageBuild) location.reload();
-}
 async function api(path) {
   const r = await fetch(path, { cache: 'no-store' });
-  followBuild(r);
+  if (followBuild(r)) return new Promise(() => {}); // reloading: nothing renders this answer
   if (r.status === 401) {
     lock();
     throw new AuthError('locked');
@@ -188,7 +177,7 @@ async function api(path) {
 // the decoded JSON answer when there is one; text the raw body (an error line, say).
 async function apiPost(path, body) {
   const r = await fetch(path, { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
-  followBuild(r);
+  if (followBuild(r)) return new Promise(() => {}); // reloading: nothing renders this answer
   let payload = null, text = '';
   try { text = r.status === 204 ? '' : await r.text(); payload = text ? JSON.parse(text) : null; } catch (e) { payload = null; }
   return { status: r.status, ok: r.ok, payload, text };

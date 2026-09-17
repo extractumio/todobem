@@ -294,9 +294,12 @@ test('an answer from another build reloads the page; the same build or no header
   h.take('/api/auth').resolve({ enabled: false, authenticated: true }, 200, { 'X-Todobem-Build': 'aaaaaaaaaaaa' }); await flush();
   assert.equal(reloads, 0, 'the same build on return');
   await h.open('session');
-  const tick = h.poll();
-  h.take('/api/sessions/session/version').resolve({ version: 'v1' }, 200, { 'X-Todobem-Build': 'bbbbbbbbbbbb' }); await tick;
+  h.poll();
+  h.take('/api/sessions/session/version').resolve({ version: 'changed' }, 200, { 'X-Todobem-Build': 'bbbbbbbbbbbb' }); await flush();
   assert.equal(reloads, 1, 'a new build under the open tab');
+  // the answer that carried the new build is never used: the poll saw a changed version, but
+  // the old scripts do not fetch (or render) a model from the build replacing them
+  assert.equal(h.requests.filter(r => r.url === '/api/sessions/session').length, 1, 'no re-fetch by the old scripts');
   assert.equal(h.errors.length, 0);
 });
 
