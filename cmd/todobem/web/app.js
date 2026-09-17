@@ -1615,7 +1615,14 @@ window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer
 document.addEventListener('scroll', e => { if (e.target && e.target.id === 'operationList') showMoreOperations(); }, true);
 window.addEventListener('popstate', route);
 window.addEventListener('hashchange', route);
-document.addEventListener('visibilitychange', () => { if (!document.hidden && state.page === 'session') schedulePoll(); });
+// a tab coming back into view asks the server one cheap question (the gate's state) so a build
+// deployed meanwhile is noticed at once — the list page has no poll of its own — then resumes
+// the session poll
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  api('/api/auth').catch(() => {});
+  if (state.page === 'session') schedulePoll();
+});
 function route() {
   const h = location.hash;
   if (h.startsWith('#token=')) {

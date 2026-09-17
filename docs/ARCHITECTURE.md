@@ -637,7 +637,8 @@ link to the terminal, never to the log.
 Every response carries `X-Todobem-Build`, a 12-hex fingerprint of the embedded `web/` tree
 (`build.go`). The page keeps the first value it sees and reloads itself when a later answer
 carries another one: a deploy (`scripts/deploy.sh`) replaces the binary under an open tab, and
-the tab follows within a poll; a restart of the same binary never reloads it.
+the tab follows within a poll, or as soon as it comes back into view (a tab returning asks the
+gate's state; the list page has no poll of its own); a restart of the same binary never reloads it.
 
 Pools: an LRU of 6 parser-backed sessions (`opened`, expensive, refreshed on demand) and a
 separate pool of 32 cache-served read-only models, so browsing history never evicts a live

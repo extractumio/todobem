@@ -287,6 +287,12 @@ test('an answer from another build reloads the page; the same build or no header
   h.take('/api/sessions').resolve([], 200, { 'x-todobem-build': 'aaaaaaaaaaaa' }); await flush();
   h.take('/api/sessions').resolve([]); await flush();
   assert.equal(reloads, 0, 'the same build, then no header: the page stays');
+  // the list page polls nothing: a tab coming back into view asks the gate's state instead
+  h.document.hidden = true; h.document.emit('visibilitychange');
+  assert.equal(h.requests.filter(r => r.url === '/api/auth').length, 1, 'going hidden asks nothing');
+  h.document.hidden = false; h.document.emit('visibilitychange');
+  h.take('/api/auth').resolve({ enabled: false, authenticated: true }, 200, { 'X-Todobem-Build': 'aaaaaaaaaaaa' }); await flush();
+  assert.equal(reloads, 0, 'the same build on return');
   await h.open('session');
   const tick = h.poll();
   h.take('/api/sessions/session/version').resolve({ version: 'v1' }, 200, { 'X-Todobem-Build': 'bbbbbbbbbbbb' }); await tick;
