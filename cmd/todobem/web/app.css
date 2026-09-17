@@ -30,6 +30,7 @@
      a plate (a tag or a label) has its corners cut instead (--chamfer), like an engraved nameplate */
   --radius:4px;--radius-ctl:3px;--radius-tag:2px;
   --chevron:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23c3ced6' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  --resize-glyph:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 7'%3E%3Cpath d='M0 3.5L3.5 0v7zM8 3.5L4.5 0v7z' fill='%23f3f6f8'/%3E%3C/svg%3E");
   --chamfer:polygon(3px 0,calc(100% - 3px) 0,100% 3px,100% calc(100% - 3px),calc(100% - 3px) 100%,3px 100%,0 calc(100% - 3px),0 3px);
   /* the material (see the header): the grain as a background (the tile twice, at two coprime scales,
      so no repeat is visible; on a dense screen grain.js swaps the same two layers for rasters of the
@@ -107,6 +108,9 @@ button.chip,.chip.toggle{background-image:var(--matte);box-shadow:var(--edge-ctl
 .btn.small{min-height:30px;padding:4px 10px;font-size:13px}
 .text-btn{color:#b9d4e6;font-size:14px;font-weight:600;display:inline-flex;align-items:center;gap:4px}
 .ico{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+/* an icon slot (filled at boot) is exactly its icon: as a line box it would hold the SVG on a
+   baseline, 3px above the centre of the label beside it */
+[data-icon]{display:inline-flex}
 .small-ico{width:14px;height:14px}
 /* a select is a key with its own chevron (the platform's is hidden); its list is drawn by dropdown.js */
 .select{appearance:none;-webkit-appearance:none;background:var(--raised);background-image:var(--matte),var(--chevron);background-repeat:repeat,no-repeat;background-position:0 0,right 10px center;background-size:auto,10px 6px;box-shadow:var(--edge-ctl);color:var(--text);border:0;border-radius:var(--radius-ctl);padding:8px 28px 8px 10px;font:inherit;font-size:14px;min-height:38px}
@@ -127,7 +131,6 @@ button.chip,.chip.toggle{background-image:var(--matte);box-shadow:var(--edge-ctl
 /* a lifecycle stage is a rail (the band under a lane's fill), an activity a square (the fill) */
 .color-rail{display:inline-block;width:10px;height:4px;border-radius:1px;flex:none}
 .legend .color-rail{width:14px;height:4px}
-.legend-caption{color:var(--subtle)}
 /* scroll containers say so: a sticky fade at the bottom, kept in flow (never over the last line) */
 .scroll-fade::after{content:'';display:block;position:sticky;bottom:0;height:22px;flex:none;margin-top:2px;background:linear-gradient(to bottom,transparent,var(--fade,var(--surface)));pointer-events:none}
 
@@ -277,8 +280,12 @@ main{padding:22px 28px 40px;display:flex;flex-direction:column;gap:24px;max-widt
 .overview svg{position:absolute;inset:0;width:100%;height:100%}
 .brush-shade{position:absolute;top:0;bottom:0;background:rgba(9,15,20,.55);pointer-events:none}
 .brush{position:absolute;top:0;bottom:0;border:1.5px solid #d0e2ed;border-radius:var(--radius-tag);box-shadow:0 0 0 2px #17222d;cursor:grab;min-width:6px}
-.brush-handle{position:absolute;top:0;bottom:0;width:10px;background:#527083;background-image:var(--matte);box-shadow:var(--edge-ctl);cursor:ew-resize}
-.brush-handle.left{left:-1px;border-radius:var(--radius-tag) 0 0 var(--radius-tag)}.brush-handle.right{right:-1px;border-radius:0 var(--radius-tag) var(--radius-tag) 0}
+/* a handle is an ear astride the brush edge: a full-height key, half out and half in, with the
+   resize glyph (◂▸) pressed into its middle — the ear is what says "drag me". Within its overhang
+   of a bound of the plot updateBrush slides it inward, so the plot's edge never cuts it */
+.brush-handle{position:absolute;top:0;bottom:0;width:10px;border-radius:var(--radius-ctl);background-color:#587a8f;background-image:var(--resize-glyph),var(--matte);background-repeat:no-repeat,repeat;background-position:center,0 0;background-size:8px 7px,auto;box-shadow:var(--edge-ctl),0 0 0 1px rgba(9,15,20,.6);cursor:ew-resize}
+.brush-handle.left{left:-5px}.brush-handle.right{right:-5px}
+.brush-handle:hover,.brush-handle:focus-visible{background-color:#6b8ea5}
 /* SDLC-stage band under the overview: one 20px strip of the main thread's lifecycle over time */
 .overview-lc{position:relative;height:20px;margin-top:3px;border-radius:var(--radius-tag);overflow:hidden;background:#141f28}
 .overview-lc .lc-band-seg{position:absolute;top:0;bottom:0;display:flex;align-items:center;justify-content:center;overflow:hidden;box-shadow:inset -1px 0 0 rgba(9,15,20,.5)}
@@ -324,11 +331,17 @@ main{padding:22px 28px 40px;display:flex;flex-direction:column;gap:24px;max-widt
 .chart-footer{display:flex;justify-content:space-between;gap:10px;padding:12px 22px 16px;font-size:13px;color:var(--subtle);flex-wrap:wrap;align-items:center}
 .chart-note{display:flex;gap:6px;align-items:center}
 kbd{background:#243543;box-shadow:var(--edge);clip-path:var(--chamfer);padding:1px 5px;font-size:12px;font-family:inherit}
-.legend{display:flex;flex-wrap:wrap;gap:6px 14px;padding:12px 0 4px;margin-top:4px;border-top:1px solid var(--line-soft);font-size:13px;color:var(--muted)}
-.legend-marks{margin:0 22px 18px;padding-top:12px}
+/* the legends. Under the overview, a grid: a caption column (the partition and where it shows)
+   and, per group, its entries on columns wide enough for the longest name, so the swatches line
+   up down the legend and an entry a narrow page wraps lands under the one above it; under the
+   timeline, the marks in a row */
+.legend{padding:12px 0 4px;margin-top:4px;border-top:1px solid var(--line-soft);font-size:13px;color:var(--muted)}
 .legend .row{gap:6px}
-.legend-phases{flex-direction:column;gap:6px}
-.legend-group{display:flex;flex-wrap:wrap;gap:6px 14px}
+.legend-marks{display:flex;flex-wrap:wrap;gap:6px 14px;margin:0 22px 18px;padding-top:12px}
+.legend-phases{display:grid;grid-template-columns:clamp(120px,12%,176px) minmax(0,1fr);gap:12px 16px;align-items:start}
+.legend-caption{font-size:12px;line-height:1.35;color:var(--subtle);padding-top:2px}
+.legend-caption b{display:block;font-size:13px;font-weight:600;color:var(--muted)}
+.legend-group{display:grid;grid-template-columns:repeat(auto-fill,minmax(198px,1fr));gap:5px 12px}
 
 /* lower */
 .analysis-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:24px}
@@ -486,6 +499,7 @@ dialog::backdrop{background:rgba(8,13,18,.7)}
   .session-tile-metrics small{color:var(--subtle)}
   .breakdown-item{grid-template-columns:minmax(0,1fr) 56px 28px 40px 52px}
   .card-head,.operation-tools,.overview-section,.timeline-toolbar,.range-bar,.chart-footer{padding-left:14px;padding-right:14px}.legend-marks{margin-left:14px;margin-right:14px}
+  .legend-phases{grid-template-columns:minmax(0,1fr);gap:6px}.legend-caption{padding-top:6px}.legend-caption b{display:inline;margin-right:6px}
   .operation,.conv-item,.list-more,.panel-foot,.empty{padding-left:14px;padding-right:14px}
   .conv-item{grid-template-columns:72px 1fr}
   .timeline-plot{margin:0 4px}
@@ -530,7 +544,7 @@ dialog::backdrop{background:rgba(8,13,18,.7)}
 /* ---- Insights: the period report (docs/INSIGHTS-SPEC.md §7). Flat, square, instrument-like:
    every group carries one timeline phase colour (--tone, set inline) on a top rule, a swatch,
    a monospace index, a gauge and the bars — no rounded corners, no coloured side borders. ---- */
-.report-bar{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;background:var(--canvas);padding:10px 0 12px;border-bottom:1px solid var(--line-soft);margin-bottom:16px}
+.report-bar{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;gap:10px 14px;align-items:flex-start;background:var(--canvas);padding:10px 0 12px;border-bottom:1px solid var(--line-soft);margin-bottom:16px}
 .report-bar .ctl{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);white-space:nowrap}
 .report-bar .ctl .select{max-width:300px}
 /* source toggles: one chip per source, the mark is the legend, the count is the period's */

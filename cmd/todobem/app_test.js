@@ -860,8 +860,12 @@ test('the legend separates activity fills from lifecycle rails, and stage hues n
   await h.open('session', lifecycleSession());
   const main = h.node('main').innerHTML;
   const legend = main.slice(main.indexOf('id="legend"'), main.indexOf('<div class="timeline-toolbar"'));
-  assert.match(legend, /legend-caption">Activity · fill<\/span><span class="row"><i class="color-square"/);
-  assert.match(legend, /id="legendLifecycle"><span class="row legend-caption">Lifecycle stage · band above each lane, strip under the overview<\/span>/);
+  // a grid: the caption column names the partition and where it shows, then the group's entries
+  // in order of kind — what the agent did, then waiting, overhead and gaps
+  assert.match(legend, /<div class="legend-caption"><b>Activity<\/b>the fill of a lane<\/div><div class="legend-group"><span class="row"><i class="color-square"/);
+  assert.match(legend, /Infrastructure<\/span><span class="row"><i class="color-square" style="background:#48aa8c"><\/i>Waiting for workers/);
+  assert.match(legend, /<div class="legend-caption"><b>Lifecycle stage<\/b>the band above each lane, the strip under the overview<\/div><div class="legend-group" id="legendLifecycle"><span class="row"><i class="color-rail"/);
+  assert.equal((legend.match(/class="legend-group"/g) || []).length, 2, 'one activity group, one stage group');
   const rails = [...legend.matchAll(/<i class="color-rail" style="background:(#[0-9a-f]{6})"><\/i>([^<]+)</g)].map(m => [m[2], m[1]]);
   assert.deepEqual(rails.map(r => r[0]), ['Planning', 'Requirements', 'Design', 'Implementation', 'Code review', 'Verification', 'Deployment / release', 'Maintenance / operations']);
   assert.ok(!legend.includes('color-rail" style="background:#a889fc'), 'no stage is Build purple');
@@ -878,6 +882,44 @@ test('the legend separates activity fills from lifecycle rails, and stage hues n
   assert.match(body, /data-lc="review"[^]*?<span class="name"><i class="color-rail" style="background:#cf5e9e">/);
   assert.match(body, /data-phase="test"[^]*?<span class="name"><i class="color-square" style="background:#d9bc3d">/);
   assert.match(body, /data-lc="wait_user"[^]*?<span class="name"><i class="color-square"/, 'a pass-through row is its activity: a square');
+});
+
+// The brush handles are sliders: a focused one answers the keyboard — an arrow steps its edge
+// by 1% of the session, Shift makes it 10%, Home and End are the bounds — and the window keeps
+// its one-minute floor, as under the pointer. Near a bound of the plot a handle slides inward
+// (it overhangs its edge by 5px), so the plot never cuts it; elsewhere it sits astride.
+test('the brush handles answer the keyboard and slide inward at the bounds of the plot', async () => {
+  const h = await harness().ready();
+  await h.open('session');
+  const window_ = () => [h.run('state.a'), h.run('state.b')];
+  assert.deepEqual(window_(), [1000, 121000], 'the whole two-minute session');
+  const handle = which => { const t = { id: '', dataset: { handle: which } }; t.closest = selector => selector === '[data-handle]' ? t : null; return t; };
+  let prevented = 0;
+  const key = (which, key, shiftKey = false) => h.document.emit('keydown', { target: handle(which), key, shiftKey, preventDefault: () => prevented++ });
+  key('start', 'ArrowRight');
+  assert.deepEqual(window_(), [2200, 121000], 'one step is 1% of 120 s');
+  key('end', 'ArrowLeft', true);
+  assert.deepEqual(window_(), [2200, 109000], 'a shifted step is 10%');
+  assert.equal(prevented, 2, 'the page does not scroll on a handled key');
+  key('end', 'Tab');
+  assert.deepEqual(window_(), [2200, 109000], 'other keys pass');
+  assert.equal(prevented, 2);
+  // the floor: the end handle cannot cross the start by less than a minute
+  for (let i = 0; i < 12; i++) key('end', 'ArrowLeft', true);
+  assert.deepEqual(window_(), [2200, 62200]);
+  key('start', 'End');
+  assert.deepEqual(window_(), [2200, 62200], 'End on the start handle stops a minute short of the end');
+  key('start', 'Home'); key('end', 'End');
+  assert.deepEqual(window_(), [1000, 121000]);
+  // the plot is 1000px wide in the harness: at the bounds both handles are flush with the plot's
+  // edge; a window that starts 4px in slides the start handle 4px, one 12px in leaves it astride
+  const style = id => h.node(id).style;
+  assert.equal(style('brushStart').left, '0.0px'); assert.equal(style('brushEnd').right, '0.0px');
+  h.run('setWindow(1000 + 120000 * .004, 121000)');
+  assert.equal(style('brushStart').left, '-4.0px');
+  h.run('setWindow(1000 + 120000 * .012, 121000 - 120000 * .5)');
+  assert.equal(style('brushStart').left, '-5.0px'); assert.equal(style('brushEnd').right, '-5.0px');
+  assert.equal(h.errors.length, 0);
 });
 
 test('the guide lists every lifecycle stage with its rule sources and says which have no detector', async () => {

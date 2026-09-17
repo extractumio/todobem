@@ -703,7 +703,7 @@ function firstMessage() {
 function sessionPage() {
   const m = current(), r = root();
   const status = m.live ? `<span class="chip live"><i class="dot"></i>Live · turn in progress</span>` : `<span class="chip">${icon('check', true)}Completed · ${r.turns.length} turns</span>`;
-  // the phase legend in two rows by kind: what the agent did, then waiting, overhead and gaps
+  // the phase legend in order of kind: what the agent did, then waiting, overhead and gaps
   const legend = kinds => PHASE_ORDER.filter(k => k !== 'idle' && kinds.includes(PHASES[k].kind)).map(k => `<span class="row">${swatch(k)}${PHASES[k].name}</span>`).join('');
   const railLegend = LIFECYCLE_ORDER.filter(k => LIFECYCLES[k].work).map(k => `<span class="row">${railSwatch(LIFECYCLES[k].color)}${LIFECYCLES[k].name}</span>`).join('');
   return `<section class="page-heading"><div><div class="eyebrow"><span class="source-tag source-${sourceOf(m)}">${esc(sourceName(m))}</span> Session ${esc(m.id.slice(0, 8))} · ${esc(m.model || '?')} · ${esc(sourceName(m))} ${esc(m.cli || '?')}</div><h1>${esc(m.title)}</h1><p class="subtitle">${icon('repo', true)}${esc(m.cwd)}${m.branch ? `<span>·</span>${esc(m.branch)}` : ''}<span>·</span>${stamp(m.started)} — ${stamp(m.ended)} ${esc(TZ)}</p></div><div class="heading-actions">${status}<label class="chip">Refresh <select class="select compact" id="intervalSelect">${[[30, '30s'], [60, '1 min'], [120, '2 min'], [300, '5 min']].map(([v, l]) => `<option value="${v}" ${state.interval === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label><button class="btn" data-action="refresh">${icon('refresh', true)}Refresh now</button></div></section>
@@ -711,7 +711,7 @@ function sessionPage() {
 <div class="metrics-body"><div id="sessionMetrics">${metricsHTML()}</div>
 <section class="card" aria-labelledby="siTitle"><div class="card-head"><div><h2 id="siTitle">${esc(INSIGHT_TEXT.sessionCard.title)}</h2><p>${esc(INSIGHT_TEXT.sessionCard.subtitle)}</p></div><span class="scope">${esc(INSIGHT_TEXT.page.title)}</span></div><div id="sessionInsights" class="session-insights"><p class="muted-note">${esc(INSIGHT_TEXT.states.loading)}</p></div></section>${lifecycleRingHTML(m)}</div>
 <section class="card timeline-card" aria-labelledby="timelineTitle"><div class="card-head"><div><h2 id="timelineTitle">Session timeline</h2><p><span id="totalOps">${m.totals.ops}</span> operations · ${m.groups.length} retry groups · <span id="laneCount">${m.lanes.length - 1} sub-agent lanes</span> · ${m.totals.user_messages} user messages${m.totals.failed_ops ? ` · <span title="failed steps: tests, builds, releases, infra, edits and scripts with a non-zero exit">${m.totals.failed_ops} failed</span>` : ''}${m.totals.query_misses ? ` · <span title="reads, searches, listings and probes that answered with a non-zero exit; recorded as failed by the harness, not counted as failures">${m.totals.query_misses} query misses</span>` : ''}</p></div><div class="actions"><button class="btn ghost" data-action="fit" title="Show the entire session">${icon('expand', true)}Fit all</button><button class="btn ghost ${state.follow ? 'active' : ''}" data-action="follow" id="followBtn" aria-pressed="${state.follow}">${icon('latest', true)}Follow latest</button></div></div>
-<div class="overview-section"><div class="overview-heading"><strong id="overviewDuration">${fmt(m.ended - m.started)} overview · ${MAIN_THREAD}${m.lanes.length > 1 ? ' · sub-agent activity' : ''} · errors below · SDLC stages at the foot</strong><span>Drag to select a window · handles resize it</span><span class="mono" id="overviewRange"></span></div><div id="overview" class="overview" aria-label="Session overview. Drag to select a time window."><svg id="overviewSvg" aria-hidden="true"></svg><div class="brush-shade" id="shadeLeft"></div><div class="brush-shade" id="shadeRight"></div><div class="brush" id="brush"><div class="brush-handle left" data-handle="start" tabindex="0" role="slider" aria-label="Visible window start"></div><div class="brush-handle right" data-handle="end" tabindex="0" role="slider" aria-label="Visible window end"></div></div></div><div class="overview-lc" id="overviewLc" aria-label="SDLC stage over time"></div><div class="overview-axis" id="overviewAxis"></div><div class="legend legend-phases" id="legend"><div class="legend-group"><span class="row legend-caption">Activity · fill</span>${legend(['model', 'work'])}</div><div class="legend-group">${legend(['wait', 'overhead', 'unknown'])}</div><div class="legend-group" id="legendLifecycle"><span class="row legend-caption">Lifecycle stage · band above each lane, strip under the overview</span>${railLegend}</div></div></div>
+<div class="overview-section"><div class="overview-heading"><strong id="overviewDuration">${fmt(m.ended - m.started)} overview · ${MAIN_THREAD}${m.lanes.length > 1 ? ' · sub-agent activity' : ''} · errors below · SDLC stages at the foot</strong><span>Drag to select a window · handles resize it</span><span class="mono" id="overviewRange"></span></div><div id="overview" class="overview" aria-label="Session overview. Drag to select a time window."><svg id="overviewSvg" aria-hidden="true"></svg><div class="brush-shade" id="shadeLeft"></div><div class="brush-shade" id="shadeRight"></div><div class="brush" id="brush"><div class="brush-handle left" id="brushStart" data-handle="start" tabindex="0" role="slider" aria-label="Visible window start" aria-valuemin="0" aria-valuemax="100"></div><div class="brush-handle right" id="brushEnd" data-handle="end" tabindex="0" role="slider" aria-label="Visible window end" aria-valuemin="0" aria-valuemax="100"></div></div></div><div class="overview-lc" id="overviewLc" aria-label="SDLC stage over time"></div><div class="overview-axis" id="overviewAxis"></div><div class="legend legend-phases" id="legend"><div class="legend-caption"><b>Activity</b>the fill of a lane</div><div class="legend-group">${legend(['model', 'work'])}${legend(['wait', 'overhead', 'unknown'])}</div><div class="legend-caption"><b>Lifecycle stage</b>the band above each lane, the strip under the overview</div><div class="legend-group" id="legendLifecycle">${railLegend}</div></div></div>
 <div class="timeline-toolbar"><div class="zoom-group"><div class="zoom-presets" aria-label="Visible time window">${[[0, 'All'], [86400000, '24h'], [21600000, '6h'], [3600000, '1h'], [900000, '15m'], [300000, '5m']].map(([n, l]) => `<button data-action="preset" data-span="${n}">${l}</button>`).join('')}</div><div class="zoom-step" aria-label="Zoom controls"><button data-action="zoom" data-dir="-1" aria-label="Zoom out">−</button><span class="zoom-caption" id="zoomCaption"></span><button data-action="zoom" data-dir="1" aria-label="Zoom in">+</button></div></div><div class="toolbar-right"><label><input id="showGroups" type="checkbox" ${state.groups ? 'checked' : ''}>Retry groups</label><button class="btn small ghost" data-action="expand-all">Expand all lanes</button><button class="btn small ghost" data-action="collapse-all">Collapse</button></div></div>
 <div class="range-bar"><span class="range-label" id="rangeLabel"></span><div class="nav-arrows"><button class="btn icon-only" data-action="pan" data-dir="-1" aria-label="Move to earlier time">${icon('left', true)}</button><button class="btn icon-only" data-action="pan" data-dir="1" aria-label="Move to later time">${icon('right', true)}</button></div></div>
 <div class="timeline-plot" id="plot" tabindex="0" role="group" aria-label="Interactive session timeline"><svg id="chartSvg" aria-hidden="true"></svg><div class="agent-scroll" id="agentScroll" hidden><svg id="agentSvg" aria-hidden="true"></svg></div></div>
@@ -790,6 +790,15 @@ function overviewLcHTML(m, r) {
 function updateBrush() {
   const m = current(); if (!$('#brush')) return; const span = m.ended - m.started, left = (state.a - m.started) / span * 100, width = (state.b - state.a) / span * 100;
   $('#brush').style.left = left + '%'; $('#brush').style.width = width + '%'; $('#shadeLeft').style.left = '0'; $('#shadeLeft').style.width = left + '%'; $('#shadeRight').style.right = '0'; $('#shadeRight').style.width = (100 - left - width) + '%';
+  // a handle sits astride its edge, half its width (5px) out; within that of a bound of the
+  // plot it slides inward, so the plot's edge never cuts it. The slider says where it is.
+  const w = $('#overview').clientWidth, ear = 5;
+  $('#brushStart').style.left = (-Math.min(ear, left / 100 * w)).toFixed(1) + 'px';
+  $('#brushEnd').style.right = (-Math.min(ear, (100 - left - width) / 100 * w)).toFixed(1) + 'px';
+  for (const [id, t] of [['#brushStart', state.a], ['#brushEnd', state.b]]) {
+    $(id).setAttribute('aria-valuenow', ((t - m.started) / span * 100).toFixed(1));
+    $(id).setAttribute('aria-valuetext', stamp(t));
+  }
   $('#overviewRange').textContent = `${fmt(state.b - state.a)} selected`;
 }
 
@@ -1561,7 +1570,28 @@ document.addEventListener('click', e => {
   else if (stage && (stage.dataset.phase === 'wait_user' || stage.dataset.phase === 'idle') && stage.dataset.lane) { inspectWait(stage.dataset.lane, Number(stage.dataset.ta), Number(stage.dataset.tb)); }
   else if (stage) zoomToBlock(Number(stage.dataset.ta), Number(stage.dataset.tb));
 });
+// brushKey moves a focused brush handle from the keyboard: an arrow steps its edge by 1% of the
+// session (10% with Shift), Home and End send it to the bound; the window keeps its one-minute
+// floor, as under the pointer.
+function brushKey(which, e) {
+  const m = current(), total = m.ended - m.started, step = total * (e.shiftKey ? .1 : .01);
+  const dir = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
+  if (!dir && e.key !== 'Home' && e.key !== 'End') return;
+  e.preventDefault();
+  if (which === 'start') {
+    const a = e.key === 'Home' ? m.started : e.key === 'End' ? state.b - 60000 : state.a + dir * step;
+    setWindow(clamp(a, m.started, state.b - 60000), state.b);
+  } else {
+    const b = e.key === 'Home' ? state.a + 60000 : e.key === 'End' ? m.ended : state.b + dir * step;
+    setWindow(state.a, clamp(b, state.a + 60000, m.ended));
+  }
+}
 document.addEventListener('keydown', e => {
+  const handle = e.target.closest?.('[data-handle]');
+  if (handle) {
+    brushKey(handle.dataset.handle, e);
+    return;
+  }
   if (e.target.id !== 'plot') return; if (['+', '=', '-', '_', 'ArrowLeft', 'ArrowRight', 'Home'].includes(e.key)) e.preventDefault();
   if (e.key === '+' || e.key === '=') zoom(1); else if (e.key === '-' || e.key === '_') zoom(-1); else if (e.key === 'ArrowLeft') pan(-1); else if (e.key === 'ArrowRight') pan(1); else if (e.key === 'Home') setWindow(current().started, current().ended);
 });
