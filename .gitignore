@@ -35,8 +35,11 @@ coverage.*
 /todobem.out
 /.todobem
 
-# Local idea notes (never committed)
+# Local idea notes (never committed): the TODO file and the Insights brainstorm folder — expert
+# briefs, plans, critiques and their corpus numbers; the decisions they led to are recorded in
+# docs/ARCHITECTURE.md §13
 /TODO.md
+/docs/brainstorm/
 
 # Scratch that lands in the tree by accident: screenshots and stray files dropped in the root,
 # machine output of review / fix tools (the human-readable REVIEW*.md records stay tracked)

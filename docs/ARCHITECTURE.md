@@ -914,8 +914,8 @@ simulation (the three Claude Code sessions matched to the second).
   turn a remainder, not a stage; plan mode beats a skill run; CI status waits are query misses;
   the stage band replaces the activity brackets and the rail; `Lane.Stages` removed; Insights
   follow (M1 without a "Model" stage, D15 by subgroup, D13 by unknown subgroup, D16 new).
-- **2026-09-16, the verification loop (reviewed by the `pragmatic` agent; plan in
-  `docs/INSIGHTS-PLAN.md`).** Cards that ask which earlier work a later recorded event made
+- **2026-09-16, the verification loop (reviewed by the `pragmatic` agent; the plan is a
+  local note, not in the repository).** Cards that ask which earlier work a later recorded event made
   stale: a change with no verification after it, a review followed by edits — as a third card
   class, *check*, ranked by sessions affected and never totalled, with a denominator that leaves
   out the sessions the rule does not apply to. Session scope for verification (a sub-agent's test
