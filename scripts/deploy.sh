@@ -6,8 +6,13 @@
 # Commands:
 #   (none) | start   build, then (re)start in the background (nohup), print the URL
 #   run              build, then run in the FOREGROUND (for systemd / a terminal)
-#   stop             stop a background instance started here
-#   status           show whether a background instance is running
+#   stop             stop the instance on ADDR
+#   status           show whether an instance is running on ADDR, and any other todobem server
+#
+# The instance is whatever listens on ADDR: the pidfile remembers the one started here, and a
+# todobem started by hand (or one whose pidfile was lost) is adopted into it, so stop, status
+# and a restart always find the server the browser is talking to. `start` replaces it, and the
+# open tab follows the new build by itself (the server names its build on every answer).
 #
 # It KEEPS the loopback bind (127.0.0.1) from the security model  nothing is exposed off-host.
 # For a remote host, tunnel it:  ssh -L 7788:127.0.0.1:7788 <host>   then open the URL locally.
@@ -38,7 +43,33 @@ need_go() {
   command -v go >/dev/null 2>&1 || { echo "error: Go toolchain not found. Install Go 1.22+ (https://go.dev/dl) and re-run." >&2; exit 1; }
 }
 
-running() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; }
+port=${ADDR##*:}
+cmdline() { ps -o command= -p "$1" 2>/dev/null; }
+# listener prints the pid listening on ADDR's port (lsof: macOS and most Linux; none → nothing)
+listener() { lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | head -n 1; }
+# running: the pidfile's process when it is still a todobem, else the todobem on the port,
+# adopted into the pidfile. Anything else on the port is not ours: `busy` names it.
+running() {
+  pid=$(cat "$PIDFILE" 2>/dev/null || true)
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    case "$(cmdline "$pid")" in *todobem*) return 0 ;; esac
+  fi
+  rm -f "$PIDFILE"
+  pid=$(listener)
+  [ -n "$pid" ] || return 1
+  case "$(cmdline "$pid")" in *todobem*) echo "$pid" >"$PIDFILE"; return 0 ;; esac
+  return 1
+}
+busy() { pid=$(listener); [ -n "$pid" ] && echo "$pid $(cmdline "$pid")"; }
+# strays: every other todobem server on this machine — a preview left on another port, say.
+# Nothing started for a task may outlive it; this is where a leftover shows up.
+strays() {
+  mine=$(cat "$PIDFILE" 2>/dev/null || echo 0)
+  for pid in $(pgrep -f '^[^ ]*todobem[^ /]* .*-addr' 2>/dev/null); do
+    [ "$pid" = "$mine" ] && continue
+    echo "  other todobem server: pid $pid  $(cmdline "$pid")"
+  done
+}
 
 stop() {
   if running; then
@@ -78,7 +109,11 @@ login_hint() {
 
 case "$CMD" in
   stop) stop ;;
-  status) if running; then echo "running (pid $(cat "$PIDFILE"))  log: $LOGFILE"; else echo "not running"; fi ;;
+  status)
+    if running; then echo "running (pid $(cat "$PIDFILE"))  log: $LOGFILE"
+    elif other=$(busy); then echo "not running; $ADDR is taken by: $other"
+    else echo "not running"; fi
+    strays ;;
   run)
     build; warn_addr
     set -- -addr "$ADDR" -open=false "$@"
@@ -92,6 +127,7 @@ case "$CMD" in
   start|"")
     build; warn_addr
     running && stop
+    if other=$(busy); then echo "error: $ADDR is taken by another program: $other" >&2; exit 1; fi
     set -- -addr "$ADDR" -open=false "$@"
     [ -n "$CODEX" ] && set -- "$@" -codex "$CODEX"
     [ -n "$CLAUDE" ] && set -- "$@" -claude "$CLAUDE"
@@ -101,6 +137,6 @@ case "$CMD" in
     nohup "./$BINARY" "$@" >>"$LOGFILE" 2>&1 &
     echo $! >"$PIDFILE"
     sleep 1
-    if running; then url_hint; login_hint; echo "logs: $LOGFILE  stop: ./scripts/deploy.sh stop"; else echo "failed to start; see $LOGFILE" >&2; tail -n 20 "$LOGFILE" >&2 || true; exit 1; fi ;;
+    if running; then url_hint; login_hint; echo "logs: $LOGFILE  stop: ./scripts/deploy.sh stop"; strays; else echo "failed to start; see $LOGFILE" >&2; tail -n 20 "$LOGFILE" >&2 || true; exit 1; fi ;;
   *) echo "usage: $0 [start|run|stop|status] [-- extra todobem flags]" >&2; exit 2 ;;
 esac

@@ -75,11 +75,13 @@ function harness({ hash = '#sessions' } = {}) {
     fetch: (url, options = {}) => new Promise((resolve, reject) => {
       const request = {
         url, options, done: false,
-        // resolve(data, status): status 204 carries no body; any status ≥ 400 is a failed response
-        resolve(data, status = 200) {
+        // resolve(data, status, headers): status 204 carries no body; any status ≥ 400 is a
+        // failed response; headers are the response's, looked up case-insensitively
+        resolve(data, status = 200, headers = {}) {
           this.done = true;
           const body = JSON.stringify(data === undefined ? null : data);
-          resolve({ ok: status >= 200 && status < 300, status, json: async () => JSON.parse(body), text: async () => body });
+          const lower = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
+          resolve({ ok: status >= 200 && status < 300, status, headers: { get: name => lower[name.toLowerCase()] ?? null }, json: async () => JSON.parse(body), text: async () => body });
         },
         reject(error = new Error('synthetic request failure')) { this.done = true; reject(error); },
       };
@@ -272,6 +274,24 @@ test('polling remains single-flight across timer ticks and rescheduling', async 
   assert.equal(h.requests.filter(r => r.url === '/api/sessions/session').length, 1);
   const next = h.poll(); h.take('/api/sessions/session/version').resolve({ version: 'v1' }); await next;
   assert.equal(h.requests.filter(r => r.url.endsWith('/version')).length, 2);
+});
+
+// The page follows the server's build: every answer names the UI the server was built with;
+// the first one seen is this page's, and a later answer from another build reloads the page
+// (a deploy replaced the binary under the tab). A server without the header changes nothing.
+test('an answer from another build reloads the page; the same build or no header never does', async () => {
+  const h = harness();
+  let reloads = 0;
+  h.location.reload = () => reloads++;
+  h.take('/api/auth').resolve({ enabled: false, authenticated: true }, 200, { 'X-Todobem-Build': 'aaaaaaaaaaaa' }); await flush();
+  h.take('/api/sessions').resolve([], 200, { 'x-todobem-build': 'aaaaaaaaaaaa' }); await flush();
+  h.take('/api/sessions').resolve([]); await flush();
+  assert.equal(reloads, 0, 'the same build, then no header: the page stays');
+  await h.open('session');
+  const tick = h.poll();
+  h.take('/api/sessions/session/version').resolve({ version: 'v1' }, 200, { 'X-Todobem-Build': 'bbbbbbbbbbbb' }); await tick;
+  assert.equal(reloads, 1, 'a new build under the open tab');
+  assert.equal(h.errors.length, 0);
 });
 
 test('a stale version poll cannot supersede a manual refresh', async () => {

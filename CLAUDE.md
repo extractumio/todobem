@@ -190,6 +190,11 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
   `docs/ARCHITECTURE.md` §11 (the validation protocol).
 - UI changes: exercise the real page in a browser (session list, timeline, brush, inspector,
   Follow mode) and check the console. Tests and source reading do not replace this.
+- Seeing a change in the browser: `./scripts/deploy.sh` — it builds, replaces the instance on
+  `:7788` (one started by hand is adopted, a lost pidfile rebuilt from the port) and prints a
+  login link; an open tab follows the new build by itself (`X-Todobem-Build`). Never start a
+  second instance on another port or from a scratchpad, and nothing you start outlives the
+  task: `./scripts/deploy.sh status` lists strays.
 - Report what changed, why, how it was verified, what was excluded and **Noticed, not fixed** —
   the last list holds only items that need a decision (see "Leave it better"); anything else
   noticed was fixed. Unverified work is unfinished; a missing gate is absent, never passing.

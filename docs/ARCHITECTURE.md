@@ -634,6 +634,11 @@ link to the terminal, never to the log.
 | `GET/POST /api/settings` | the homes per source as typed and what the index found; POST saves and applies |
 | `/api/insights/report`, `scan`, `status`, `rules` | §10 |
 
+Every response carries `X-Todobem-Build`, a 12-hex fingerprint of the embedded `web/` tree
+(`build.go`). The page keeps the first value it sees and reloads itself when a later answer
+carries another one: a deploy (`scripts/deploy.sh`) replaces the binary under an open tab, and
+the tab follows within a poll; a restart of the same binary never reloads it.
+
 Pools: an LRU of 6 parser-backed sessions (`opened`, expensive, refreshed on demand) and a
 separate pool of 32 cache-served read-only models, so browsing history never evicts a live
 parser-backed session. The index is rescanned on list and report requests when older than 20 s (10 s

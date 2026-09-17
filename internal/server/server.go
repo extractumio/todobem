@@ -37,6 +37,7 @@ type Server struct {
 	cache     *store.Store
 	lastScan  time.Time
 	web       fs.FS
+	build     string // fingerprint of web (BuildHeader): the page reloads when it changes
 	maxOpen   int
 	maxCached int
 	insights  *insightsSvc // /api/insights/*: period reports over the project's sessions
@@ -71,7 +72,7 @@ func New(homes settings.Homes, web fs.FS) *Server { return NewWithCache(homes, w
 // NewWithCache is New plus a directory for the derived-session cache ("" disables it).
 func NewWithCache(homes settings.Homes, web fs.FS, cacheDir string) *Server {
 	src := source.NewMulti(codex.NewIndex(homes.Codex...), claude.NewIndex(homes.Claude...))
-	s := &Server{src: src, opened: map[string]*source.Session{}, lastUse: map[string]time.Time{}, cached: map[string]*cachedEntry{}, cache: store.New(cacheDir), web: web, maxOpen: 6, maxCached: 32}
+	s := &Server{src: src, opened: map[string]*source.Session{}, lastUse: map[string]time.Time{}, cached: map[string]*cachedEntry{}, cache: store.New(cacheDir), web: web, build: webFingerprint(web), maxOpen: 6, maxCached: 32}
 	s.insights = newInsights(s)
 	s.settings = &settingsSvc{}
 	return s
@@ -143,6 +144,7 @@ func (s *Server) Handler(listenAddr ...string) http.Handler {
 			http.Error(w, "untrusted host", http.StatusForbidden)
 			return
 		}
+		w.Header().Set(BuildHeader, s.build)
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			api.ServeHTTP(w, r)
 			return
