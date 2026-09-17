@@ -56,6 +56,30 @@ func textContent(text string) []map[string]string {
 	return []map[string]string{{"type": "text", "text": text}}
 }
 
+// TestTurnEndedOnErrorKeepsTheReason: a task_complete the harness wrote for an error (a usage
+// limit, a provider failure) carries no answer; its message is recorded as an llm_error marker
+// so the conversation says why the turn ended, and the turn still closes as the record says.
+func TestTurnEndedOnErrorKeepsTheReason(t *testing.T) {
+	p := testParser(t, "thread-id", "")
+	appendRollout(t, p,
+		rolloutLine(t, 1000, "event_msg", "task_started", map[string]any{"turn_id": "turn"}),
+		rolloutLine(t, 1100, "response_item", "message", map[string]any{"role": "user", "content": textContent("go on")}),
+		rolloutLine(t, 5000, "event_msg", "task_complete", map[string]any{"turn_id": "turn", "last_agent_message": nil, "error": map[string]any{"message": "You've hit your usage limit.", "codex_error_info": "usage_limit_reached"}}),
+	)
+	if len(p.lane.Turns) != 1 || p.lane.Turns[0].Status != "completed" || p.lane.Turns[0].Final != "" {
+		t.Fatalf("turn: %+v", p.lane.Turns)
+	}
+	var errs []string
+	for _, mk := range p.lane.Markers {
+		if mk.Kind == "llm_error" {
+			errs = append(errs, mk.Text)
+		}
+	}
+	if len(errs) != 1 || errs[0] != "You've hit your usage limit." {
+		t.Fatalf("llm_error markers: %q", errs)
+	}
+}
+
 func TestShortTurnsPreserveUserInputAndFinals(t *testing.T) {
 	for _, parent := range []string{"", "parent-thread"} {
 		t.Run("parent="+parent, func(t *testing.T) {

@@ -160,8 +160,11 @@ const lastAnswerTail = 256 << 10
 // readTail finds, in the file's tail, the last complete task_complete line (the last answer:
 // last_agent_message, clipped) and a question the agent asked the user that nothing has
 // answered — the last request_user_input call with no function_call_output for its call_id
-// and no user message after it (question = the call's time in ms; 0 when none). Only those
-// lines are JSON-decoded.
+// and no user message after it (question = the call's time in ms; 0 when none). The async
+// variant (request_user_input_async) is answered at once by the harness with {"accepted":true}
+// — the question was posted, the agent goes on working — and by the user only through a later
+// user message, so that acknowledgement leaves it pending; a turn ending does not answer it
+// either (the harness keeps it on screen). Only those lines are JSON-decoded.
 func readTail(f *os.File, size int64) (answer string, question int64) {
 	off := size - lastAnswerTail
 	if off < 0 {
@@ -182,7 +185,8 @@ func readTail(f *os.File, size int64) (answer string, question int64) {
 		}
 	}
 	var last []byte
-	pendingCall := "" // the call_id of the question still waiting for its answer
+	pendingCall := ""     // the call_id of the question still waiting for its answer
+	pendingAsync := false // the pending question is the async variant: its output is the harness's acknowledgement
 	for _, line := range bytes.Split(buf, []byte{'\n'}) {
 		switch lineType(line) {
 		case "event_msg":
@@ -208,10 +212,14 @@ func readTail(f *os.File, size int64) (answer string, question int64) {
 				}
 				if fc.Name == "request_user_input" || fc.Name == "request_user_input_async" {
 					pendingCall, question = fc.CallID, source.ParseTS(rl.Timestamp)
+					pendingAsync = fc.Name == "request_user_input_async"
 				}
 			case "function_call_output":
 				if pendingCall != "" && prefixField(line, "call_id", 400) == pendingCall {
-					pendingCall, question = "", 0 // answered
+					if pendingAsync && bytes.Contains(line, []byte(`\"accepted\":true`)) {
+						continue // the harness took the question; the user has not answered it
+					}
+					pendingCall, question = "", 0 // answered (or, async, refused by the harness)
 				}
 			case "message":
 				if prefixField(line, "role", 300) == "user" {

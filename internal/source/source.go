@@ -41,8 +41,9 @@ type Meta struct {
 	LastAnswer string
 	// Question is the time (ms) of a question the agent asked the user that nothing has
 	// answered yet — a Claude Code AskUserQuestion or ExitPlanMode call without its tool_result, a Codex
-	// request_user_input call without its output or a later user message — read from the
-	// file's tail like LastAnswer; 0 when none is pending.
+	// request_user_input call without its output or a later user message (the async variant is
+	// acknowledged by the harness at once and answered only by a user message) — read from
+	// the file's tail like LastAnswer; 0 when none is pending.
 	Question int64
 }
 

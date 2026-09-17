@@ -25,7 +25,8 @@ import (
 // 7: a sub-agent's open turn after the root closed is orphaned (its lane is not live).
 // 8: one op per Claude Code stop hook, with the command's classification and retry identity.
 // 9: a Claude Code assistant line with the model "<synthetic>" never names the turn's model.
-const cacheVersion = 9
+// 10: a Codex task_complete carrying an error is an llm_error marker.
+const cacheVersion = 10
 
 // FileFP fingerprints one source file. Append-only rollouts change size on every write and the
 // file set changes when a sub-agent appears, so (path,size,mtime) detects every real change.

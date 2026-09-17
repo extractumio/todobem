@@ -68,7 +68,8 @@ func TestIndexReadsLastAnswerFromTail(t *testing.T) {
 
 // TestIndexReadsPendingQuestionFromTail: a request_user_input call nothing has answered marks the
 // session as waiting for the user, with the call's time; its output or a later user message
-// clears it. All of it is read from the file's tail, without a parse.
+// clears it — for the async variant only a user message does, the output being the harness's
+// acknowledgement. All of it is read from the file's tail, without a parse.
 func TestIndexReadsPendingQuestionFromTail(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "sessions")
@@ -119,6 +120,35 @@ func TestIndexReadsPendingQuestionFromTail(t *testing.T) {
 		ix.Scan()
 		if fm, _ := ix.Get(id); fm.Question != 0 {
 			t.Fatalf("user message form %d: question=%d", i, fm.Question)
+		}
+	}
+	// the async variant: the harness acknowledges the call at once ({"accepted":true}) and the
+	// agent keeps working, even ends the turn — the question stays pending until the user
+	// speaks; a refused call is no question
+	askAsync := line(askedAt, "response_item", `{"type":"function_call","name":"request_user_input_async","arguments":"{\"questions\":[{\"title\":\"Which one?\"}]}","call_id":"call-a"}`)
+	for i, tc := range []struct {
+		after   string
+		pending bool
+	}{
+		{line("2026-01-01T00:10:00.100Z", "response_item", `{"type":"function_call_output","call_id":"call-a","output":"{\"accepted\":true}"}`), true},
+		{line("2026-01-01T00:10:00.100Z", "response_item", `{"type":"function_call_output","call_id":"call-a","output":"{\"accepted\":true}"}`) +
+			line("2026-01-01T00:11:00.000Z", "event_msg", `{"type":"task_complete","turn_id":"t1","last_agent_message":"Done for now."}`), true},
+		{line("2026-01-01T00:10:00.100Z", "response_item", `{"type":"function_call_output","call_id":"call-a","output":"{\"accepted\":true}"}`) +
+			line("2026-01-01T00:12:00.000Z", "response_item", `{"type":"message","role":"user","content":[{"type":"input_text","text":"the first"}]}`), false},
+		{line("2026-01-01T00:10:00.100Z", "response_item", `{"type":"function_call_output","call_id":"call-a","output":"{\"accepted\":false,\"reason\":\"unsupported\"}"}`), false},
+	} {
+		id := "thread-a" + string(rune('1'+i))
+		p := filepath.Join(dir, "rollout-2026-01-01T00-00-2"+string(rune('1'+i))+"-"+id+".jsonl")
+		if err := os.WriteFile(p, []byte(line("2026-01-01T00:00:00.000Z", "session_meta", `{"id":"`+id+`","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/synthetic"}`)+askAsync+tc.after), 0600); err != nil {
+			t.Fatal(err)
+		}
+		ix.Scan()
+		want := int64(0)
+		if tc.pending {
+			want = source.ParseTS(askedAt)
+		}
+		if fm, _ := ix.Get(id); fm.Question != want {
+			t.Fatalf("async case %d: question=%d want %d", i, fm.Question, want)
 		}
 	}
 	// the tools list in a turn_context names the tool without calling it: no question

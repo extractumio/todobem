@@ -190,6 +190,11 @@ type taskEvent struct {
 	Reason      string `json:"reason"`
 	StartedAt   int64  `json:"started_at"`
 	CompletedAt int64  `json:"completed_at"`
+	// Error is set on a task_complete the harness wrote because the turn ended on an error
+	// (a usage limit, a provider failure): no answer, and the message is the only record of why
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
 }
 
 // injectedPrefixes mark messages that the harness (not the human) put into the user role.
@@ -510,6 +515,11 @@ func (p *laneParser) handleEvent(line []byte, start int64, ts int64) {
 		if p.turn == nil || p.turn.ID != te.TurnID {
 			// a close event for a turn this file never opened (replayed parent history): ignore
 			return
+		}
+		if te.Error != nil && te.Error.Message != "" {
+			// the turn ended on a harness or provider error (the twin of Claude Code's API error
+			// message): the reason stays visible in the conversation, the turn still closes
+			p.addMarker(ts, "llm_error", te.TurnID, source.Clip(te.Error.Message, 300), "", p.src(start, line))
 		}
 		p.noteFinalAnswer(ts, te.TurnID, te.LastMessage, p.src(start, line), true)
 		p.closeTurn(ts, status, te.LastMessage)
