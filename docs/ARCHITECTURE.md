@@ -730,14 +730,22 @@ by phase and subgroup (calls, exclusive time, query misses, failures); lifecycle
 effort cells; and the **delivery walk** (`facts_delivery.go`): one pass over every op of every
 lane in start order — change ops (first, last), the first successful verification at or after
 the last change (a completed test op that did not fail, or a stop hook whose command classified
-as `test` and raised no hook error: `VerifiedBy` agent / hook), the last verdict, the end of the
+as `test` and raised no hook error: `VerifiedBy` agent / hook) and the distinct kinds of every
+such verification in the order they ran (`VerifiedKinds`: what verified the session by the name
+the rule table gave it), the test runs and how many failed (a failed test is a verdict, not a
+failed tool call), the stop hooks run whatever their command, the last verdict, the end of the
 last review run (a review skill run, Codex review mode, a review-role lane) and the change ops
 after it, the unknown + no-telemetry time on the root after the last change (the walk may have
-missed a test there), and per-turn counts (turns with edits, those with no successful
-verification after their last edit, unknown time inside the root's change windows). Session
-scope: a sub-agent's edit is the session's edit and a sub-agent's test verifies it. Retry
-windows carry what the lane ran between the failure and the retry (`Recovery`: none, fix,
-infra, worker, mixed), whether the retry failed again and whether a user turn started inside;
+missed a test there), every `git push` after a change with what ran between that change and
+the push (`Pushes`: a verification or not, test runs in the window and whether the last one
+failed, the root's blind time inside the window) and the change ops after the last push, and
+per-turn counts (turns with edits, those with no successful verification after their last edit,
+unknown time inside the root's change windows). Session scope: a sub-agent's edit is the
+session's edit and a sub-agent's test verifies it. Retry windows carry the retry op and what ran
+between the failure and the retry (`Recovery`: none — reads and queries only; fix — a change op
+on any lane; infra; worker; other — any other step on the lane, a stash, a checkout, a narrowed
+test, a build, an unknown command; mixed), whether the retry failed again and whether a user
+turn started inside;
 compactions whether they sat between two edits of one turn; gaps whether the turn before them
 had already changed a file (its own edit, or a sub-agent's inside it); stop hooks are among the
 long ops under their command's shape (`hook go test`). `FactsVersion` bumps whenever Extract's
@@ -761,9 +769,10 @@ denominator nor in "no data" — the page says "of M sessions with changes".
 | T1 | You and the agent | exposure | the first model call after a break of 1 s or more: its uncached input | tokens, by gap bucket; stats: the starts after breaks of 15 min or more and their uncached input |
 | D4 | Sub-agents | exposure | worker waits during which at most one sub-agent was inside a turn (both harnesses block the thread on the wait call, so the root never works meanwhile); not applicable with fewer than two sub-agents | the wait, keyed "one sub-agent at a time" / "several, one at a time" / "no sub-agent inside a turn" (the lane in the note) |
 | T6 | Sub-agents | exposure | a sub-agent's first call (its instructions and context); not applicable without a sub-agent | tokens; how many spent more to start than to work |
-| D17 | Verification loop | check | the session changed a file and no verification (a successful test op, or a test-running stop hook without error) started at or after its last change; not measurable with unknown / no-telemetry time after the last change; not applicable without a change op | sessions, keyed by source, each row over the measurable sessions of its source (`of_<source>`); stats: turns with edits and those unverified, last verdict failed, verified by a stop hook |
+| D17 | Verification loop | check | at session end: the session changed a file and no verification (a successful test op, or a test-running stop hook without error) started at or after its last change; not measurable with unknown / no-telemetry time after the last change; not applicable without a change op | sessions, keyed by source, each row over the measurable sessions of its source (`of_<source>`); stats: turns with edits and those unverified, test runs and failed ones, last verdict failed, the first verifying kind of each verified session (`verified_kind:<kind>`) and the sessions verified by a lint / type check / syntax check alone, sessions that ran stop hooks and those verified by one |
 | D24 | Verification loop | check | a review run ended before the session's last change op; not applicable without a review run | sessions, keyed by the number of edits after the review (1, 2–5, more) |
-| D7 | Failures and retries | exposure | a retry group with a failed attempt; per failed-to-retry window, what ran between the failure and the retry (nothing, a fix, an infra step, a wait, a user turn) and whether the retry failed again | the retry, fix, recovery and queue time, by shape; a group on a sub-agent lane is parallel time |
+| D25 | Verification loop | check | a `git push` with a change op before it and no verification started between the last change and the push (CI after the push is not in the log; an edit to any file counts); a push whose window holds unknown / no-telemetry root time is no data; not applicable without a push after a change | sessions, one finding per push, keyed "no test ran between the last edit and the push" / "tests ran between, none passed"; stats: pushes and unverified ones, pushes after a failed test, sessions with edits after their last push and those edits |
+| D7 | Failures and retries | exposure | a retry group with a failed attempt; per failed-to-retry window, what ran between the failure and the retry (only reads, a fix on any lane, an infra step, a wait, another step, several kinds, a user turn) and whether the retry failed again | the retry, fix, recovery and queue time, by shape; a group on a sub-agent lane is parallel time; stats: windows by recovery path, blind test retries that passed |
 | D15 | Failures and retries | info | a failed step in the code phase (edit, patch, script, shell, git, hosting, network); query misses and CI status waits excluded | count, by subgroup |
 
 | D16 | Tool calls | info | the main thread's tool calls by phase and subgroup, with query misses and failures | exclusive time, calls (own group) |
@@ -778,8 +787,9 @@ denominator nor in "no data" — the page says "of M sessions with changes".
 | D18 | Not measured | info | a root turn that never closed (status open: the log ends inside it; orphaned: the next prompt arrived first) and the no-telemetry time after its last event | that time, keyed by source, one evidence row per interval; never work, never a wait |
 
 Named display conventions (printed on the card, never explaining anything): the long-break
-split at 4 h, the 1 s floor under which a gap is not a reply, and the gap buckets 5 / 15 / 60 /
-240 min.
+split at 4 h, the 1 s floor under which a gap is not a reply, the gap buckets 5 / 15 / 60 /
+240 min, and the context buckets 50 / 100 / 150 / 200 / 500 / 750 k (the scale continues past
+200 k because 1M-context models put most turns there).
 
 ### 10.3 The report and the scanner
 
@@ -956,3 +966,24 @@ simulation (the three Claude Code sessions matched to the second).
   parse" is dropped (neither harness records the tool, so the card had no action; the
   `llm_error` marker stays on the timeline); no `todobem insights` CLI for now (`cmd/dump
   -insights` covers the developer's need; the report's sentences live in the page).
+- **2026-09-16, a brainstorm of three expert views (QA automation, senior developer, SDLC)
+  cut by the `pragmatic` agent** (local notes, not in the repository: 51 proposals, 5 kept for
+  the day). D25
+  "pushed with no passing test since the last edit" is the one new card: D17 answers the state
+  at session end, so a test after the push made the session verified while the push carried an
+  unverified change (on the corpus 167 of 407 pushes had no passing test since the last edit;
+  keyed to the `git push` kind only — a PR comment is a release op too and must not fire).
+  D17 names what verified the verified sessions (the kind the rule table gave the first
+  passing check; a lint, type check or syntax check alone is counted apart, 2 sessions of 64),
+  counts failed test runs apart from failed tool calls (1,329 of 6,865 test runs failed) and
+  the sessions that ran stop hooks at all (81; none verified by one). D7's "nothing recorded
+  between" was lane-scoped and read a sub-agent's fix, a stash, a checkout or a narrowed test
+  as nothing: the recovery is session-scoped for fixes and names "other" steps; the blind test
+  retries that passed are a stat (19 of 42 blind windows), never called flaky. T2's buckets
+  continue past 200 k (1,024 of 1,733 root turns sat in one top bucket). D9 says that a Claude
+  Code command's time includes an answered permission prompt. Dropped or deferred, with the
+  reasons in the critique: a narrowed-test check (0 sessions where a subset run was the last
+  verdict), "no review before the push" (fires on 9 of 10 push sessions: a policy, another
+  product), stage-shape and commit-batch dashboards (no action), cards that would read "0 of
+  M" and never render (max_tokens, userModified, fast mode), everything needing paths on
+  operations (batch 2) or per-op tokens.

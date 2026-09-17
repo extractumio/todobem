@@ -176,7 +176,7 @@ const INSIGHT_TEXT = {
     },
     D9: {
       title: 'Long tool runs',
-      signal: 'A test, build, release or infra command, or a stop hook, whose shape ran two or more times in the period.',
+      signal: 'A test, build, release or infra command, or a stop hook, whose shape ran two or more times in the period. On Claude Code a command\'s time runs from the call to its result. That includes any permission prompt you answered, which the log does not record.',
       measured: 'The time of each run, by command shape. A stop hook is listed under its own command, marked hook.',
       happened: c => {
         const top = c.distribution && c.distribution[0];
@@ -273,7 +273,7 @@ const INSIGHT_TEXT = {
       measured: 'The tokens of each turn, by context size.',
       happened: c => {
         const rows = c.distribution || [];
-        const big = rows.filter(r => r.label === '200 k or more' || r.label === '150-200 k');
+        const big = rows.filter(r => !r.label.startsWith('under') && !r.label.startsWith('50-') && !r.label.startsWith('100-'));
         const n = big.reduce((a, r) => a + r.n, 0);
         const tok = big.reduce((a, r) => a + billableOf(r.tokens), 0);
         const head = n ? `${n} ${n === 1 ? 'turn' : 'turns'} reached a context of 150 k tokens or more; they used ${fmtTok(tok)} tokens (input not from cache + output).` : 'No turn reached a context of 150 k tokens.';
@@ -323,14 +323,20 @@ const INSIGHT_TEXT = {
     },
     D17: {
       title: 'Final changes had no later successful test',
-      signal: 'The session changed files, and no test ran and passed after the last change. A test is a test, lint or type-check command, or a stop hook that runs one. A build does not count.',
-      measured: 'The sessions where this happened, out of the sessions with changes. Per turn: turns with edits and no passing test after their last edit. Sessions whose last test failed. Sessions verified by a stop hook.',
+      signal: 'At session end: the session changed files, and no test ran and passed after the last change. A test is a test, lint or type-check command, or a stop hook that runs one. A build does not count. A test that ran after a push still verifies the session; the push itself is the question of D25.',
+      measured: 'The sessions where this happened, out of the sessions with changes. Per turn: turns with edits and no passing test after their last edit. Test runs and how many failed. Sessions whose last test failed. What verified the verified sessions, by the kind the rule table gave the command. Sessions that ran stop hooks, and those verified by one.',
       happened: c => {
         const s = c.stats || {};
         const parts = [INSIGHT_TEXT.states.checkSessions(c.sessions, c.of, 'with changes, no test passed after the last edit')];
         if (s.edit_turns) parts.push(`${s.edit_turns_unverified || 0} of ${plural(s.edit_turns, 'turn')} with edits had no passing test after their last edit.`);
+        if (s.tests) parts.push(`${s.tests_failed || 0} of ${plural(s.tests, 'test run')} failed.`);
         if (s.last_verdict_failed) parts.push(`In ${plural(s.last_verdict_failed, 'session')} the last test failed.`);
-        if (s.verified_by_hook) parts.push(`${plural(s.verified_by_hook, 'session')} ${s.verified_by_hook === 1 ? 'was' : 'were'} verified by a stop hook.`);
+        const kinds = verifiedKinds(s);
+        if (kinds.length) {
+          parts.push(`First passing check after the last edit, in the verified sessions: ${kinds.map(k => `${k.kind} ${k.n}`).join(', ')}.`);
+          if (s.verified_static_only) parts.push(`${plural(s.verified_static_only, 'session')} had a lint, type check or syntax check alone.`);
+        }
+        if (s.hook_sessions) parts.push(`${plural(s.hook_sessions, 'session')} ran stop hooks; ${s.verified_by_hook || 0} ${s.verified_by_hook === 1 ? 'was' : 'were'} verified by one.`);
         if (c.no_data) parts.push(INSIGHT_TEXT.states.noData(c.no_data, c.reason || ''));
         if (c.not_applicable) parts.push(`${plural(c.not_applicable, 'session')} changed no files.`);
         parts.push('The log does not say what the test covered.');
@@ -353,6 +359,24 @@ const INSIGHT_TEXT = {
       },
       todo: 'Run the review skill again after the edits it asked for, or make the review the last step of the turn. The evidence opens the interval from the review\'s end to the last edit.',
     },
+    D25: {
+      title: 'Pushed with no passing test since the last edit',
+      signal: 'A git push with files changed before it, and no test that ran and passed between the last change and the push. An edit to any file counts, docs included. CI that ran after the push is not in the log.',
+      measured: 'The sessions where this happened, out of the sessions with a push after a change. Pushes, and how many had no passing test before them. Pushes whose last test before them failed. Sessions with edits after their last push, and those edits.',
+      happened: c => {
+        const s = c.stats || {};
+        const parts = [INSIGHT_TEXT.states.checkSessions(c.sessions, c.of, 'with a push after a change, a push had no passing test since the last edit')];
+        if (s.pushes) parts.push(`${s.pushes_unverified || 0} of ${s.pushes} ${s.pushes === 1 ? 'push' : 'pushes'} had no passing test between the last edit and the push.`);
+        if (s.pushes_after_failed_test) parts.push(`${s.pushes_after_failed_test} ${s.pushes_after_failed_test === 1 ? 'push' : 'pushes'} came after a failed test.`);
+        if (s.sessions_with_edits_after_last_push) parts.push(`${plural(s.sessions_with_edits_after_last_push, 'session')} ended with edits after the last push (${plural(s.edits_after_last_push, 'edit')} in all).`);
+        if (c.no_data) parts.push(INSIGHT_TEXT.states.noData(c.no_data, c.reason || ''));
+        if (c.not_applicable) parts.push(`${plural(c.not_applicable, 'session')} pushed nothing after a change.`);
+        parts.push('The log does not say what the test covered, nor what CI did after the push.');
+        return parts.join(' ');
+      },
+      todo: 'Run the test command before every push: a pre-push hook, a PreToolUse hook on git push, or a line in the instructions file (AGENTS.md). The evidence opens the interval from the last edit to the push.',
+      noDataItems: n => `${n} ${n === 1 ? 'push was' : 'pushes were'} not measurable: an unknown command or a telemetry gap between the last edit and the push.`,
+    },
     D7: {
       title: 'Commands that fail and get retried',
       signal: 'A retry group with at least one failed attempt. The same normalized command ran again after a failure.',
@@ -365,13 +389,16 @@ const INSIGHT_TEXT = {
         if (top) parts.push(`The most common command shape: \`${shapeText(top.label)}\`, in ${plural(top.sessions, 'session')}.`);
         if (s.windows) {
           const blind = s.windows_blind || 0;
-          parts.push(`${blind} of ${retries(s.windows)} ran again with nothing recorded between the failure and the retry.`);
+          parts.push(`${blind} of ${retries(s.windows)} ran again with only reads recorded between the failure and the retry.`);
+          if (s.windows_blind_passed) parts.push(`${s.windows_blind_passed} of those ${s.windows_blind_passed === 1 ? 'was a test that' : 'were tests that'} passed on the retry.`);
+          const steps = [['windows_fix', 'a fix'], ['windows_infra', 'an infra step'], ['windows_worker', 'a wait'], ['windows_other', 'another step'], ['windows_mixed', 'several kinds of step']].filter(([k]) => s[k]).map(([k, what]) => `${s[k]} after ${what}`);
+          if (steps.length) parts.push(`Between the failure and the retry: ${steps.join(', ')}.`);
           if (s.windows_after_user) parts.push(`${retries(s.windows_after_user)} came after a message from you.`);
           if (s.retries_failed_again) parts.push(`${plural(s.retries_failed_again, 'fix or recovery step')} ${s.retries_failed_again === 1 ? 'was' : 'were'} followed by another failure.`);
         }
         return parts.join(' ');
       },
-      todo: 'Look at the command shape that fails most. For a setup step: fix the setup script or the image, or write the working command into the instructions file (AGENTS.md). For a test or build: add the check that the fix always does, before the run. Many retries with nothing between them point at an error message the agent cannot act on.',
+      todo: 'Look at the command shape that fails most. For a setup step: fix the setup script or the image, or write the working command into the instructions file (AGENTS.md). For a test or build: add the check that the fix always does, before the run. A test that failed and then passed with only reads between points at its environment. Pin seeds, ports and caches, or retry at the runner instead of in the agent\'s loop. Many retries with nothing between them point at an error message the agent cannot act on.',
     },
     D11: {
       title: 'Context compaction pauses',
@@ -433,6 +460,22 @@ function shareText(c) {
   if (!c.share || !c.share.of_ms) return '';
   return ` (of ${fmt(c.share.of_ms)} ${SHARE_OF[c.share.of] || c.share.of}, ${c.share.pct.toFixed(1)} %)`;
 }
+// noDataItemsText words a rule's items without a usable record: the rule's own sentence when it
+// has one (D25: a push whose window was blind), else the usage-record default.
+function noDataItemsText(rule, n) {
+  const r = INSIGHT_TEXT.rules[rule];
+  return r && r.noDataItems ? r.noDataItems(n) : INSIGHT_TEXT.states.noDataItems(n);
+}
+
+// verifiedKinds reads the `verified_kind:<kind>` stats of D17 as a list, most sessions first.
+function verifiedKinds(stats) {
+  const out = [];
+  for (const [k, n] of Object.entries(stats || {})) {
+    if (k.startsWith('verified_kind:') && n > 0) out.push({ kind: k.slice('verified_kind:'.length), n });
+  }
+  return out.sort((a, b) => b.n - a.n || a.kind.localeCompare(b.kind));
+}
+
 // mainText words a multi-lane exposure's main-thread part with its share; parallelNote is the
 // sentence about the sub-agents' part, which ran in parallel and never joins a root total
 // (product rule 6). Empty when every finding sat on the main thread.
@@ -796,7 +839,7 @@ function reportBodyHTML(ins) {
     const def = T.groups[g.id] || { name: g.id, question: '' };
     const cards = (g.cards || []).slice().sort((a, b) => classRank(a) - classRank(b) || (isCheck(a) ? (b.sessions - a.sessions || b.exposure.count - a.exposure.count) : (ins.axis === 'tokens' ? billableOf(b.exposure.tokens) - billableOf(a.exposure.tokens) : b.exposure.main_ms - a.exposure.main_ms)));
     const ranked = cards.filter(c => !isInfo(c) && !isCheck(c));
-    const unseen = g.id === 'not_measured' && noData.length ? `<div class="nodata"><div class="part-label">${esc(T.card.noDataTitle)}</div><ul>${noData.map(nd => `<li><b>${esc(nd.rule)} · ${esc(ruleTitle(nd))}</b>: ${nd.sessions ? esc(T.states.noData(nd.sessions, nd.reason || '')) : ''}${nd.items ? ' ' + esc(T.states.noDataItems(nd.items)) : ''}</li>`).join('')}</ul></div>` : '';
+    const unseen = g.id === 'not_measured' && noData.length ? `<div class="nodata"><div class="part-label">${esc(T.card.noDataTitle)}</div><ul>${noData.map(nd => `<li><b>${esc(nd.rule)} · ${esc(ruleTitle(nd))}</b>: ${nd.sessions ? esc(T.states.noData(nd.sessions, nd.reason || '')) : ''}${nd.items ? ' ' + esc(noDataItemsText(nd.rule, nd.items)) : ''}</li>`).join('')}</ul></div>` : '';
     const has = cards.length > 0 || unseen !== '';
     const open = ins.openGroups.has(g.id) && has;
     const value = ins.axis === 'tokens' ? fmtTok(billableOf(g.tokens)) : fmt(g.time_ms);
@@ -849,10 +892,11 @@ function cardHTML(ins, c, rank) {
     let v = ins.axis === 'tokens' ? billableOf(x.tokens) : x.time_ms;
     let shown = ins.axis === 'tokens' ? fmtTok(v) : fmt(x.time_ms);
     if (isCheck(c)) {
-      // a check row counts sessions over its own denominator when the rule keeps one per row
-      // (D17: the measurable sessions of that source), else the card's
+      // a check row counts sessions (a rule with several findings per session, D25's pushes,
+      // still says "in N of M sessions") over its own denominator when the rule keeps one per
+      // row (D17: the measurable sessions of that source), else the card's
       v = x.n;
-      shown = `${x.n} of ${x.of || c.of}`;
+      shown = `${x.sessions} of ${x.of || c.of}`;
     }
     if (c.rule === 'T1' && x.tokens && x.tokens.input) {
       // a cache row: the bar is the share not served from cache, the value says both numbers
@@ -869,7 +913,7 @@ function cardHTML(ins, c, rank) {
   const evidence = all.length ? `<div><div class="part-label">${esc(T.card.where)}</div><div class="evidence"><div class="ev-head" aria-hidden="true"><span>${esc(T.card.session)}</span><span>${esc(T.card.agent)}</span><span>${esc(T.card.when)}</span><span>${esc(T.card.duration)}</span><span>${esc(T.card.tokens)}</span><span>${esc(T.card.note)}</span></div>${shown.map(e => `<button class="ev-row" data-action="ins-evidence" data-id="${esc(e.session)}" data-a="${e.a}" data-b="${e.b}" title="${esc(e.title || e.session)}"><span>${esc(trunc(e.title || e.session, 48))}</span><span>${esc(laneLabel(e.lane))}</span><span class="mono">${stamp(e.a)}</span><span class="mono">${isCheck(c) ? fmt(e.b - e.a) : fmt(e.time_ms)}</span><span class="mono">${e.tokens ? fmtTok(billableOf(e.tokens)) : '—'}</span><span>${esc(e.note || '')}</span></button>`).join('')}</div>${all.length > 3 ? `<button class="text-btn" data-action="ins-more" data-rule="${esc(c.rule)}">${esc(showAll ? T.card.showFewer : T.card.showAll(all.length))}</button>` : ''}</div>` : '';
   const foot = [];
   for (const conv of c.conventions || []) foot.push(esc(conv));
-  if (c.no_data_items) foot.push(esc(T.states.noDataItems(c.no_data_items)));
+  if (c.no_data_items) foot.push(esc(noDataItemsText(c.rule, c.no_data_items)));
   foot.push(`<button class="text-btn" data-action="ins-guide">${esc(T.card.how)}</button>`);
   const tab = `<span class="mono-index card-tab" title="${esc(T.card.how)}">${esc(c.rule)} · ${isInfo(c) ? 'info' : pad2(rank)}</span>`;
   const badge = isInfo(c) ? `<span class="chip info-chip">${esc(T.card.info)}</span>` : isCheck(c) ? `<span class="chip info-chip check-chip">${esc(T.card.check)}</span>` : '';
@@ -939,9 +983,9 @@ function insightsTextSamples() {
       { label: 'wait_worker:polling', n: 30, sessions: 6, time_ms: 900000 },
     ],
     evidence: [{ session: 'S1', title: 'First session', lane: '/root', lane_id: 'L1', a: 2000, b: 3000, time_ms: 7200000, note: 'the log ends inside this turn' }],
-    stats: { groups: 9, attempts: 30, no_tool_call_ms: 120000, unknown_script_ms: 300000, unknown_tool_ms: 60000, misses_code_search: 41, context_median: 212000, count_main: 59, count_sub: 81, time_main: 10440000, time_sub: 6360000, starts_after_15m: 25, uncached_after_15m: 5000000, median: 240000, p90: 2460000, unknown_ms: 7080000, no_telemetry_ms: 120000, stage_implement: 15000000, stage_review: 6900000, more_to_start: 3 , windows: 14, windows_blind: 3, windows_after_user: 1, retries_failed_again: 4, in_change_window: 6, after_changes: 2, after_changes_ms: 600000, unknown_in_change_window_ms: 120000, edit_turns: 12, edit_turns_unverified: 7, verified_by_hook: 2, last_verdict_failed: 1, edits_after_review: 9 },
+    stats: { groups: 9, attempts: 30, no_tool_call_ms: 120000, unknown_script_ms: 300000, unknown_tool_ms: 60000, misses_code_search: 41, context_median: 212000, count_main: 59, count_sub: 81, time_main: 10440000, time_sub: 6360000, starts_after_15m: 25, uncached_after_15m: 5000000, median: 240000, p90: 2460000, unknown_ms: 7080000, no_telemetry_ms: 120000, stage_implement: 15000000, stage_review: 6900000, more_to_start: 3 , windows: 14, windows_blind: 3, windows_after_user: 1, retries_failed_again: 4, in_change_window: 6, after_changes: 2, after_changes_ms: 600000, unknown_in_change_window_ms: 120000, edit_turns: 12, edit_turns_unverified: 7, verified_by_hook: 2, last_verdict_failed: 1, edits_after_review: 9, windows: 12, windows_blind: 4, windows_blind_passed: 2, windows_fix: 3, windows_other: 2, windows_mixed: 1, tests: 40, tests_failed: 9, 'verified_kind:go test': 5, 'verified_kind:syntax-check': 1, verified_static_only: 1, hook_sessions: 6, verified_by_hook: 2, pushes: 20, pushes_unverified: 7, pushes_after_failed_test: 2, sessions_with_edits_after_last_push: 3, edits_after_last_push: 11 },
   };
-  sample.distribution.push({ label: '200 k or more', n: 2, tokens: { input: 5e6, cached: 4.5e6, output: 2e5 } });
+  sample.distribution.push({ label: '200-500 k', n: 2, tokens: { input: 5e6, cached: 4.5e6, output: 2e5 } });
   sample.distribution.push({ label: 'read-only sub-agents · m / xhigh', n: 39, tokens: { input: 5e7, cached: 4.9e7, output: 1e6 } });
   const out = [];
   const walk = v => {

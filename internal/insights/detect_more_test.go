@@ -125,8 +125,14 @@ func TestRunsUnseenAndModelDetectors(t *testing.T) {
 	if stage+r.Stats["no_tool_call_ms"]+r.Stats["unknown_ms"] != llm {
 		t.Fatalf("M1 split %d + %d + %d != llm time %d", stage, r.Stats["no_tool_call_ms"], r.Stats["unknown_ms"], llm)
 	}
-	if r := detectContextSize(&f); !r.Measurable || len(r.Findings) != 3 || r.Findings[0].Key != "200 k or more" || r.Findings[1].Key != "50-100 k" {
+	if r := detectContextSize(&f); !r.Measurable || len(r.Findings) != 3 || r.Findings[0].Key != "200-500 k" || r.Findings[1].Key != "50-100 k" {
 		t.Fatalf("T2 %+v", r.Findings)
+	}
+	// the scale continues past 200 k: 1M-context models put most turns there
+	for peak, want := range map[int64]string{120000: "100-150 k", 320000: "200-500 k", 600000: "500-750 k", 900000: "750 k or more"} {
+		if got := ContextBucket(peak); got != want {
+			t.Errorf("ContextBucket(%d) = %q, want %q", peak, got, want)
+		}
 	}
 	if r := detectTokensByModel(&f); !r.Measurable || len(r.Findings) != 1 || r.Findings[0].Key != "main thread · m / high" {
 		t.Fatalf("T3 %+v", r.Findings)

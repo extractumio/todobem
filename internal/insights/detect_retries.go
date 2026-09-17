@@ -3,15 +3,18 @@ package insights
 import (
 	"fmt"
 
+	"github.com/extractumio/todobem/internal/classify"
 	"github.com/extractumio/todobem/internal/model"
 )
 
 // D7 · Commands that fail and get retried. Signal: a retry group with at least one failed
 // attempt (exact identity). Exposure: time in the retry, fix, recovery and queue roles, plus
 // the tokens of the turns overlapping the failed-to-retry windows. Key: the command shape.
-// Stats, per failed-to-retry window: what the lane ran between the failure and the retry —
-// nothing at all (a blind retry, unless a user turn started in between), a fix, an infra step,
-// a wait — and how many retries failed again after a recorded recovery.
+// Stats, per failed-to-retry window: what ran between the failure and the retry — only reads
+// and queries (a blind retry, unless a user turn started in between), a fix on any lane, an
+// infra step, a wait, another step (a stash, a checkout, a narrowed test, a build), or several
+// of those — how many retries failed again after a recorded recovery, and how many blind test
+// retries passed (the log shows nothing that changed the code between the failure and the pass).
 func detectRetryLoops(f *Facts) Result {
 	r := Result{Measurable: true, Stats: map[string]int64{}}
 	for _, g := range f.Groups {
@@ -31,6 +34,9 @@ func detectRetryLoops(f *Facts) Result {
 			r.Stats["windows_"+path]++
 			if w.RetryFailed && path != "blind" && path != "after_user" {
 				r.Stats["retries_failed_again"]++
+			}
+			if path == "blind" && !w.RetryFailed && g.Phase == classify.Test {
+				r.Stats["windows_blind_passed"]++ // a test failed, then passed with only reads between: the environment, not the code, changed — or nothing did
 			}
 		}
 		lane := 0
@@ -60,12 +66,12 @@ func windowPath(w WindowFacts) string {
 	return w.Recovery
 }
 
-var pathWords = map[string]string{"blind": "retried with nothing recorded between", "after_user": "retried after your message", "fix": "retried after a fix", "infra": "retried after an infra step", "worker": "retried after a wait", "mixed": "retried after a fix and an infra step"}
+var pathWords = map[string]string{"blind": "retried with only reads recorded between", "after_user": "retried after your message", "fix": "retried after a fix", "infra": "retried after an infra step", "worker": "retried after a wait", "other": "retried after another step", "mixed": "retried after several kinds of step"}
 
 // pathsNote words the recovery paths of a group's windows for the evidence row.
 func pathsNote(paths map[string]int) string {
 	out := ""
-	for _, p := range []string{"blind", "after_user", "fix", "infra", "worker", "mixed"} {
+	for _, p := range []string{"blind", "after_user", "fix", "infra", "worker", "other", "mixed"} {
 		if n := paths[p]; n > 0 {
 			out += fmt.Sprintf("; %d× %s", n, pathWords[p])
 		}

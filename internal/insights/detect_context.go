@@ -30,7 +30,9 @@ func detectCompactions(f *Facts) Result {
 	return r
 }
 
-// Context buckets for T2 (thousands of tokens; a display convention).
+// Context buckets for T2 (thousands of tokens; a display convention). The scale continues past
+// 200 k because 1M-context models put most turns there: on the first corpus 1,024 of 1,733 root
+// turns sat in a single "200 k or more" bucket.
 var contextBuckets = []struct {
 	label string
 	max   int64
@@ -39,7 +41,9 @@ var contextBuckets = []struct {
 	{"50-100 k", 100000},
 	{"100-150 k", 150000},
 	{"150-200 k", 200000},
-	{"200 k or more", 1 << 62},
+	{"200-500 k", 500000},
+	{"500-750 k", 750000},
+	{"750 k or more", 1 << 62},
 }
 
 func ContextBucket(peak int64) string {

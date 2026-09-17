@@ -1148,7 +1148,7 @@ test('a check card is ranked by sessions, wears its chip, counts sessions and re
   report.top_checks = ['D17'];
   report.groups.push({ id: 'verification', time_ms: 0, tokens: { input: 0, cached: 0, output: 0 }, order_time: 2, order_tokens: 2, cards: [{
     rule: 'D17', group: 'verification', title: 'D17', class: 'check', exposure: { time_ms: 0, count: 3, tokens: null }, sessions: 3, of: 20, no_data: 1, reason: 'an unknown command after the last edit',
-    stats: { edit_turns: 12, edit_turns_unverified: 7, verified_by_hook: 2, last_verdict_failed: 1 },
+    stats: { edit_turns: 12, edit_turns_unverified: 7, tests: 30, tests_failed: 4, verified_by_hook: 2, hook_sessions: 5, last_verdict_failed: 1, 'verified_kind:go test': 9, 'verified_kind:lint': 2, verified_static_only: 1 },
     distribution: [{ label: 'Codex', n: 2, time_ms: 0, sessions: 2, of: 12 }, { label: 'Claude Code', n: 1, time_ms: 0, sessions: 1, of: 8 }],
     evidence: [{ session: 'S1', title: 'First session', lane: '/root', lane_id: 'L1', a: 2000, b: 62000, time_ms: 0, note: '4 edits; no test ran in this session' }],
   }] });
@@ -1160,7 +1160,7 @@ test('a check card is ranked by sessions, wears its chip, counts sessions and re
   assert.match(html, /<span class="chip info-chip check-chip">A check<\/span>/);
   assert.match(html, /D17 · 0[0-9]<\/span>/);
   assert.doesNotMatch(html, /D17 · info/);
-  assert.match(html, /In 3 of 20 sessions with changes, no test passed after the last edit\. 7 of 12 turns with edits had no passing test after their last edit\. In 1 session the last test failed\. 2 sessions were verified by a stop hook\. No data in 1 session \(an unknown command after the last edit\)\./);
+  assert.match(html, /In 3 of 20 sessions with changes, no test passed after the last edit\. 7 of 12 turns with edits had no passing test after their last edit\. 4 of 30 test runs failed\. In 1 session the last test failed\. First passing check after the last edit, in the verified sessions: go test 9, lint 2\. 1 session had a lint, type check or syntax check alone\. 5 sessions ran stop hooks; 2 were verified by one\. No data in 1 session \(an unknown command after the last edit\)\./);
   // distribution rows count sessions over their own denominator, the evidence row shows the interval's length
   assert.match(html, /<span class="label" title="Codex">Codex<\/span>[\s\S]*?2 of 12/);
   assert.match(html, /<span class="label" title="Claude Code">Claude Code<\/span>[\s\S]*?1 of 8/);
@@ -1195,6 +1195,32 @@ test('a top finding scrolls its card to just under the top bar and opens a colla
   assert.equal(scrolls.length, 1);
   assert.equal(scrolls[0].top, 5325);
   assert.equal(scrolls[0].behavior, 'smooth');
+  assert.equal(h.errors.length, 0);
+});
+
+test('the push card counts pushes without a passing test and the D7 card names every recovery path', async () => {
+  const h = await harness().ready();
+  const report = insightsReport();
+  report.top_checks = ['D25'];
+  report.groups.push({ id: 'verification', time_ms: 0, tokens: { input: 0, cached: 0, output: 0 }, order_time: 2, order_tokens: 2, cards: [{
+    rule: 'D25', group: 'verification', title: 'D25', class: 'check', exposure: { time_ms: 0, count: 4, tokens: null }, sessions: 3, of: 9, no_data: 1, no_data_items: 2, not_applicable: 4, reason: 'an unknown command or a telemetry gap between the last edit and the push',
+    stats: { pushes: 12, pushes_unverified: 4, pushes_after_failed_test: 1, sessions_with_edits_after_last_push: 2, edits_after_last_push: 7 },
+    distribution: [{ label: 'no test ran between the last edit and the push', n: 3, time_ms: 0, sessions: 2 }, { label: 'tests ran between, none passed', n: 1, time_ms: 0, sessions: 1 }],
+    evidence: [{ session: 'S1', title: 'First session', lane: '/root', lane_id: 'L1', a: 2000, b: 62000, time_ms: 0, note: 'no test ran between the last edit and the push' }],
+  }] });
+  report.groups.push({ id: 'failures_and_retries', time_ms: 60e3, tokens: { input: 0, cached: 0, output: 0 }, order_time: 3, order_tokens: 3, cards: [{
+    rule: 'D7', group: 'failures_and_retries', title: 'D7', exposure: { time_ms: 60e3, main_ms: 60e3, count: 2, tokens: null }, sessions: 2, of: 9, no_data: 0,
+    stats: { groups: 2, attempts: 6, windows: 4, windows_blind: 2, windows_blind_passed: 1, windows_fix: 1, windows_other: 1 },
+    distribution: [{ label: 'test go test', n: 2, time_ms: 60e3, sessions: 2 }], evidence: [],
+  }] });
+  await openInsights(h, report);
+  const html = h.node('main').innerHTML;
+  assert.match(html, /In 3 of 9 sessions with a push after a change, a push had no passing test since the last edit\. 4 of 12 pushes had no passing test between the last edit and the push\. 1 push came after a failed test\. 2 sessions ended with edits after the last push \(7 edits in all\)\. No data in 1 session \(an unknown command or a telemetry gap between the last edit and the push\)\. 4 sessions pushed nothing after a change\./);
+  assert.match(html, /data-rule="D25"[\s\S]*?3 of 9 sessions/, 'the check reaches the top findings');
+  // a check row counts sessions, not findings: three pushes in two sessions read "2 of 9"
+  assert.match(html, /<span class="label" title="no test ran between the last edit and the push">[^<]*<\/span>[\s\S]*?<span class="n">3<\/span><span class="val">2 of 9/);
+  assert.match(html, /2 pushes were not measurable: an unknown command or a telemetry gap between the last edit and the push\./, 'the unmeasurable pushes are worded by the rule, not as usage records');
+  assert.match(html, /2 of 4 retries ran again with only reads recorded between the failure and the retry\. 1 of those was a test that passed on the retry\. Between the failure and the retry: 1 after a fix, 1 after another step\./);
   assert.equal(h.errors.length, 0);
 });
 

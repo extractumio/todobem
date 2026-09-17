@@ -21,8 +21,10 @@ import (
 // shell separator (intermediate builds of the same change wrote 6 and 7). 9, 10: shapes from
 // the classifier's deciding segment (10: never a bare assignment), the root's no-telemetry
 // intervals (Blind), a gap's TurnChangedFiles instead of the session-level AfterFirstChange.
-// 11: the llm_error points dropped with the D14 card.
-const FactsVersion = 11
+// 11: the llm_error points dropped with the D14 card. 12: the delivery walk's pushes (D25), what
+// verified the session by kind, failed test runs and stop hooks run; retry windows session-scoped
+// with the retry op and the "other" recovery.
+const FactsVersion = 12
 
 // Facts is everything the detectors need about one session, in a few KB.
 type Facts struct {
@@ -170,14 +172,16 @@ type GroupFacts struct {
 }
 
 // WindowFacts is the span from a failed attempt to the next attempt on the same lane, with the
-// tokens of the turns that overlap it, pro rata by time. Recovery names what the lane ran in
-// between (none, fix, infra, worker, mixed); RetryFailed says the retry failed too; HumanBoundary
-// that a user-triggered root turn started inside the window (the user may have changed
-// something the log does not show).
+// tokens of the turns that overlap it, pro rata by time. RetryOp is the attempt that ends the
+// window. Recovery names what ran in between (none: reads and queries only; fix: a change op
+// on any lane; infra; worker; other: any other step on the lane; mixed); RetryFailed says the
+// retry failed too; HumanBoundary that a user-triggered root turn started inside the window
+// (the user may have changed something the log does not show).
 type WindowFacts struct {
 	Lane          int              `json:"lane"`
 	Start         int64            `json:"start"`
 	End           int64            `json:"end"`
+	RetryOp       string           `json:"retry_op,omitempty"`
 	Tokens        model.TokenUsage `json:"tokens"`
 	Recovery      string           `json:"recovery,omitempty"`
 	RetryFailed   bool             `json:"retry_failed,omitempty"`
@@ -680,7 +684,7 @@ func groupFacts(s *model.Session, laneIndex map[string]int, opByID map[string]*m
 				continue
 			}
 			li := laneIndex[prev.Lane]
-			w := WindowFacts{Lane: li, Start: prev.End, End: next.Start, Recovery: windowRecovery(s.Lanes[li], prev.End, next.Start), RetryFailed: next.Failure(), HumanBoundary: userTurnInside(s.Lanes[0], prev.End, next.Start)}
+			w := WindowFacts{Lane: li, Start: prev.End, End: next.Start, RetryOp: next.ID, Recovery: windowRecovery(s, s.Lanes[li], g.ID, prev.End, next.Start), RetryFailed: next.Failure(), HumanBoundary: userTurnInside(s.Lanes[0], prev.End, next.Start)}
 			for _, t := range s.Lanes[li].Turns {
 				if t.Tokens == nil || t.End <= w.Start || t.Start >= w.End || t.End <= t.Start {
 					continue

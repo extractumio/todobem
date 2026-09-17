@@ -25,3 +25,21 @@ func HookPhase(rule string) (Phase, bool) {
 	}
 	return Phase(rest), true
 }
+
+// HookKind reads the kind a stop hook's command classified as back from Operation.Rule ("" for
+// any op that is not a stop hook).
+func HookKind(rule string) string {
+	if !strings.HasPrefix(rule, hookRulePrefix) {
+		return ""
+	}
+	rest := rule[len(hookRulePrefix):]
+	if i := strings.IndexByte(rest, '/'); i > 0 {
+		return rest[i+1:]
+	}
+	return ""
+}
+
+// StaticCheckKinds are the test-phase kinds that run no test: a linter, a type check, a shell
+// syntax check. They verify a change the way the rule table says (the test phase), and the
+// Insights name them apart so "verified" can be read as "verified by a lint only".
+var StaticCheckKinds = map[string]bool{"lint": true, "typecheck": true, "syntax-check": true}

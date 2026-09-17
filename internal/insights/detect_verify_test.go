@@ -112,8 +112,18 @@ func TestRetryWindowPathsAndCompactionAndQuestionStats(t *testing.T) {
 	if len(r.Findings) != 1 || r.Stats["windows"] != 3 || r.Stats["windows_blind"] != 1 || r.Stats["windows_fix"] != 1 || r.Stats["windows_infra"] != 1 || r.Stats["retries_failed_again"] != 1 {
 		t.Fatalf("D7 stats %+v findings %+v", r.Stats, r.Findings)
 	}
-	if n := r.Findings[0].Note; !strings.Contains(n, "1× retried with nothing recorded between") || !strings.Contains(n, "1× retried after a fix") {
+	if n := r.Findings[0].Note; !strings.Contains(n, "1× retried with only reads recorded between") || !strings.Contains(n, "1× retried after a fix") {
 		t.Fatalf("note %q", n)
+	}
+	// a blind test retry that passed is counted; one that failed again is not
+	f = Extract(session(t, rootLane(test("c1", 1*minute, 1*minute+30e3, "failed"), op("r1", "R", classify.Code, "read", 1*minute+40e3, 1*minute+41e3, "completed"), test("c2", 2*minute, 2*minute+30e3, "completed"))))
+	if r = detectRetryLoops(&f); r.Stats["windows_blind"] != 1 || r.Stats["windows_blind_passed"] != 1 {
+		t.Fatalf("blind retry passed: %+v", r.Stats)
+	}
+	// a stash between the failure and the pass is another step, not a blind retry
+	f = Extract(session(t, rootLane(test("c1", 1*minute, 1*minute+30e3, "failed"), op("s1", "R", classify.Code, "git stash", 1*minute+40e3, 1*minute+41e3, "completed"), test("c2", 2*minute, 2*minute+30e3, "completed"))))
+	if r = detectRetryLoops(&f); r.Stats["windows_other"] != 1 || r.Stats["windows_blind_passed"] != 0 || !strings.Contains(r.Findings[0].Note, "1× retried after another step") {
+		t.Fatalf("other step: %+v %q", r.Stats, r.Findings[0].Note)
 	}
 	// D11: a compaction between two edits carries the stat and the note; one after them does not
 	c1 := op("k1", "R", classify.Compaction, "compaction", 2*minute, 2*minute+5000, "completed")
@@ -140,14 +150,67 @@ func TestRetryWindowPathsAndCompactionAndQuestionStats(t *testing.T) {
 	if len(r.Findings) != 2 || r.Stats["after_changes"] != 1 || r.Stats["after_changes_ms"] != 2*minute || !strings.Contains(r.Findings[0].Note, "already changed files") || strings.Contains(r.Findings[1].Note, "already changed files") {
 		t.Fatalf("D1 %+v %+v", r.Stats, r.Findings)
 	}
-	// the catalogue holds the two checks in the verification group
+	// the catalogue holds the three checks in the verification group
 	n := 0
 	for _, d := range Catalogue {
 		if d.Group == GroupVerify && d.Class == ClassCheck {
 			n++
 		}
 	}
-	if n != 2 || len(Catalogue) != 21 {
+	if n != 3 || len(Catalogue) != 22 {
 		t.Fatalf("catalogue: %d checks, %d detectors", n, len(Catalogue))
+	}
+}
+
+// TestPushWithoutTest: D25 fires per push with no passing test since the last edit, keyed by
+// whether a test ran at all; a blind window is no data; no push after a change is not applicable.
+func TestPushWithoutTest(t *testing.T) {
+	// edit → push: no test ran between
+	f := Extract(session(t, rootLane(edit("e1", 1*minute), push("p1", 2*minute))))
+	r := detectPushWithoutTest(&f)
+	if !r.Measurable || len(r.Findings) != 1 || r.Findings[0].Key != "no test ran between the last edit and the push" || r.Findings[0].A != 1*minute || r.Findings[0].B != 2*minute || r.Findings[0].Op != "p1" || r.Stats["pushes"] != 1 || r.Stats["pushes_unverified"] != 1 {
+		t.Fatalf("D25 no test: %+v %+v", r.Findings, r.Stats)
+	}
+	// edit → failed test → push → passing test: tests ran, none passed; D17 still verified
+	f = Extract(session(t, rootLane(edit("e1", 1*minute), test("c1", 2*minute, 3*minute, "failed"), push("p1", 4*minute), test("c2", 5*minute, 6*minute, "completed"))))
+	r = detectPushWithoutTest(&f)
+	if len(r.Findings) != 1 || r.Findings[0].Key != "tests ran between, none passed" || r.Stats["pushes_after_failed_test"] != 1 || !strings.Contains(r.Findings[0].Note, "the last test before the push failed") {
+		t.Fatalf("D25 after a failed test: %+v %+v", r.Findings, r.Stats)
+	}
+	if d := detectUnverifiedChanges(&f); len(d.Findings) != 0 || d.Stats["verified"] != 1 || d.Stats["tests_failed"] != 1 || d.Stats["tests"] != 2 {
+		t.Fatalf("D17 on the same session: %+v %+v", d.Findings, d.Stats)
+	}
+	// edit → passing test → push, then two more edits: nothing to report, the tail is a stat
+	f = Extract(session(t, rootLane(edit("e1", 1*minute), test("c1", 2*minute, 3*minute, "completed"), push("p1", 4*minute), edit("e2", 5*minute), edit("e3", 6*minute))))
+	r = detectPushWithoutTest(&f)
+	if !r.Measurable || len(r.Findings) != 0 || r.Stats["edits_after_last_push"] != 2 || r.Stats["sessions_with_edits_after_last_push"] != 1 {
+		t.Fatalf("D25 verified push with a tail: %+v %+v", r.Findings, r.Stats)
+	}
+	// edit → unknown → push: the only push is blind, the session is no data
+	f = Extract(session(t, rootLane(edit("e1", 1*minute), op("u1", "R", classify.Unknown, "unknown", 2*minute, 3*minute, "completed"), push("p1", 4*minute))))
+	if r = detectPushWithoutTest(&f); r.Measurable || r.NotApplicable || r.NoData != 1 || r.Reason == "" {
+		t.Fatalf("D25 blind: %+v", r)
+	}
+	// no push after a change: not applicable
+	f = Extract(session(t, rootLane(push("p0", 30e3), edit("e1", 1*minute))))
+	if r = detectPushWithoutTest(&f); !r.NotApplicable {
+		t.Fatalf("D25 not applicable: %+v", r)
+	}
+}
+
+// TestUnverifiedChangesKindsAndHooks: D17 names what verified the verified sessions, counts a
+// static check alone apart, and counts the sessions that ran stop hooks at all.
+func TestUnverifiedChangesKindsAndHooks(t *testing.T) {
+	lint := op("l1", "R", classify.Test, "syntax-check", 2*minute, 2*minute+1000, "completed")
+	f := Extract(session(t, rootLane(edit("e1", 1*minute), lint)))
+	r := detectUnverifiedChanges(&f)
+	if len(r.Findings) != 0 || r.Stats["verified"] != 1 || r.Stats["verified_kind:syntax-check"] != 1 || r.Stats["verified_static_only"] != 1 || r.Stats["hook_sessions"] != 0 {
+		t.Fatalf("D17 static only: %+v %+v", r.Findings, r.Stats)
+	}
+	vet := op("v1", "R", classify.Test, "lint", 2*minute, 2*minute+1000, "completed")
+	f = Extract(session(t, rootLane(edit("e1", 1*minute), vet, test("c1", 3*minute, 4*minute, "completed"), hook("h1", 9*minute, 9*minute+5000, classify.Code, "completed"))))
+	r = detectUnverifiedChanges(&f)
+	if r.Stats["verified_kind:lint"] != 1 || r.Stats["verified_static_only"] != 0 || r.Stats["hook_sessions"] != 1 || r.Stats["verified_by_hook"] != 0 {
+		t.Fatalf("D17 vet then test, a formatter hook: %+v", r.Stats)
 	}
 }

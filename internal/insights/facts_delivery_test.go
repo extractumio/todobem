@@ -164,8 +164,34 @@ func TestWindowRecoveryCompactionWindowAndGapAfterChange(t *testing.T) {
 	}
 	// a worker wait and a fix: mixed
 	f = Extract(session(t, rootLane(test("c1", 1*minute, 2*minute, "failed"), op("w1", "R", classify.WaitWorker, "sleep", 2*minute+10e3, 2*minute+40e3, "completed"), edit("e1", 3*minute), test("c2", 4*minute, 5*minute, "completed"))))
-	if w := f.Groups[0].Windows; len(w) != 1 || w[0].Recovery != "mixed" {
+	if w := f.Groups[0].Windows; len(w) != 1 || w[0].Recovery != "mixed" || w[0].RetryOp != "c2" {
 		t.Fatalf("mixed recovery: %+v", w)
+	}
+	// only reads and queries between: none; a checkout or a narrowed test run between: other
+	f = Extract(session(t, rootLane(test("c1", 1*minute, 2*minute, "failed"), op("r1", "R", classify.Code, "read", 2*minute+10e3, 2*minute+11e3, "completed"), op("q1", "R", classify.Code, "git status", 2*minute+20e3, 2*minute+21e3, "completed"), test("c2", 4*minute, 5*minute, "completed"))))
+	if w := f.Groups[0].Windows; len(w) != 1 || w[0].Recovery != "none" {
+		t.Fatalf("reads only: %+v", w)
+	}
+	narrow := op("n1", "R", classify.Test, "go test", 2*minute+10e3, 2*minute+20e3, "completed")
+	narrow.Identity = "/proj\ngo test -run TestX ./..."
+	f = Extract(session(t, rootLane(test("c1", 1*minute, 2*minute, "failed"), narrow, test("c2", 4*minute, 5*minute, "completed"))))
+	if w := f.Groups[0].Windows; len(w) != 1 || w[0].Recovery != "other" {
+		t.Fatalf("narrowed run between: %+v", w)
+	}
+	// a sub-agent's edit inside the root's window is the session's fix
+	root = &model.Lane{ID: "R", Path: "/root", Started: 0, Ended: 10 * minute}
+	root.Turns = []*model.Turn{{ID: "t1", Start: 0, End: 10 * minute, Status: "completed", Trigger: "user"}}
+	a, b = test("c1", 1*minute, 2*minute, "failed"), test("c2", 5*minute, 6*minute, "completed")
+	a.Turn, b.Turn = "t1", "t1"
+	root.Ops = []*model.Operation{a, b}
+	child := &model.Lane{ID: "A", Path: "/root/a", Parent: "R", Depth: 1, Started: 2 * minute, Ended: 4 * minute}
+	child.Turns = []*model.Turn{{ID: "a1", Start: 2 * minute, End: 4 * minute, Status: "completed"}}
+	ce := op("e1", "A", classify.Code, "edit", 3*minute, 3*minute+1000, "completed")
+	ce.Turn = "a1"
+	child.Ops = []*model.Operation{ce}
+	f = Extract(session(t, root, child))
+	if w := f.Groups[0].Windows; len(w) != 1 || w[0].Recovery != "fix" {
+		t.Fatalf("sub-agent fix: %+v", w)
 	}
 	// compaction between two edits is inside the change window; after the last edit it is not
 	c1 := op("k1", "R", classify.Compaction, "compaction", 2*minute, 2*minute+5000, "completed")
@@ -192,5 +218,101 @@ func TestWindowRecoveryCompactionWindowAndGapAfterChange(t *testing.T) {
 	f = Extract(session(t, rootLane(hook("h1", 9*minute, 9*minute+5000, classify.Test, "completed"))))
 	if len(f.LongOps) != 1 || f.LongOps[0].Shape != "hook go test" {
 		t.Fatalf("hook among long ops: %+v", f.LongOps)
+	}
+}
+
+func push(id string, at int64) *model.Operation {
+	return op(id, "R", classify.Release, "git push", at, at+2000, "completed")
+}
+
+// TestDeliveryWalkPushes: every `git push` after a change is read against the window since the
+// last change; a PR comment is a release op and not a push; edits after the last push are the
+// unreleased tail; a sub-agent's test in the window verifies the root's push (session scope).
+func TestDeliveryWalkPushes(t *testing.T) {
+	// edit → passing test → push: verified
+	f := Extract(session(t, rootLane(edit("e1", 1*minute), test("c1", 2*minute, 3*minute, "completed"), push("p1", 4*minute))))
+	d := f.Delivery
+	if len(d.Pushes) != 1 || !d.Pushes[0].Verified || d.Pushes[0].Tests != 1 || d.Pushes[0].LastChangeAt != 1*minute || d.Pushes[0].Op != "p1" || d.ChangesAfterLastPush != 0 {
+		t.Fatalf("verified push: %+v", d.Pushes)
+	}
+	// edit → push, then a passing test after it: the push was unverified, the session is verified
+	f = Extract(session(t, rootLane(edit("e1", 1*minute), push("p1", 2*minute), test("c1", 3*minute, 4*minute, "completed"))))
+	if d = f.Delivery; len(d.Pushes) != 1 || d.Pushes[0].Verified || d.Pushes[0].Tests != 0 || !d.Verified {
+		t.Fatalf("push before the test: %+v verified=%v", d.Pushes, d.Verified)
+	}
+	// edit → failed test → push → passing test: unverified push after a failed verdict, D17 verified
+	f = Extract(session(t, rootLane(edit("e1", 1*minute), test("c1", 2*minute, 3*minute, "failed"), push("p1", 4*minute), test("c2", 5*minute, 6*minute, "completed"))))
+	if d = f.Delivery; len(d.Pushes) != 1 || d.Pushes[0].Verified || d.Pushes[0].Tests != 1 || !d.Pushes[0].LastTestFailed || !d.Verified || d.TestsFailed != 1 {
+		t.Fatalf("push after a failed test: %+v", d.Pushes)
+	}
+	// edit → unknown command → push: the window is blind
+	f = Extract(session(t, rootLane(edit("e1", 1*minute), op("u1", "R", classify.Unknown, "unknown", 2*minute, 3*minute, "completed"), push("p1", 4*minute))))
+	if d = f.Delivery; len(d.Pushes) != 1 || d.Pushes[0].BlindMs != 1*minute {
+		t.Fatalf("blind push window: %+v", d.Pushes)
+	}
+	// push → edit: no push after a change; the edit is the unreleased tail
+	f = Extract(session(t, rootLane(edit("e0", 30e3), test("c0", 40e3, 50e3, "completed"), push("p1", 1*minute), edit("e1", 2*minute), edit("e2", 3*minute))))
+	if d = f.Delivery; len(d.Pushes) != 1 || !d.Pushes[0].Verified || d.ChangesAfterLastPush != 2 {
+		t.Fatalf("edits after the last push: %+v after=%d", d.Pushes, d.ChangesAfterLastPush)
+	}
+	// a push with no change before it is not read; a PR comment is not a push
+	f = Extract(session(t, rootLane(push("p0", 30e3), edit("e1", 1*minute), op("g1", "R", classify.Release, "pr comment", 2*minute, 2*minute+1000, "completed"))))
+	if d = f.Delivery; len(d.Pushes) != 0 || d.ChangesAfterLastPush != 0 {
+		t.Fatalf("no push after a change: %+v", d.Pushes)
+	}
+	// a sub-agent edits, the root tests and pushes: verified (session scope)
+	root := &model.Lane{ID: "R", Path: "/root", Started: 0, Ended: 10 * minute}
+	root.Turns = []*model.Turn{{ID: "t1", Start: 0, End: 10 * minute, Status: "completed", Trigger: "user"}}
+	rt, rp := test("c1", 5*minute, 6*minute, "completed"), push("p1", 7*minute)
+	rt.Turn, rp.Turn = "t1", "t1"
+	root.Ops = []*model.Operation{rt, rp}
+	child := &model.Lane{ID: "A", Path: "/root/a", Parent: "R", Depth: 1, Started: 1 * minute, Ended: 4 * minute}
+	child.Turns = []*model.Turn{{ID: "a1", Start: 1 * minute, End: 4 * minute, Status: "completed"}}
+	ce := op("e1", "A", classify.Code, "edit", 2*minute, 2*minute+1000, "completed")
+	ce.Turn = "a1"
+	child.Ops = []*model.Operation{ce}
+	f = Extract(session(t, root, child))
+	if d = f.Delivery; len(d.Pushes) != 1 || !d.Pushes[0].Verified || d.Pushes[0].Lane != 0 {
+		t.Fatalf("session scope push: %+v", d.Pushes)
+	}
+}
+
+// TestDeliveryWalkVerifiedKindsAndHooks: what verified the session is named by the kind the rule
+// table gave it, in the order it ran; failed test runs are counted apart from failed tool calls;
+// stop hooks are counted whatever they ran.
+func TestDeliveryWalkVerifiedKindsAndHooks(t *testing.T) {
+	// only a shell syntax check after the last edit (a heredoc classified by its inner command):
+	// verified, by a static check alone
+	lint := op("l1", "R", classify.Test, "script→syntax-check", 2*minute, 2*minute+1000, "completed")
+	f := Extract(session(t, rootLane(edit("e1", 1*minute), lint)))
+	if d := f.Delivery; !d.Verified || len(d.VerifiedKinds) != 1 || d.VerifiedKinds[0] != "syntax-check" {
+		t.Fatalf("static check: %+v", f.Delivery)
+	}
+	// a vet then a go test: both kinds, in order; the first verification is the vet
+	vet := op("v1", "R", classify.Test, "lint", 2*minute, 2*minute+1000, "completed")
+	f = Extract(session(t, rootLane(edit("e1", 1*minute), vet, test("c1", 3*minute, 4*minute, "completed"))))
+	if d := f.Delivery; len(d.VerifiedKinds) != 2 || d.VerifiedKinds[0] != "lint" || d.VerifiedKinds[1] != "go test" || d.VerifiedOp != "v1" {
+		t.Fatalf("kinds in order: %+v", f.Delivery)
+	}
+	// a hook running a formatter and no test: a hook op, not a verification; a test hook names its command's kind
+	f = Extract(session(t, rootLane(edit("e1", 1*minute), hook("h1", 9*minute, 9*minute+5000, classify.Code, "completed"))))
+	if d := f.Delivery; d.HookOps != 1 || d.Verified {
+		t.Fatalf("formatter hook: %+v", f.Delivery)
+	}
+	f = Extract(session(t, rootLane(edit("e1", 1*minute), hook("h1", 9*minute, 9*minute+5000, classify.Test, "completed"))))
+	if d := f.Delivery; d.HookOps != 1 || !d.Verified || len(d.VerifiedKinds) != 1 || d.VerifiedKinds[0] != "go test" {
+		t.Fatalf("test hook kind: %+v", f.Delivery)
+	}
+	// three failed pytest runs with different arguments (no retry group): counted as failed verdicts, not as failed tool calls
+	var ops []*model.Operation
+	ops = append(ops, edit("e1", 30e3))
+	for i, args := range []string{"a", "b", "c"} {
+		o := op("c"+args, "R", classify.Test, "pytest", int64(i+1)*minute, int64(i+1)*minute+10e3, "failed")
+		o.Identity = "/proj\npytest tests/" + args
+		ops = append(ops, o)
+	}
+	f = Extract(session(t, rootLane(ops...)))
+	if d := f.Delivery; d.Tests != 3 || d.TestsFailed != 3 || d.Verified || len(f.Failures) != 0 || len(f.Groups) != 0 {
+		t.Fatalf("failed verdicts: %+v failures=%d groups=%d", f.Delivery, len(f.Failures), len(f.Groups))
 	}
 }

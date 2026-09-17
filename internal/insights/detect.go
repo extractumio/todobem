@@ -101,6 +101,7 @@ var Catalogue = []Detector{
 	{ID: "T6", Group: GroupAgents, Title: "Cost to start a sub-agent", Run: detectSpawnCost},
 	{ID: "D17", Group: GroupVerify, Title: "Final changes had no later successful test", Class: ClassCheck, Run: detectUnverifiedChanges},
 	{ID: "D24", Group: GroupVerify, Title: "A review did not cover the last changes", Class: ClassCheck, Run: detectReviewNotCoveringLastChanges},
+	{ID: "D25", Group: GroupVerify, Title: "Pushed with no passing test since the last edit", Class: ClassCheck, Run: detectPushWithoutTest},
 	{ID: "D7", Group: GroupFailures, Title: "Commands that fail and get retried", Run: detectRetryLoops},
 	{ID: "D15", Group: GroupFailures, Title: "Tool calls that failed", Class: ClassInfo, Run: detectFailedEdits},
 	{ID: "D16", Group: GroupTools, Title: "What the tool calls did", Class: ClassInfo, Run: detectToolCalls},
