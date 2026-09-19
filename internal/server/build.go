@@ -14,7 +14,11 @@ const BuildHeader = "X-Todobem-Build"
 
 // webFingerprint hashes the embedded web tree (every path and its bytes, in path order) into a
 // short id: the same files give the same id across restarts, one changed byte a different one.
+// A server without a UI (`todobem unknown`, `cache`) has no build id.
 func webFingerprint(web fs.FS) string {
+	if web == nil {
+		return ""
+	}
 	var paths []string
 	fs.WalkDir(web, ".", func(path string, d fs.DirEntry, err error) error {
 		if err == nil && !d.IsDir() {

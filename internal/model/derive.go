@@ -79,6 +79,9 @@ func Derive(s *Session, now int64) {
 		}
 		extendPendingOperations(l, now)
 		markBackground(l, now)
+		for _, o := range l.Ops {
+			shareWallClock(o, now)
+		}
 	}
 	assignGroups(s)
 	laneByID := map[string]*Lane{}
@@ -157,10 +160,83 @@ func markBackground(l *Lane, now int64) {
 
 // ---- exclusive partition
 
+// span is one slice of an op's time in the partition sweep: the whole op, or one share of a
+// compound command (consecutive slices in share order).
+type span struct {
+	s, e   int64
+	phase  Phase
+	sub    string
+	shared bool
+	op     *Operation
+}
+
 type edge struct {
 	t     int64
 	start bool
-	op    *Operation
+	sp    *span
+}
+
+// shareWallClock fills the equal shares of a compound command from its wall clock: a literal
+// share (sleep N) keeps its seconds (capped at what is left), the remainder is divided equally
+// among the other categories, the last of them taking the rounding remainder so the shares sum
+// to the wall clock exactly. Nothing to do for a single-category op.
+func shareWallClock(o *Operation, now int64) {
+	if len(o.Shares) == 0 {
+		return
+	}
+	end := o.End
+	if o.Open && now > end {
+		end = now
+	}
+	wall := max(end-o.Start, 1)
+	left := wall
+	equal := 0
+	for i := range o.Shares {
+		sh := &o.Shares[i]
+		if sh.Literal {
+			sh.Ms = min(sh.Ms, left)
+			left -= sh.Ms
+		} else {
+			equal++
+		}
+	}
+	if equal == 0 {
+		o.Shares[len(o.Shares)-1].Ms += left // only literal shares: the last one absorbs the rest
+		return
+	}
+	each := left / int64(equal)
+	given := int64(0)
+	last := -1
+	for i := range o.Shares {
+		if !o.Shares[i].Literal {
+			o.Shares[i].Ms = each
+			given += each
+			last = i
+		}
+	}
+	o.Shares[last].Ms += left - given
+}
+
+// spansOf lays an op out as sweep spans inside [start, end): one span, or its shares back to
+// back in share order (`go build && go test` → build then test), clipped to the window.
+func spansOf(o *Operation, start, end int64) []*span {
+	if len(o.Shares) == 0 {
+		return []*span{{s: start, e: end, phase: o.Phase, sub: o.Subgroup, op: o}}
+	}
+	var out []*span
+	t := o.Start
+	for i, sh := range o.Shares {
+		s, e := t, t+sh.Ms
+		if i == len(o.Shares)-1 {
+			e = end // the last share ends with the op, whatever the rounding
+		}
+		t = e
+		s, e = max(s, start), min(e, end)
+		if e > s {
+			out = append(out, &span{s: s, e: e, phase: sh.Phase, sub: sh.Sub, shared: !sh.Literal, op: o})
+		}
+	}
+	return out
 }
 
 // buildSegments partitions [lane.Started, lane.Ended] into non-overlapping segments.
@@ -231,8 +307,11 @@ func buildSegments(l *Lane, isRoot bool, now int64) {
 			e = o.Start + 1
 		}
 		start, end := max(o.Start, l.Started), min(e, l.Ended)
-		if end > start {
-			edges = append(edges, edge{start, true, o}, edge{end, false, o})
+		if end <= start {
+			continue
+		}
+		for _, sp := range spansOf(o, start, end) {
+			edges = append(edges, edge{sp.s, true, sp}, edge{sp.e, false, sp})
 		}
 	}
 	sort.Slice(edges, func(i, j int) bool {
@@ -241,12 +320,12 @@ func buildSegments(l *Lane, isRoot bool, now int64) {
 		}
 		return !edges[i].start && edges[j].start // ends before starts at the same instant
 	})
-	var active []*Operation
-	best := func() *Operation {
-		var b *Operation
-		for _, o := range active {
-			if b == nil || classify.Priority[o.Phase] > classify.Priority[b.Phase] || (classify.Priority[o.Phase] == classify.Priority[b.Phase] && o.Start > b.Start) {
-				b = o
+	var active []*span
+	best := func() *span {
+		var b *span
+		for _, sp := range active {
+			if b == nil || classify.Priority[sp.phase] > classify.Priority[b.phase] || (classify.Priority[sp.phase] == classify.Priority[b.phase] && sp.op.Start > b.op.Start) {
+				b = sp
 			}
 		}
 		return b
@@ -261,18 +340,22 @@ func buildSegments(l *Lane, isRoot bool, now int64) {
 		}
 		return classify.NoTelemetry
 	}
-	emit := func(s, e int64, phase Phase, op string) {
+	emit := func(s, e int64, phase Phase, sp *span) {
 		if e <= s {
 			return
 		}
+		op, sub, shared := "", "", false
+		if sp != nil {
+			op, sub, shared = sp.op.ID, sp.sub, sp.shared
+		}
 		if n := len(l.Segments); n > 0 {
 			last := &l.Segments[n-1]
-			if last.End == s && last.Phase == phase && last.Op == op {
+			if last.End == s && last.Phase == phase && last.Op == op && last.Sub == sub && last.Shared == shared {
 				last.End = e
 				return
 			}
 		}
-		l.Segments = append(l.Segments, Segment{Start: s, End: e, Phase: phase, Op: op})
+		l.Segments = append(l.Segments, Segment{Start: s, End: e, Phase: phase, Op: op, Sub: sub, Shared: shared})
 	}
 	// fill from t0 to t1 with base phases (possibly several bases) or the winning op
 	fill := func(t0, t1 int64) {
@@ -280,7 +363,7 @@ func buildSegments(l *Lane, isRoot bool, now int64) {
 			return
 		}
 		if b := best(); b != nil {
-			emit(t0, t1, b.Phase, b.ID)
+			emit(t0, t1, b.phase, b)
 			return
 		}
 		t := t0
@@ -293,7 +376,7 @@ func buildSegments(l *Lane, isRoot bool, now int64) {
 			if end <= t {
 				end = t1
 			}
-			emit(t, end, ph, "")
+			emit(t, end, ph, nil)
 			t = end
 		}
 	}
@@ -306,10 +389,10 @@ func buildSegments(l *Lane, isRoot bool, now int64) {
 			// op starts before lane start: clamp
 		}
 		if ed.start {
-			active = append(active, ed.op)
+			active = append(active, ed.sp)
 		} else {
-			for i, o := range active {
-				if o == ed.op {
+			for i, sp := range active {
+				if sp == ed.sp {
 					active = append(active[:i], active[i+1:]...)
 					break
 				}
@@ -321,13 +404,24 @@ func buildSegments(l *Lane, isRoot bool, now int64) {
 	}
 	// per-lane phase totals: exclusive (partition) and raw (sum of op durations)
 	l.ByPhase = map[Phase]int64{}
+	l.ByPhaseShared = map[Phase]int64{}
 	for _, sg := range l.Segments {
 		l.ByPhase[sg.Phase] += sg.End - sg.Start
+		if sg.Shared {
+			l.ByPhaseShared[sg.Phase] += sg.End - sg.Start
+		}
 	}
 	l.RawByPhase = map[Phase]int64{}
 	for _, o := range l.Ops {
-		if o.End > o.Start && !o.Background {
+		if o.End <= o.Start || o.Background {
+			continue
+		}
+		if len(o.Shares) == 0 {
 			l.RawByPhase[o.Phase] += o.End - o.Start
+			continue
+		}
+		for _, sh := range o.Shares { // the raw sum follows the shares too
+			l.RawByPhase[sh.Phase] += sh.Ms
 		}
 	}
 	l.InTurnMs = 0
@@ -545,6 +639,10 @@ func buildTotals(s *Session) {
 	t.ByLifecycle = map[Lifecycle]int64{}
 	for k, v := range root.ByLifecycle {
 		t.ByLifecycle[k] = v
+	}
+	t.ByPhaseShared = map[Phase]int64{}
+	for k, v := range root.ByPhaseShared {
+		t.ByPhaseShared[k] = v
 	}
 	// Review/cleanup skill invocations across all lanes; their time is in by_lifecycle.
 	for _, l := range s.Lanes {

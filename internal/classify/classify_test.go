@@ -1,6 +1,7 @@
 package classify
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -104,7 +105,7 @@ func TestCommand(t *testing.T) {
 		{"./dev build", Build, "build-flag"},
 		{"./dev typecheck", Test, "test-flag"}, // a type check verifies; it sits with npm run typecheck, not with build
 		// tsc emits JavaScript (build); with --noEmit it only checks types (test outranks the word rule)
-		{"tsc", Build, "tsc"}, {"npx tsc -p tsconfig.json", Build, "tsc"},
+		{"tsc", Build, "tsc"}, {"npx tsc -p tsconfig.json", Build, "tsc"}, {"npx --no-install tsc -p tsconfig.json", Build, "tsc"}, {"bunx tsc -p .", Build, "tsc"},
 		{"tsc --noEmit", Test, "typecheck"}, {"npx tsc --noEmit -p tsconfig.json", Test, "typecheck"},
 		{"cd web && tsc -p . --noEmit --pretty false 2>&1 | head -50", Test, "typecheck"},
 		// First positional that is a read stays code, not work; unknown-first-word stays unknown.
@@ -416,7 +417,11 @@ func TestHeadWordsAndSegment(t *testing.T) {
 		{"bash -o pipefail -c 'skills/run-remote-tests.sh app 2>&1 | rg --line-buffered x'", "skills/run-remote-tests.sh", "app"},
 		{"FOO=1 docker run --rm img", "docker", "run"},
 		{"git -C /repo push --force-with-lease origin main", "git", "push"},
-		{"make -j8 test", "make", ""},
+		{"make -j8 test", "make", "test"}, // make's options go, the target is the subcommand
+		{"make -C src V=1 -f Makefile.dev all > build.log 2>&1", "make", "all"},
+		{"ninja -C build -j8 test", "ninja", "test"},
+		{"npx -y vite build", "vite", "build"}, {"pnpm dlx vite build", "vite", "build"}, {"bundle exec rspec spec/", "rspec", "spec/"},
+		{"uv run --python 3.12 pytest -q", "pytest", ""}, {"npx tsc@5 --noEmit", "tsc", ""}, {"pnpm --filter web exec tsc -p .", "tsc", ""},
 		{"python3 -m pytest tests/", "python3", "-m pytest"},
 		{"sudo -n timeout 30 ./deploy-thing --now", "./deploy-thing", ""},
 		{"for x in a b", "", ""},
@@ -453,5 +458,160 @@ func TestHead(t *testing.T) {
 		if got := Head(c.cmd); got != c.want {
 			t.Errorf("Head(%q) = %q, want %q", c.cmd, got, c.want)
 		}
+	}
+}
+
+// TestBuildRules covers the build phase across the ecosystems in scope (Rust, Go, Swift, Node,
+// Python, C / C++ and make): what compiles, what installs dependencies (the deps sub-row), what a
+// make / ninja target means, and what a package runner runs.
+func TestBuildRules(t *testing.T) {
+	cases := []struct {
+		cmd  string
+		want Phase
+		kind string
+		sub  string
+	}{
+		// make: options stripped, the highest-priority listed target decides, an artifact target
+		// builds, an unlisted phony target is unknown by name
+		{"make", Build, "make", "compile"}, {"make -j8", Build, "make", "compile"}, {"make -C src", Build, "make", "compile"}, {"make -ks", Build, "make", "compile"},
+		{"make -C src test", Test, "make test", ""}, {"make --directory src test", Test, "make test", ""}, {"make V=1 CC=clang test", Test, "make test", ""}, {"make CC:=clang CFLAGS+=-O2 all", Build, "make", "compile"},
+		{"make -j4 all", Build, "make", "compile"}, {"make --jobs=4 all", Build, "make", "compile"}, {"make -j 4 all", Build, "make", "compile"}, {"make -f Makefile.dev build", Build, "make", "compile"}, {"make -fMakefile.dev build", Build, "make", "compile"},
+		{"make clean all", Build, "make", "compile"}, {"make build test", Test, "make test", ""}, {"make -- all", Build, "make", "compile"}, {"make -- -weird-target", Unknown, "make -weird-target", "command"},
+		{"make clean", Infra, "cleanup", ""}, {"make distclean", Infra, "cleanup", ""}, {"make mrproper", Infra, "cleanup", ""},
+		{"make -n build", Code, "make query", "shell"}, {"make --dry-run", Code, "make query", "shell"}, {"make -q all", Code, "make query", "shell"}, {"make -kn all", Code, "make query", "shell"}, {"make --version", Code, "make query", "shell"},
+		{"make -p", Build, "make", "compile"}, // prints the database, then builds
+		{"make help", Code, "make help", "shell"}, {"make logs", Code, "make logs", "shell"},
+		{"make e2e", Test, "make test", ""}, {"make unit", Test, "make test", ""}, {"make bench", Test, "make test", ""}, {"make coverage", Test, "make test", ""}, {"make ci", Test, "make test", ""}, {"make vet", Test, "lint", ""}, {"make typecheck", Test, "typecheck", ""},
+		{"make fmt", Code, "format", "edit"}, {"make format", Code, "format", "edit"},
+		{"make deps", Build, "make deps", "deps"}, {"make vendor", Build, "make deps", "deps"}, {"make setup", Infra, "setup-script", ""}, {"make bootstrap", Infra, "setup-script", ""},
+		{"make dist", Build, "make", "compile"}, {"make generate", Build, "make", "compile"}, {"make docs", Build, "make", "compile"},
+		{"make build/app", Build, "make", "compile"}, {"make libfoo.a main.o", Build, "make", "compile"}, {"make -C src firmware.bin", Build, "make", "compile"},
+		{"make firmware", Unknown, "make firmware", "command"}, {"make docker-up", Unknown, "make docker-up", "command"}, {"make clean firmware", Unknown, "make firmware", "command"},
+		{"make up", Infra, "service", ""}, {"make down", Infra, "service", ""}, {"make watch", Infra, "service", ""}, {"make deploy", Release, "deploy", ""},
+		{"make all > /tmp/build.log 2>&1", Build, "make", "compile"}, {"make > test.log 2>&1", Build, "make", "compile"},
+		// ninja: the same option stripping and target rule, plus its sub-tools
+		{"ninja", Build, "ninja", "compile"}, {"ninja -C build", Build, "ninja", "compile"}, {"ninja -C build -j8 all", Build, "ninja", "compile"}, {"ninja -C build test", Test, "ninja test", ""}, {"ninja check", Test, "ninja test", ""},
+		{"ninja -C build install", Build, "ninja", "compile"}, {"ninja clean", Infra, "cleanup", ""}, {"ninja -t clean", Infra, "cleanup", ""}, {"ninja -t targets all", Code, "ninja query", "shell"}, {"ninja -n", Code, "ninja query", "shell"},
+		{"ninja -C build src/foo.o", Build, "ninja", "compile"}, {"ninja mytarget", Unknown, "ninja mytarget", "command"},
+		// C / C++
+		{"gcc -O2 -o app main.c", Build, "cc", "compile"}, {"g++ -std=c++17 main.cpp", Build, "cc", "compile"}, {"clang++ -c x.cpp", Build, "cc", "compile"}, {"cc -c a.c", Build, "cc", "compile"},
+		{"ld -o app a.o b.o", Build, "link", "compile"}, {"ar rcs libx.a a.o", Build, "link", "compile"}, {"./configure --prefix=/usr/local", Build, "configure", "compile"}, {"autoreconf -fi", Build, "configure", "compile"},
+		{"cmake -B build -DCMAKE_BUILD_TYPE=Release", Build, "cmake", "compile"}, {"cmake --build build -j8", Build, "cmake", "compile"}, {"cmake --build build --target test", Test, "cmake test", ""}, {"cmake --build build -t check", Test, "cmake test", ""},
+		{"cmake -E copy a b", Code, "cmake -E", "shell"}, {"cmake --version", Code, "version", "shell"}, {"gcc --version", Code, "version", "shell"}, {"docker --version", Code, "version", "shell"},
+		{"ctest --test-dir build --output-on-failure", Test, "ctest", ""}, {"meson setup build", Build, "meson", "compile"}, {"meson compile -C build", Build, "meson", "compile"}, {"meson test -C build", Test, "meson test", ""},
+		{"bazel build //...", Build, "bazel", "compile"}, {"bazel test //...", Test, "bazel test", ""}, {"bazel query //...", Code, "bazel", "shell"}, {"bazel run //:x", Unknown, "bazel run", "script"}, {"scons -j4", Build, "scons", "compile"},
+		{"zig build", Build, "zig build", "compile"}, {"zig build test", Test, "zig test", ""}, {"zig test src/main.zig", Test, "zig test", ""}, {"rustc main.rs", Build, "rustc", "compile"},
+		// Rust / Go / Swift
+		{"cargo build --release", Build, "cargo build", "compile"}, {"cargo check", Build, "cargo check", "compile"}, {"cargo run", Unknown, "cargo run", "script"},
+		{"cargo add serde", Build, "cargo deps", "deps"}, {"cargo fetch", Build, "cargo deps", "deps"}, {"cargo update", Build, "cargo deps", "deps"}, {"cargo vendor", Build, "cargo deps", "deps"}, {"cargo install cargo-nextest", Build, "cargo install", "deps"},
+		{"go build ./...", Build, "go build", "compile"}, {"go install ./cmd/x", Build, "go install", "compile"}, {"go install golang.org/x/tools/cmd/goimports@latest", Build, "go install tool", "deps"},
+		{"go mod tidy", Build, "go mod", "deps"}, {"go get github.com/x/y@v1.2.3", Build, "go get", "deps"}, {"go run ./cmd/x", Unknown, "go run", "script"},
+		{"swift build -c release", Build, "swift build", "compile"}, {"swift package resolve", Build, "swift package resolve", "deps"}, {"swift package update", Build, "swift package resolve", "deps"}, {"xcodebuild -scheme App build", Build, "xcodebuild", "compile"},
+		{"pod install --repo-update", Build, "pod install", "deps"}, {"carthage bootstrap --platform iOS", Build, "carthage", "deps"}, {"mint install realm/SwiftLint", Build, "mint install", "deps"},
+		// Node: scripts, their variants, bundlers, runners
+		{"npm run build", Build, "npm build", "compile"}, {"npm run build:prod", Build, "npm build", "compile"}, {"npm run build-storybook", Build, "npm build", "compile"}, {"npm run build_all", Build, "npm build", "compile"}, {"npm --prefix web run build:prod", Build, "npm build", "compile"},
+		{"pnpm build", Build, "pnpm build", "compile"}, {"pnpm run build", Build, "pnpm build", "compile"}, {"pnpm build:web", Build, "pnpm build", "compile"}, {"pnpm --filter web run build", Build, "pnpm build", "compile"},
+		{"yarn build", Build, "yarn build", "compile"}, {"yarn run build", Build, "yarn build", "compile"}, {"bun run build", Build, "bun build", "compile"}, {"bun build ./index.ts --outdir out", Build, "bun build", "compile"},
+		{"npm run test:e2e", Test, "npm test", ""}, {"npm run tests", Test, "npm test", ""}, {"npm run test-watch", Test, "npm test", ""}, {"pnpm run test", Test, "pnpm test", ""}, {"pnpm test:unit", Test, "pnpm test", ""}, {"yarn run test", Test, "yarn test", ""},
+		{"npm run testing", Unknown, "npm run", "script"}, // not a variant of test
+		{"bun test", Test, "bun test", ""}, {"bun test.ts", Test, "test-script", ""}, {"bun run dev", Infra, "service", ""}, {"bun x vitest run", Test, "vitest", ""},
+		{"deno test -A", Test, "deno test", ""}, {"deno lint", Test, "lint", ""}, {"deno check main.ts", Test, "typecheck", ""}, {"deno fmt", Code, "format", "edit"}, {"deno run main.ts", Unknown, "deno run", "script"}, {"deno task build", Build, "deno build", "compile"}, {"deno compile main.ts", Build, "deno compile", "compile"},
+		{"next build", Build, "next build", "compile"}, {"npx next build", Build, "next build", "compile"}, {"npx vite build", Build, "vite", "compile"}, {"npx -y vite build", Build, "vite", "compile"}, {"npx -- vite build", Build, "vite", "compile"}, {"npx vite@5 build", Build, "vite", "compile"},
+		{"pnpm dlx vite build", Build, "vite", "compile"}, {"pnpm exec vite build", Build, "vite", "compile"}, {"pnpm --filter web exec vite build", Build, "vite", "compile"}, {"yarn dlx vite build", Build, "vite", "compile"}, {"bunx vite build", Build, "vite", "compile"}, {"npm exec -- vite build", Build, "vite", "compile"},
+		{"pnpm exec vitest run", Test, "vitest", ""}, {"npx playwright test", Test, "playwright", ""}, {"npx eslint .", Test, "lint", ""}, {"npx prettier --write .", Code, "format", "edit"}, {"npx @biomejs/biome check .", Test, "lint", ""},
+		{"npx @scope/tool build", Unknown, "unknown", "command"}, // a scoped package is not a local dispatcher script
+		{"npx", Unknown, "unknown", "command"}, {"npx -c 'vite build'", Unknown, "unknown", "command"},
+		// a runner or a path never hides `tsc --noEmit`: the seg rule sees the unwrapped segment
+		{"npx -y tsc --noEmit", Test, "typecheck", ""}, {"./node_modules/.bin/tsc --noEmit", Test, "typecheck", ""}, {"pnpm exec tsc --noEmit -p .", Test, "typecheck", ""}, {"npx tsc@5 --noEmit", Test, "typecheck", ""}, {"npx -p typescript tsc --noEmit", Test, "typecheck", ""},
+		{"webpack --mode production", Build, "webpack", "compile"}, {"webpack serve", Infra, "service", ""}, {"rollup -c", Build, "rollup", "compile"}, {"parcel build src/index.html", Build, "parcel", "compile"},
+		{"turbo build", Build, "turbo", "compile"}, {"turbo run build --filter=web", Build, "turbo", "compile"}, {"nx build app", Build, "nx", "compile"},
+		{"npm install", Build, "npm install", "deps"}, {"npm ci", Build, "npm install", "deps"}, {"npm add left-pad", Build, "npm install", "deps"}, {"pnpm install --frozen-lockfile", Build, "pnpm install", "deps"}, {"pnpm i", Build, "pnpm install", "deps"}, {"pnpm add -D vitest", Build, "pnpm install", "deps"},
+		{"yarn", Build, "yarn install", "deps"}, {"yarn install --immutable", Build, "yarn install", "deps"}, {"yarn add react", Build, "yarn install", "deps"}, {"bun install", Build, "bun install", "deps"}, {"bun add zod", Build, "bun install", "deps"},
+		// Python / Ruby
+		{"pip install -r requirements.txt", Build, "pip install", "deps"}, {"uv sync", Build, "uv", "deps"}, {"uv add httpx", Build, "uv", "deps"}, {"uv pip install -e .", Build, "uv", "deps"}, {"uv run pytest -q", Test, "pytest", ""}, {"uv run --with rich --python 3.12 pytest", Test, "pytest", ""},
+		{"poetry install", Build, "poetry install", "deps"}, {"poetry run pytest", Test, "pytest", ""}, {"pipenv install --dev", Build, "pipenv install", "deps"},
+		{"bundle install", Build, "bundle install", "deps"}, {"bundle update", Build, "bundle install", "deps"}, {"bundle exec rspec", Unknown, "unknown", "command"}, // no rspec row: honest, not build-script
+		// JVM rows that were already there
+		{"mvn package", Build, "mvn", "compile"}, {"mvn test", Test, "mvn test", ""}, {"gradle assemble", Build, "gradle", "compile"}, {"./gradlew build", Build, "build-flag", "compile"},
+		{"rm -f /tmp/out.txt", Code, "rm", "shell"}, {"rm -rf node_modules", Infra, "cleanup", ""},
+		// cargo's output directory is not a release script
+		{"./target/release/app --bench", Unknown, "unknown", "command"}, {"./target/debug/app", Unknown, "unknown", "command"},
+		// system packages are infrastructure, not project dependencies
+		{"brew install jq", Infra, "brew", ""}, {"apt-get install -y jq", Infra, "apt", ""},
+	}
+	for _, c := range cases {
+		got := Command(c.cmd, "")
+		if got.Phase != c.want || got.Kind != c.kind {
+			t.Errorf("%q\n  got  %s/%s (rule %s)\n  want %s/%s", c.cmd, got.Phase, got.Kind, got.Rule, c.want, c.kind)
+			continue
+		}
+		if sub := Subgroup(got.Phase, got.Kind); sub != c.sub {
+			t.Errorf("%q → subgroup %q, want %q", c.cmd, sub, c.sub)
+		}
+	}
+}
+
+// TestCompoundParts: the working parts of a compound command, the categories they span, and
+// what is glue. The dominant phase (Result.Phase) is untouched by the parts.
+func TestCompoundParts(t *testing.T) {
+	cases := []struct {
+		cmd   string
+		parts string // "phase/kind[=ms]" per part, space-separated
+		cats  int
+	}{
+		{"go build ./... && go test ./...", "build/go build test/go test", 2},
+		{"cd web && npm run build 2>&1 | tail -3 && npm test 2>&1 | grep -E 'pass|fail' && npm run lint", "build/npm build test/npm test test/lint", 2},
+		{"gofmt -w x.go && go vet ./... && go test ./...", "test/lint test/go test", 1},
+		{"git status && git diff --stat", "", 0},
+		{"make && make test", "build/make test/make test", 2},
+		{"cargo build --release; cargo test", "build/cargo build test/cargo test", 2},
+		{"sleep 5; go test ./...", "wait_worker/sleep=5000 test/go test", 2},
+		{"sleep 2m && gh pr checks 12 --watch", "wait_worker/sleep=120000 wait_worker/ci", 1},
+		{"docker compose up -d && sleep 10 && curl -s localhost:8080/health && npm test", "infra/docker compose wait_worker/sleep=10000 test/npm test", 3},
+		{"python3 heavy_job.py && go test ./...", "unknown/python test/go test", 2},
+		{"xcodebuild -scheme App build 2>&1 | xcbeautify", "build/xcodebuild", 1}, // an unknown pipe stage consumes, it does not work
+		{"for p in a b; do go test ./$p; done", "test/go test", 1},
+		{"if go build ./...; then echo ok; fi", "build/go build", 1},
+		{"while ssh host 'test -d /lease'; do sleep 5; done\nAPP_REMOTE_HOST=host skills/run-remote-tests.sh workflow > a.log 2>&1", "wait_worker/poll-loop test/test-script", 2},
+		{"./build.sh > b.log 2>&1 && apps/x/tests/run-test-group.sh ios > t.log 2>&1", "build/build-script test/test-script", 2},
+		{"python3 - <<'PY'\nimport subprocess\nsubprocess.run(['go','build','./...'],check=True)\nsubprocess.run(['go','test','./...'],check=True)\nPY", "build/script→go build test/script→go test", 2},
+		{"python3 - <<'PY'\nprint(1)\nPY\ngo test ./...", "test/go test", 1}, // an opaque script runs nothing the table knows
+		// glue: an instant infra kind, a comment, a continuation fragment, a line of prose; a runnable unknown stays
+		{"pkill -f app; open build/App.app && sleep 4 && \"$CLI\" health", "wait_worker/sleep=4000 unknown/unknown", 2},
+		{"rm -f /tmp/out.txt && go test ./... > /tmp/out.txt", "test/go test", 1},
+		{"# run the suite\ngo test ./...\n-v ./pkg | head -3", "test/go test", 1},
+		{"say --voice Alex 'we start it, wait for the count-in, and play steadily'\nmeasures the little delay between our kit and the app. We start it\ngo build ./...", "unknown/unknown build/go build", 2}, // say runs; the prose line does not
+		{"for id in a b; do go run ./cmd/dump \"$id\" 2>&1; done; ./scripts/check.sh", "unknown/go run test/check-script", 2},
+		// a loop block is one job: its body's strongest verdict, or a wait when the body only sleeps (no literal seconds: the rounds are not in the log)
+		{"for i in 1 2 3; do sleep 10; done; go test ./...", "wait_worker/poll-loop test/go test", 2},
+		{"while true; do curl -s localhost:8080/health && break; sleep 2; done; npm test", "wait_worker/poll-loop test/npm test", 2},
+		{"for f in a b; do gcc -c $f.c; done && ld -o app a.o b.o", "build/cc build/link", 1},
+		// a pipeline is one job named by its strongest stage; infra is a category only when its exit is a verdict
+		{"go test ./... 2>&1 | tee test.log | tail -5", "test/go test", 1},
+		{"cat urls.txt | xargs -n1 curl -s | python3 parse.py", "", 0}, // the pipeline's strongest stage is a code lookup: glue
+		{"chmod +x run.sh && ./run.sh --build-only", "build/build-flag", 1},
+		{"ssh buildhost 'make -j8' && scp buildhost:out.bin . && ./flash.sh", "infra/ssh infra/scp unknown/unknown", 2},
+		{"caffeinate -i ./long-job.sh; osascript -e 'display notification \"done\"'", "unknown/unknown", 1},
+		// a subshell is its inner commands
+		{"(cd web && npm run build) 2>&1 | tail -3 && (cd api && go test ./...)", "build/npm build test/go test", 2},
+		{"(nohup node server.js > s.log 2>&1 &) && sleep 2 && curl -s localhost:3000", "unknown/node wait_worker/sleep=2000", 2},
+		{"R=/tmp/x.log; go build ./... > $R 2>&1; tail -3 $R", "build/go build", 1},
+	}
+	for _, c := range cases {
+		res := Command(c.cmd, "")
+		var got []string
+		for _, pt := range res.Parts {
+			s := string(pt.Phase) + "/" + pt.Kind
+			if pt.Ms > 0 {
+				s += "=" + strconv.FormatInt(pt.Ms, 10)
+			}
+			got = append(got, s)
+		}
+		if strings.Join(got, " ") != c.parts || PartCategories(res.Parts) != c.cats {
+			t.Errorf("%q\n  parts %q (%d categories)\n  want  %q (%d)", c.cmd, strings.Join(got, " "), PartCategories(res.Parts), c.parts, c.cats)
+		}
+	}
+	if r := Command("sleep 0.5 && go test ./...", ""); r.Parts[0].Ms != 500 || sleepMs("3h") != 3*3600*1000 || sleepMs("x") != 0 {
+		t.Errorf("sleep seconds %+v", r.Parts)
 	}
 }

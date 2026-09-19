@@ -28,6 +28,10 @@ func TestBuildHeaderFollowsTheEmbeddedWeb(t *testing.T) {
 	if a.build == other.build {
 		t.Fatal("a changed file must change the fingerprint")
 	}
+	// `todobem unknown` and `todobem cache` build a server with no UI at all
+	if noUI := New(settings.Homes{Codex: []string{t.TempDir()}}, nil); noUI.build != "" {
+		t.Fatalf("a server without a web tree has no build id, got %q", noUI.build)
+	}
 	for _, path := range []string{"/", "/app.js", "/api/sessions", "/api/auth"} {
 		w := httptest.NewRecorder()
 		a.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "http://127.0.0.1"+path, nil))

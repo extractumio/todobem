@@ -1,13 +1,20 @@
 package classify
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // unwrapHead reduces a simple command to the fields a rule is matched on: a leading env
 // assignment, shell keywords (`if`, `while`, `!`) and wrapper words (sudo, nohup, exec, env,
 // timeout, …) with their flags are stripped; `node_modules/.bin/<tool>` and `node …/cli.js`
-// become the tool; `git` / `npm` / `pnpm` / `yarn` lose their option prefix so the subcommand
-// is the second field. head is the executable as written (path kept), base its last path
-// element. ok is false when nothing runs (`for x in …`, an empty command).
+// become the tool; a package runner (`npx`, `bunx`, `npm exec`, `pnpm dlx` / `exec`, `yarn dlx`
+// / `exec`, `bun x`, `bundle exec`, `poetry run`, `uv run`, `pipenv run`) becomes the tool it
+// runs; `git` / `npm` / `pnpm` / `yarn` lose their option prefix so the subcommand is the second
+// field, `make` / `ninja` their options so the targets follow (targetFields); an npm script
+// variant (`build:prod`, `test-e2e`) is its base script. head is the executable as written
+// (path kept), base its last path element. ok is false when nothing runs (`for x in …`, an
+// empty command).
 func unwrapHead(seg string) (fields []string, head, base string, ok bool) {
 	seg = strings.TrimSpace(reSubst.ReplaceAllString(seg, ""))
 	seg = strings.TrimSpace(reEnvPrefix.ReplaceAllString(seg, ""))
@@ -51,11 +58,24 @@ unwrap:
 			}
 			return nil, "", "", false
 		}
+		// npx vite build → vite build; pnpm dlx / bundle exec / uv run … alike: the runner only
+		// resolves the tool, the tool is what ran (`pnpm --filter web exec tsc` sheds its option
+		// prefix first). A runner with nothing after its flags runs nothing.
+		if rest, ok := runnerArgs(npmFields(fields)); ok {
+			if len(rest) == 0 {
+				return nil, "", "", false
+			}
+			seg = strings.Join(rest, " ")
+			continue unwrap
+		}
 		break unwrap
 	}
 	fields = shellFields(seg)
 	if reAssignment.MatchString(fields[0]) {
 		return nil, "", "", false // a bare assignment (`R=/tmp/out.log`): nothing runs
+	}
+	if strings.HasPrefix(fields[0], "#") || strings.HasPrefix(fields[0], "-") {
+		return nil, "", "", false // a comment, or a continuation fragment (`-t page.yml | head -1)`): nothing runs
 	}
 	head = fields[0]
 	base = head
@@ -65,6 +85,7 @@ unwrap:
 	// node_modules/.bin/<tool> → <tool>; node … node_modules/<pkg>/…/cli.js <sub> → <pkg> <sub>
 	if strings.Contains(head, "node_modules/.bin/") {
 		head = base
+		fields[0] = base
 	}
 	if base == "node" || base == "npx" {
 		for i, a := range fields[1:] {
@@ -94,23 +115,116 @@ unwrap:
 	gitDone:
 		fields = append([]string{"git"}, rest...)
 	}
-	// npm/pnpm/yarn [--prefix DIR | -C DIR | -w PKG | --workspace PKG | --filter G] <sub> → <tool> <sub>
-	if base == "npm" || base == "pnpm" || base == "yarn" {
-		rest := fields[1:]
-		for len(rest) > 0 {
-			switch {
-			case (rest[0] == "--prefix" || rest[0] == "-C" || rest[0] == "-w" || rest[0] == "--workspace" || rest[0] == "--filter" || rest[0] == "-F") && len(rest) > 1:
-				rest = rest[2:]
-			case strings.HasPrefix(rest[0], "--prefix=") || strings.HasPrefix(rest[0], "--workspace=") || strings.HasPrefix(rest[0], "--filter=") || rest[0] == "--silent" || rest[0] == "-s" || rest[0] == "--no-audit" || rest[0] == "--no-fund":
-				rest = rest[1:]
-			default:
-				goto npmDone
+	fields = npmFields(fields)
+	// npm run build:prod / pnpm test-e2e → the base script (build / test): a `<name>:<variant>`,
+	// `<name>-<variant>` or `<name>_<variant>` script is that script's variant by the package.json
+	// convention, and the rule table lists the base names (`build:watch` stays a build: a watcher
+	// that compiles).
+	if base == "npm" || base == "pnpm" || base == "yarn" || base == "bun" {
+		for i := 1; i < len(fields) && i <= 2; i++ {
+			if fields[i] == "run" {
+				continue
 			}
+			if m := reScriptVariant.FindStringSubmatch(fields[i]); m != nil {
+				fields[i] = m[1]
+				if m[2] != "" {
+					fields[i] = "test"
+				}
+			}
+			break
 		}
-	npmDone:
-		fields = append([]string{base}, rest...)
+	}
+	// make [-C dir] [-f file] [-jN] [-k] [VAR=val] <target>… → make <target>…; ninja alike.
+	switch base {
+	case "make":
+		fields = targetFields("make", fields[1:], makeSpec)
+	case "ninja":
+		fields = targetFields("ninja", fields[1:], ninjaSpec)
 	}
 	return fields, head, base, true
+}
+
+// reScriptVariant is an npm script name that is a variant of build or test.
+var reScriptVariant = regexp.MustCompile(`^(build|test)(?:[:_-]\S*)?$|^(tests)$`)
+
+// npmFields strips the option prefix of npm / pnpm / yarn so the subcommand is the second
+// field: [--prefix DIR | -C DIR | -w PKG | --workspace PKG | --filter G] <sub> → <tool> <sub>.
+func npmFields(fields []string) []string {
+	base := fields[0]
+	if i := strings.LastIndex(base, "/"); i >= 0 {
+		base = base[i+1:]
+	}
+	if base != "npm" && base != "pnpm" && base != "yarn" {
+		return fields
+	}
+	rest := fields[1:]
+	for len(rest) > 0 {
+		switch {
+		case (rest[0] == "--prefix" || rest[0] == "-C" || rest[0] == "-w" || rest[0] == "--workspace" || rest[0] == "--filter" || rest[0] == "-F") && len(rest) > 1:
+			rest = rest[2:]
+		case strings.HasPrefix(rest[0], "--prefix=") || strings.HasPrefix(rest[0], "--workspace=") || strings.HasPrefix(rest[0], "--filter=") || rest[0] == "--silent" || rest[0] == "-s" || rest[0] == "--no-audit" || rest[0] == "--no-fund":
+			rest = rest[1:]
+		default:
+			return append([]string{base}, rest...)
+		}
+	}
+	return []string{base}
+}
+
+// runners are the package runners that only resolve a tool and hand it the rest of the line,
+// by their head word or word pair.
+var runners = set("npx", "bunx", "npm exec", "npm x", "pnpm dlx", "pnpm exec", "yarn dlx", "yarn exec", "bun x", "bundle exec", "poetry run", "uv run", "pipenv run")
+
+// runnerValueFlags are the runner options whose value is the next word (the union over the
+// runners: npx -p / --package / -w, pnpm --filter / -C, poetry -C / -P, uv --with / --python /
+// --project / --directory / --group / --extra / --env-file …); every other option is a switch.
+var runnerValueFlags = set("-p", "--package", "-w", "--workspace", "--filter", "-F", "-C", "--directory", "-P", "--project",
+	"--with", "--with-requirements", "--with-editable", "--python", "--group", "--only-group", "--no-group", "--extra", "--env-file", "--index", "--find-links", "--exclude-newer")
+
+// runnerArgs strips a package-runner prefix (`npx -y vite build`, `pnpm dlx vite build`,
+// `bundle exec rspec`, `uv run --python 3.12 pytest`) and reports what it runs, the tool's
+// `@version` removed (`npx tsc@5`, `pnpm dlx create-vite@latest`, `@scope/name@1`); ok is false
+// when the command is not a runner. `npx -c '…'` and `uv run -m mod` are opaque here (no tool
+// word) and are left to their own head.
+func runnerArgs(fields []string) (rest []string, ok bool) {
+	switch {
+	case len(fields) > 1 && runners[fields[0]+" "+fields[1]]:
+		rest = fields[2:]
+	case runners[fields[0]]:
+		rest = fields[1:]
+	default:
+		return nil, false
+	}
+	for len(rest) > 0 && strings.HasPrefix(rest[0], "-") {
+		if rest[0] == "--" {
+			rest = rest[1:]
+			break
+		}
+		if rest[0] == "-c" || rest[0] == "-m" {
+			return nil, false
+		}
+		if runnerValueFlags[rest[0]] && len(rest) > 1 {
+			rest = rest[2:]
+			continue
+		}
+		rest = rest[1:]
+	}
+	if len(rest) > 0 {
+		rest = append([]string{stripVersion(rest[0])}, rest[1:]...)
+	}
+	return rest, true
+}
+
+// stripVersion drops a package spec's `@version` (`tsc@5` → `tsc`, `@scope/name@1` → `@scope/name`).
+func stripVersion(pkg string) string {
+	from := 0
+	if strings.HasPrefix(pkg, "@") {
+		from = 1
+	}
+	if i := strings.Index(pkg[from:], "@"); i >= 0 {
+		return pkg[:from+i]
+	}
+	return pkg
 }
 
 // HeadWords names a simple command for a cross-session key: its normalized head and the

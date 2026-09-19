@@ -105,7 +105,30 @@ func main() {
 		if lcSum != part {
 			fmt.Printf("  !! lifecycle partition mismatch %s: %d vs %d\n", l.Path, lcSum, part)
 		}
-		fmt.Printf("  lane %-40s partition-elapsed=%d raw-ops=%s in-turn=%s\n", l.Path, part-(l.Ended-l.Started), fmtd(raw), fmtd(l.InTurnMs))
+		var shared int64
+		for k, v := range l.ByPhaseShared {
+			shared += v
+			if v > l.ByPhase[k] {
+				fmt.Printf("  !! shared estimate %s: %s %d > by_phase %d\n", l.Path, k, v, l.ByPhase[k])
+			}
+		}
+		for _, o := range l.Ops {
+			if len(o.Shares) == 0 {
+				continue
+			}
+			var sum int64
+			for _, sh := range o.Shares {
+				sum += sh.Ms
+			}
+			end := o.End
+			if o.Open && m.Now > end {
+				end = m.Now
+			}
+			if wall := max(end-o.Start, 1); sum != wall {
+				fmt.Printf("  !! shares of %s sum to %d, wall clock %d\n", o.ID, sum, wall)
+			}
+		}
+		fmt.Printf("  lane %-40s partition-elapsed=%d raw-ops=%s in-turn=%s shared-estimate=%s\n", l.Path, part-(l.Ended-l.Started), fmtd(raw), fmtd(l.InTurnMs), fmtd(shared))
 	}
 	// Token reconstruction check: the sum of the turns' counted calls must equal the lane's
 	// (every token_count sits inside a turn in the corpus; a difference is a record outside one).
@@ -307,6 +330,9 @@ func printOps(m *model.Session) {
 				detail = o.Title
 			}
 			fmt.Printf("%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", o.Phase, o.Kind, o.Rule, o.Lifecycle, o.LifecycleRule, (o.End-o.Start)/1000, o.Status, l.Path, detail)
+			for _, sh := range o.Shares { // a compound command's shares, one line each, marked
+				fmt.Printf("  share\t%s\t%s\t\t%s\t\t%d\t%s\t%s\t%s\n", sh.Phase, sh.Kind, sh.Lifecycle, sh.Ms/1000, map[bool]string{true: "literal", false: "equal"}[sh.Literal], l.Path, sh.Segment)
+			}
 		}
 	}
 }

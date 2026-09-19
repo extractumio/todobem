@@ -49,6 +49,64 @@ type Result struct {
 	Segment string `json:"segment,omitempty"`
 	// Lifecycle is the SDLC stage pinned by the winning rule ("" = PhaseLifecycle(Phase)).
 	Lifecycle Lifecycle `json:"lifecycle,omitempty"`
+	// Parts are the command's segments that did work of their own, in order: the categories a
+	// compound command chained (`go build && go test` → build, test). model.Derive shares the
+	// op's wall clock among the distinct categories (docs/ARCHITECTURE.md §5.4). Glue — cd,
+	// echo, reads, searches, edits, git, formatters, a pipe stage that only filters — is not
+	// a part. A `sleep N` part carries its literal seconds in Ms.
+	Parts []Part `json:"parts,omitempty"`
+}
+
+// Part is one working segment of a compound command.
+type Part struct {
+	Phase   Phase  `json:"phase"`
+	Kind    string `json:"kind"`
+	Segment string `json:"segment"`      // the segment text, clipped
+	Ms      int64  `json:"ms,omitempty"` // literal evidence of its duration (sleep N), else 0
+}
+
+// partPhase reports whether a segment's phase is a category of its own in a compound command:
+// the work phases, a wait (sleep, a poll loop) and an unknown command that ran something.
+func partPhase(p Phase) bool {
+	return p == Build || p == Test || p == Release || p == Infra || p == WaitWorker || p == Unknown
+}
+
+// unknownPartOK: an unknown segment no rule named is a part only when it reads as a command —
+// a head with a path, an extension, a variable or a dash (`./app`, `"$CLI" health`,
+// `some-tool run`) or a short line; a line of prose from a quoted block is not a command.
+func unknownPartOK(kind string, fields []string) bool {
+	if kind != "unknown" {
+		return true // a rule named it (python, node, npm run, make <target>, deno run …)
+	}
+	if strings.ContainsAny(fields[0], "/.$-_:") || len(fields) <= 4 {
+		return true
+	}
+	return len(fields) > 1 && strings.ContainsAny(fields[1], "/.$")
+}
+
+// partText is a part's segment for display and for the unknown-command loop: the shell
+// keywords that introduced it (`do`, `then`, `if`) and its env assignments dropped.
+func partText(seg string) string {
+	fields := shellFields(seg)
+	for len(fields) > 1 && (shellKeywords[fields[0]] || reAssignment.MatchString(fields[0])) {
+		fields = fields[1:]
+	}
+	if len(fields) == 0 {
+		return seg
+	}
+	if i := strings.Index(seg, fields[0]); i > 0 && len(fields) < len(shellFields(seg)) {
+		return seg[i:]
+	}
+	return seg
+}
+
+// PartCategories counts the distinct phases among parts.
+func PartCategories(parts []Part) int {
+	seen := map[Phase]bool{}
+	for _, p := range parts {
+		seen[p.Phase] = true
+	}
+	return len(seen)
 }
 
 // Rule is one row of the classification table. Match forms:
@@ -121,20 +179,26 @@ var Rules = []Rule{
 	{"python3 -m http.server", Infra, "http server", ""}, {"python -m http.server", Infra, "http server", ""},
 	{"python3", Unknown, "python", "python without a recognizable script"}, {"python", Unknown, "python", ""}, {"node", Unknown, "node", ""}, {"ruby", Unknown, "ruby", ""}, {"perl", Unknown, "perl", ""},
 	{"npm test", Test, "npm test", ""},
-	{"npm run test", Test, "npm test", ""}, {"seg:^npm run test\\S*", Test, "npm test", "npm run test:*"},
+	{"npm run test", Test, "npm test", "also npm run test:<variant> (unwrapHead)"},
 	{"npm run lint", Test, "lint", ""}, {"npm run typecheck", Test, "typecheck", ""}, {"npm run check", Test, "check", ""}, {"npm run verify", Test, "check", ""},
 	{"pnpm lint", Test, "lint", ""}, {"pnpm typecheck", Test, "typecheck", ""}, {"yarn lint", Test, "lint", ""}, {"yarn typecheck", Test, "typecheck", ""},
 	{"oxlint", Test, "lint", ""}, {"biome check", Test, "lint", ""}, {"biome lint", Test, "lint", ""}, {"stylelint", Test, "lint", ""}, {"mypy", Test, "typecheck", ""}, {"pyright", Test, "typecheck", ""},
 	{"shellcheck", Test, "lint", ""}, {"golangci-lint", Test, "lint", ""}, {"staticcheck", Test, "lint", ""}, {"shfmt", Code, "format", ""},
-	{"pnpm test", Test, "pnpm test", ""}, {"yarn test", Test, "yarn test", ""},
-	{"npx playwright", Test, "playwright", ""}, {"playwright", Test, "playwright", ""},
+	{"pnpm test", Test, "pnpm test", ""}, {"pnpm run test", Test, "pnpm test", ""}, {"yarn test", Test, "yarn test", ""}, {"yarn run test", Test, "yarn test", ""},
+	{"bun test", Test, "bun test", ""}, {"bun run test", Test, "bun test", ""}, {"bun run dev", Infra, "service", ""}, {"bun run start", Infra, "service", ""},
+	{"deno test", Test, "deno test", ""}, {"deno bench", Test, "deno test", ""}, {"deno lint", Test, "lint", ""}, {"deno check", Test, "typecheck", ""}, {"deno fmt", Code, "format", ""}, {"deno run", Unknown, "deno run", "runs the product"},
+	{"playwright", Test, "playwright", "also npx / pnpm dlx / bunx playwright (unwrapHead)"},
 	{"playwright-cli", Test, "browser automation", ""},
 	{"agent-browser", Test, "browser automation", ""},
-	{"npx jest", Test, "jest", ""}, {"jest", Test, "jest", ""},
-	{"npx vitest", Test, "vitest", ""}, {"vitest", Test, "vitest", ""},
+	{"jest", Test, "jest", ""},
+	{"vitest", Test, "vitest", ""},
 	{"cargo test", Test, "cargo test", ""},
 	{"go test", Test, "go test", ""},
 	{"mvn test", Test, "mvn test", ""}, {"gradle test", Test, "gradle test", ""},
+	{"ctest", Test, "ctest", "CMake's test runner"}, {"meson test", Test, "meson test", ""},
+	{"seg:^cmake\\s+--build\\b.*\\s(--target|-t)\\s+(test|check)\\b", Test, "cmake test", "cmake --build … --target test / check"},
+	{"bazel test", Test, "bazel test", ""}, {"bazelisk test", Test, "bazel test", ""}, {"buck2 test", Test, "buck2 test", ""},
+	{"zig test", Test, "zig test", ""}, {"zig build test", Test, "zig test", ""},
 	{"xcrun simctl", Test, "simulator", ""},
 	{"xcrun devicectl device process launch", Test, "device run", "launches the app under test on a physical device (with --console it stays attached)"},
 	{"xcrun xctrace", Test, "xctrace", ""},
@@ -149,19 +213,47 @@ var Rules = []Rule{
 	{"swiftc", Build, "swiftc", "compiler invoked directly (also -typecheck)"}, {"xcrun swiftc", Build, "swiftc", ""}, {"swift run", Unknown, "swift run", "runs the built product"},
 	{"xcodebuild", Build, "xcodebuild", "any xcodebuild not matched as test"},
 	{"cargo build", Build, "cargo build", ""}, {"cargo check", Build, "cargo check", ""}, {"cargo clippy", Test, "lint", ""}, {"wasm-pack", Build, "wasm-pack", ""}, {"rustup", Infra, "rustup", "toolchain management"},
-	{"go build", Build, "go build", ""}, {"go vet", Test, "lint", ""}, {"go generate", Build, "go generate", ""},
-	{"npm run build", Build, "npm build", ""}, {"pnpm build", Build, "pnpm build", ""}, {"yarn build", Build, "yarn build", ""},
-	{"npm ci", Build, "npm install", ""}, {"npm install", Build, "npm install", ""}, {"npm i", Build, "npm install", ""}, {"npm pack", Build, "npm pack", ""},
-	{"pip install", Build, "pip install", ""}, {"pip3 install", Build, "pip install", ""}, {"uv sync", Build, "uv", ""},
-	{"go mod", Build, "go mod", ""},
-	{"make", Build, "make", "make with no target / build targets"}, {"make build", Build, "make", ""}, {"make all", Build, "make", ""}, {"make compile", Build, "make", ""},
-	{"make test", Test, "make test", ""}, {"make check", Test, "make test", ""}, {"make lint", Test, "lint", ""},
-	{"make run", Infra, "service", ""}, {"make serve", Infra, "service", ""}, {"make dev", Infra, "service", ""}, {"make start", Infra, "service", ""}, {"make up", Infra, "service", ""},
-	{"make clean", Infra, "cleanup", ""}, {"make deploy", Release, "deploy", ""}, {"make release", Release, "deploy", ""}, {"make install", Build, "make", ""},
-	{"cmake", Build, "cmake", ""}, {"ninja", Build, "ninja", ""},
-	{"tsc", Build, "tsc", "emits JavaScript"}, {"npx tsc", Build, "tsc", ""}, {"seg:^(npx\\s+)?tsc\\b.*\\s--noEmit\\b", Test, "typecheck", "tsc --noEmit: a type check, nothing is emitted (test outranks the build word rule)"}, {"vite build", Build, "vite", ""}, {"esbuild", Build, "esbuild", ""},
+	{"rustc", Build, "rustc", "compiler invoked directly"},
+	{"go run", Unknown, "go run", "runs the product (a -serve flag or a script name may say more)"}, {"cargo run", Unknown, "cargo run", ""}, {"bazel run", Unknown, "bazel run", ""}, {"bazelisk run", Unknown, "bazel run", ""}, {"dotnet run", Unknown, "dotnet run", ""},
+	{"go build", Build, "go build", ""}, {"go vet", Test, "lint", ""}, {"go generate", Build, "go generate", ""}, {"go install", Build, "go install", "builds and installs the project's own packages (a module@version is a tool install, below)"},
+	{"npm run build", Build, "npm build", "also npm run build:<variant> (unwrapHead)"}, {"pnpm build", Build, "pnpm build", ""}, {"pnpm run build", Build, "pnpm build", ""}, {"yarn build", Build, "yarn build", ""}, {"yarn run build", Build, "yarn build", ""},
+	{"bun build", Build, "bun build", "bun's bundler"}, {"bun run build", Build, "bun build", ""}, {"deno compile", Build, "deno compile", ""}, {"deno task build", Build, "deno build", ""},
+	{"next build", Build, "next build", ""}, {"webpack", Build, "webpack", "a bare webpack bundles (webpack serve is a service)"}, {"rollup", Build, "rollup", ""}, {"parcel build", Build, "parcel", ""},
+	{"turbo build", Build, "turbo", ""}, {"turbo run build", Build, "turbo", ""}, {"nx build", Build, "nx", ""},
+	{"npm pack", Build, "npm pack", ""},
+	{"make", Build, "make", "make with no target, an unlisted target or a listed build target (matchMake); a dry run is `make -n` below"}, {"make build", Build, "make", ""}, {"make all", Build, "make", ""}, {"make compile", Build, "make", ""}, {"make install", Build, "make", ""},
+	{"make dist", Build, "make", ""}, {"make package", Build, "make", ""}, {"make image", Build, "make", "a container image"}, {"make generate", Build, "make", ""}, {"make gen", Build, "make", ""}, {"make proto", Build, "make", ""}, {"make docs", Build, "make", "documentation build"},
+	{"make -n", Code, "make query", "a dry run, a question, --version / --help: nothing is built"}, {"--version", Code, "version", "any tool with --version as its only argument"}, {"make help", Code, "make help", ""}, {"make logs", Code, "make logs", ""},
+	{"make test", Test, "make test", ""}, {"make check", Test, "make test", ""}, {"make unit", Test, "make test", ""}, {"make integration", Test, "make test", ""}, {"make e2e", Test, "make test", ""}, {"make ci", Test, "make test", "the CI target: lint, test and build in one"},
+	{"make bench", Test, "make test", ""}, {"make benchmark", Test, "make test", ""}, {"make coverage", Test, "make test", ""}, {"make cover", Test, "make test", ""}, {"make verify", Test, "make test", ""}, {"make validate", Test, "make test", ""},
+	{"make lint", Test, "lint", ""}, {"make vet", Test, "lint", ""}, {"make typecheck", Test, "typecheck", ""}, {"make fmt", Code, "format", ""}, {"make format", Code, "format", ""},
+	{"make run", Infra, "service", ""}, {"make serve", Infra, "service", ""}, {"make dev", Infra, "service", ""}, {"make start", Infra, "service", ""}, {"make up", Infra, "service", ""}, {"make watch", Infra, "service", ""}, {"make restart", Infra, "service", ""}, {"make down", Infra, "service", ""}, {"make stop", Infra, "service", ""},
+	{"make clean", Infra, "cleanup", ""}, {"make distclean", Infra, "cleanup", ""}, {"make mrproper", Infra, "cleanup", ""}, {"make clobber", Infra, "cleanup", ""}, {"make deploy", Release, "deploy", ""}, {"make release", Release, "deploy", ""},
+	{"cmake", Build, "cmake", "configure or --build"}, {"cmake -E", Code, "cmake -E", "cmake's command-line tool mode (copy, remove, echo)"}, {"meson", Build, "meson", "setup / compile"}, {"scons", Build, "scons", ""},
+	{"ninja", Build, "ninja", "no target, the default goal, or a listed build target (matchTargets)"}, {"ninja all", Build, "ninja", ""}, {"ninja install", Build, "ninja", ""}, {"ninja test", Test, "ninja test", ""}, {"ninja check", Test, "ninja test", ""},
+	{"ninja clean", Infra, "cleanup", ""}, {"ninja -t clean", Infra, "cleanup", ""}, {"ninja -t", Code, "ninja query", "a sub-tool: targets, query, deps, graph, browse"}, {"ninja -n", Code, "ninja query", "a dry run, --version / --help"},
+	{"bazel build", Build, "bazel", ""}, {"bazelisk build", Build, "bazel", ""}, {"bazel query", Code, "bazel", ""}, {"bazelisk query", Code, "bazel", ""}, {"buck2 build", Build, "buck2", ""},
+	{"gcc", Build, "cc", "C / C++ compiler invoked directly"}, {"g++", Build, "cc", ""}, {"cc", Build, "cc", ""}, {"c++", Build, "cc", ""}, {"clang", Build, "cc", ""}, {"clang++", Build, "cc", ""}, {"nvcc", Build, "cc", ""}, {"emcc", Build, "cc", ""},
+	{"ld", Build, "link", "linker / archiver invoked directly"}, {"ar", Build, "link", ""},
+	{"configure", Build, "configure", "./configure and the autotools that write it"}, {"autoreconf", Build, "configure", ""}, {"autoconf", Build, "configure", ""}, {"automake", Build, "configure", ""}, {"libtoolize", Build, "configure", ""},
+	{"zig build", Build, "zig build", ""},
+	{"tsc", Build, "tsc", "emits JavaScript"}, {"seg:^(npx\\s+)?tsc\\b.*\\s--noEmit\\b", Test, "typecheck", "tsc --noEmit: a type check, nothing is emitted (test outranks the build word rule)"}, {"vite build", Build, "vite", ""}, {"esbuild", Build, "esbuild", ""},
 	{"docker build", Build, "docker build", ""}, {"docker compose build", Build, "docker build", ""}, {"docker buildx", Build, "docker build", ""},
 	{"gradle", Build, "gradle", ""}, {"mvn", Build, "mvn", ""},
+
+	// ---- build: dependency installation (the deps sub-row; every kind here is in DepsKinds)
+	{"npm ci", Build, "npm install", ""}, {"npm install", Build, "npm install", ""}, {"npm i", Build, "npm install", ""}, {"npm add", Build, "npm install", ""},
+	{"pnpm install", Build, "pnpm install", ""}, {"pnpm i", Build, "pnpm install", ""}, {"pnpm add", Build, "pnpm install", ""},
+	{"yarn", Build, "yarn install", "a bare yarn installs"}, {"yarn install", Build, "yarn install", ""}, {"yarn add", Build, "yarn install", ""},
+	{"bun install", Build, "bun install", ""}, {"bun add", Build, "bun install", ""},
+	{"pip install", Build, "pip install", ""}, {"pip3 install", Build, "pip install", ""}, {"uv sync", Build, "uv", ""}, {"uv add", Build, "uv", ""}, {"uv pip install", Build, "uv", ""}, {"uv lock", Build, "uv", ""},
+	{"poetry install", Build, "poetry install", ""}, {"poetry add", Build, "poetry install", ""}, {"poetry lock", Build, "poetry install", ""}, {"pipenv install", Build, "pipenv install", ""},
+	{"go mod", Build, "go mod", ""}, {"go get", Build, "go get", ""}, {"seg:^go install\\b.*\\S@\\S", Build, "go install tool", "go install pkg@version: a tool from a module, not the project"},
+	{"cargo add", Build, "cargo deps", ""}, {"cargo fetch", Build, "cargo deps", ""}, {"cargo update", Build, "cargo deps", ""}, {"cargo vendor", Build, "cargo deps", ""}, {"cargo install", Build, "cargo install", "a crate's binary, compiled locally"},
+	{"bundle", Build, "bundle install", "Ruby's bundler: install / update / outdated (its name would otherwise read as a build script)"},
+	{"pod install", Build, "pod install", ""}, {"pod update", Build, "pod install", ""}, {"carthage bootstrap", Build, "carthage", ""}, {"carthage update", Build, "carthage", ""}, {"mint install", Build, "mint install", ""},
+	{"swift package resolve", Build, "swift package resolve", ""}, {"swift package update", Build, "swift package resolve", ""},
+	{"make deps", Build, "make deps", ""}, {"make vendor", Build, "make deps", ""}, {"make setup", Infra, "setup-script", "like ./setup.sh: environment setup"}, {"make bootstrap", Infra, "setup-script", ""},
 
 	// ---- infrastructure: long-running local services
 	{"npm start", Infra, "service", "dev server / app process"}, {"npm run dev", Infra, "service", ""}, {"npm run serve", Infra, "service", ""}, {"npm run start", Infra, "service", ""}, {"npm run preview", Infra, "service", ""},
@@ -185,7 +277,7 @@ var Rules = []Rule{
 	{"log", Infra, "diagnostics", "macOS unified log"}, {"sample", Infra, "diagnostics", ""}, {"spindump", Infra, "diagnostics", ""}, {"dtrace", Infra, "diagnostics", ""},
 	{"ffmpeg", Infra, "media", ""}, {"qlmanage", Infra, "media", ""}, {"pdftotext", Infra, "media", ""}, {"pdfinfo", Infra, "media", ""}, {"cairosvg", Infra, "media", ""}, {"ffprobe", Infra, "media", ""}, {"sips", Infra, "media", ""}, {"magick", Infra, "media", ""}, {"convert", Infra, "media", ""},
 	{"head:(^|[-_])(install|setup|bootstrap|provision)([-_.]|$)", Infra, "setup-script", "executable whose name says it installs/sets up something"},
-	{"seg:^rm\\s+-[rR]", Infra, "cleanup", "recursive delete"},
+	{"seg:^rm\\s+-[rR]", Infra, "cleanup", "recursive delete"}, {"rm", Code, "rm", "a file delete: a lookup-grade step, not a change of the sources (a recursive rm is cleanup)"},
 	{"head:^(cleanup|clean|teardown|reset)[\\w.-]*\\.(sh|py)$", Infra, "cleanup-script", ""},
 
 	// ---- develop (edits, local VCS, formatting)
@@ -197,9 +289,9 @@ var Rules = []Rule{
 	{"git worktree", Code, "git worktree", ""}, {"git fetch", Code, "git fetch", ""}, {"git pull", Code, "git pull", ""},
 	{"git cherry-pick", Code, "git cherry-pick", ""}, {"git apply", Code, "git apply", ""}, {"git tag", Code, "git tag", ""},
 	{"git clone", Code, "git clone", ""}, {"git init", Code, "git init", ""}, {"git submodule", Code, "git submodule", ""},
-	{"gofmt", Code, "format", ""}, {"prettier", Code, "format", ""}, {"npx prettier", Code, "format", ""},
+	{"gofmt", Code, "format", ""}, {"prettier", Code, "format", ""},
 	{"oxfmt", Code, "format", ""}, {"black", Code, "format", ""}, {"ruff format", Code, "format", ""}, {"ruff", Test, "lint", "static verification"}, {"eslint", Test, "lint", ""},
-	{"npx eslint", Test, "lint", ""}, {"swiftformat", Code, "format", ""}, {"swiftlint", Test, "lint", ""}, {"cargo fmt", Code, "format", ""},
+	{"swiftformat", Code, "format", ""}, {"swiftlint", Test, "lint", ""}, {"cargo fmt", Code, "format", ""},
 	{"mkdir", Code, "mkdir", ""}, {"cp", Code, "cp", ""}, {"mv", Code, "mv", ""}, {"touch", Code, "touch", ""}, {"ln", Code, "ln", ""},
 	{"seg:^sed\\s+-i\\b", Code, "sed -i", "in-place edit"},
 	{"seg:^cat\\s*>{1,2}\\s*\\S", Code, "write-file", "cat > file <<EOF"},
@@ -222,7 +314,7 @@ var Rules = []Rule{
 	{"sqlite3", Code, "sqlite", ""}, {"psql", Code, "sql", ""}, {"mysql", Code, "sql", ""},
 	{"curl", Code, "http", ""}, {"wget", Code, "http", ""}, {"http", Code, "http", ""}, {"dig", Code, "dns", ""}, {"nslookup", Code, "dns", ""}, {"ping", Code, "net", ""}, {"nc", Code, "net", ""},
 	{"node --version", Code, "version", ""}, {"python3 --version", Code, "version", ""}, {"go version", Code, "version", ""}, {"swift --version", Code, "version", ""},
-	{"go env", Code, "go env", ""}, {"go list", Code, "go list", ""}, {"go doc", Code, "go doc", ""}, {"cargo metadata", Code, "cargo", ""}, {"npm ls", Code, "npm", ""}, {"npm view", Code, "npm", ""}, {"npm run", Unknown, "npm run", "arbitrary script"}, {"seg:^npm run build\\S*", Build, "npm build", "npm run build:*"},
+	{"go env", Code, "go env", ""}, {"go list", Code, "go list", ""}, {"go doc", Code, "go doc", ""}, {"cargo metadata", Code, "cargo", ""}, {"npm ls", Code, "npm", ""}, {"npm view", Code, "npm", ""}, {"npm run", Unknown, "npm run", "arbitrary script (build / test variants are their base script, unwrapHead)"},
 	{"xcrun devicectl device info", Code, "devicectl", ""}, {"xcrun devicectl list", Code, "devicectl", ""}, {"xcrun simctl list", Code, "simulator", ""},
 	{"xcode-select", Code, "xcode", ""}, {"xcodebuild -list", Code, "xcode", ""}, {"xcodebuild -showsdks", Code, "xcode", ""}, {"xcodebuild -version", Code, "xcode", ""},
 	{"docker ps", Code, "docker", ""}, {"docker info", Code, "docker", ""}, {"docker version", Code, "docker", ""}, {"docker events", Code, "docker", ""}, {"docker images", Code, "docker", ""}, {"docker image ls", Code, "docker", ""}, {"docker image list", Code, "docker", ""}, {"docker image inspect", Code, "docker", ""}, {"docker container ls", Code, "docker", ""}, {"docker container list", Code, "docker", ""}, {"docker container inspect", Code, "docker", ""}, {"docker volume inspect", Code, "docker", ""}, {"docker network inspect", Code, "docker", ""}, {"docker compose ls", Code, "docker", ""}, {"docker logs", Code, "docker logs", ""}, {"docker inspect", Code, "docker", ""}, {"docker compose ps", Code, "docker", ""}, {"docker compose logs", Code, "docker logs", ""}, {"docker network ls", Code, "docker", ""}, {"docker volume ls", Code, "docker", ""}, {"docker system df", Code, "docker", ""},
@@ -442,6 +534,13 @@ func command(cmd string, codexKind string, depth int) Result {
 		}
 	}
 	loop := false
+	// addPart records a working segment of the compound command (Result.Parts).
+	addPart := func(ph Phase, kind, text string, ms int64) {
+		if !partPhase(ph) {
+			return
+		}
+		res.Parts = append(res.Parts, Part{Phase: ph, Kind: kind, Segment: shortTitle(text), Ms: ms})
+	}
 	for _, rr := range regexRules {
 		if rr.re.MatchString(masked) {
 			if rr.r.Kind == "poll-loop" {
@@ -450,16 +549,123 @@ func command(cmd string, codexKind string, depth int) Result {
 			consider(rr.r, "re:"+rr.r.Match[3:], "")
 		}
 	}
-	for _, seg := range segments(masked) {
+	segs, seps := segmentsWithSeparators(masked)
+	// Every segment gets its own verdict (the op's is the best over all of them); the parts are
+	// then read per pipeline and per loop block: `a | b | c` is one job named by its strongest
+	// stage, `for … done` / `while … done` is one job named by its body (a body of sleeps is a
+	// wait), and the heredoc bodies below add the literal commands they run.
+	type verdict struct {
+		rule       Rule
+		fields     []string
+		runs       bool
+		text       string
+		sleepMs    int64
+		loopHeader bool
+		loopEnd    bool
+	}
+	verdicts := make([]verdict, len(segs))
+	for i, seg := range segs {
 		seg = strings.TrimSpace(reEnvPrefix.ReplaceAllString(strings.TrimSpace(seg), ""))
+		v := verdict{rule: Rule{Phase: Unknown, Kind: "unknown"}, text: seg}
+		// a seg rule matches the segment as written or as unwrapped (`npx -y tsc --noEmit` and
+		// `./node_modules/.bin/tsc --noEmit` are `tsc --noEmit`), so a runner or a path never
+		// hides a verdict the word rule alone would get wrong
+		norm := ""
+		v.fields, _, _, v.runs = unwrapHead(seg)
+		if v.runs {
+			norm = strings.Join(v.fields, " ")
+		}
+		segBest := -1
+		segConsider := func(r Rule) {
+			if p := Priority[r.Phase]; p > segBest {
+				segBest, v.rule = p, r
+			}
+		}
 		for _, rr := range segRules {
-			if rr.re.MatchString(seg) {
+			if rr.re.MatchString(seg) || norm != "" && rr.re.MatchString(norm) {
 				consider(rr.r, rr.r.Match, seg)
+				segConsider(rr.r)
 			}
 		}
 		if r, label, ok := matchHead(seg); ok {
 			consider(r, label, seg)
+			segConsider(r)
 		}
+		if v.rule.Kind == "sleep" && len(v.fields) > 1 {
+			v.sleepMs = sleepMs(v.fields[1])
+		}
+		first := strings.SplitN(seg, " ", 2)[0]
+		v.loopHeader = first == "for" || first == "while" || first == "until"
+		v.loopEnd = seg == "done" || strings.HasPrefix(seg, "done ") || strings.HasPrefix(seg, "done;")
+		verdicts[i] = v
+	}
+	// partOf names the category of one verdict, or "" for glue
+	partOf := func(v verdict, piped bool) (Rule, bool) {
+		r := v.rule
+		switch {
+		case !v.runs, v.text == "<<heredoc>>", strings.Contains(v.text, "<<") && r.Phase == Unknown:
+			return r, false // nothing ran, or a heredoc consumer judged by its body below
+		case piped && r.Phase == Unknown:
+			return r, false // an unknown pipe stage (`| xcbeautify`) consumes the output
+		case r.Phase == Infra && !infraAttemptKinds[r.Kind]:
+			return r, false // a chmod, a kill, an open, a cleanup: glue around the work
+		case r.Phase == Unknown && !unknownPartOK(r.Kind, v.fields):
+			return r, false
+		}
+		return r, partPhase(r.Phase)
+	}
+	for i := 0; i < len(segs); i++ {
+		if verdicts[i].loopHeader {
+			// the block up to its `done` is one job: the strongest non-sleep body verdict, else a
+			// wait (a poll loop; how many rounds it ran is not in the log, so no literal seconds)
+			depth, end := 0, len(segs)
+			for j := i; j < len(segs); j++ {
+				if verdicts[j].loopHeader {
+					depth++
+				}
+				if verdicts[j].loopEnd {
+					depth--
+					if depth == 0 {
+						end = j
+						break
+					}
+				}
+			}
+			best, bestP, found := Rule{}, -1, false
+			for j := i + 1; j < end; j++ {
+				v := verdicts[j]
+				if v.rule.Kind == "sleep" || v.loopHeader || v.loopEnd {
+					continue
+				}
+				if r, ok := partOf(v, seps[j] == '|'); ok && Priority[r.Phase] > bestP {
+					best, bestP, found = r, Priority[r.Phase], true
+				}
+			}
+			if found {
+				addPart(best.Phase, best.Kind, partText(segs[i]), 0)
+			} else {
+				addPart(WaitWorker, "poll-loop", partText(segs[i]), 0)
+			}
+			i = end
+			continue
+		}
+		// a pipeline: the segments joined by `|` from here, one job named by its strongest stage
+		j := i
+		for j+1 < len(segs) && seps[j+1] == '|' {
+			j++
+		}
+		best, bestP, found := Rule{}, -1, false
+		text, ms := partText(verdicts[i].text), int64(0)
+		for k := i; k <= j; k++ {
+			if r, ok := partOf(verdicts[k], k > i); ok && Priority[r.Phase] > bestP {
+				best, bestP, found = r, Priority[r.Phase], true
+				text, ms = partText(verdicts[k].text), verdicts[k].sleepMs
+			}
+		}
+		if found {
+			addPart(best.Phase, best.Kind, text, ms)
+		}
+		i = j
 	}
 	// Opaque interpreter scripts (heredoc bodies). Only explicit, literal signals are used:
 	//  - literal commands passed to subprocess/os.system/execSync are classified with this
@@ -479,6 +685,9 @@ func command(cmd string, codexKind string, depth int) Result {
 			if r.Phase != Unknown {
 				consider(Rule{Phase: r.Phase, Kind: "script→" + r.Kind}, "shell heredoc", "")
 				loop = loop || r.Queued
+				for _, pt := range r.Parts {
+					addPart(pt.Phase, "script→"+pt.Kind, pt.Segment, pt.Ms)
+				}
 			}
 			continue
 		}
@@ -488,6 +697,7 @@ func command(cmd string, codexKind string, depth int) Result {
 			if r.Phase != Unknown {
 				consider(Rule{Phase: r.Phase, Kind: "script→" + r.Kind}, "heredoc runs: "+shortTitle(ic), ic)
 				loop = loop || r.Queued
+				addPart(r.Phase, "script→"+r.Kind, ic, 0)
 			}
 		}
 		if reScriptTest.MatchString(b) {
@@ -521,6 +731,9 @@ func command(cmd string, codexKind string, depth int) Result {
 						if r.Phase != Unknown {
 							consider(Rule{Phase: r.Phase, Kind: "script→" + r.Kind}, "runs a script written in this command", seg)
 							loop = loop || r.Queued || r.Phase == WaitWorker
+							for _, pt := range r.Parts {
+								addPart(pt.Phase, "script→"+pt.Kind, pt.Segment, pt.Ms)
+							}
 						}
 					}
 				}
@@ -623,18 +836,79 @@ func Identity(cmd string) string {
 	return joinShellTokens(tokens)
 }
 
+// subshell reports a segment that is a parenthesised group `( … )` with its inside and what
+// follows the closing paren (a redirection, or nothing); ok is false for anything else.
+func subshell(s string) (inner, rest string, ok bool) {
+	if !strings.HasPrefix(s, "(") {
+		return "", "", false
+	}
+	depth, inS, inD := 0, false, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '\\' && i+1 < len(s):
+			i++
+		case inS:
+			inS = c != '\''
+		case inD:
+			inD = c != '"'
+		case c == '\'':
+			inS = true
+		case c == '"':
+			inD = true
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if depth == 0 {
+				inner, rest = strings.TrimSpace(s[1:i]), strings.TrimSpace(s[i+1:])
+				return inner, rest, inner != ""
+			}
+		}
+	}
+	return "", "", false
+}
+
 // segments splits a (heredoc-masked) command into top-level simple commands.
 func segments(cmd string) []string {
+	out, _ := segmentsWithSeparators(cmd)
+	return out
+}
+
+// segmentsWithSeparators is segments plus, per segment, the operator that introduced it:
+// '|' for a pipe stage, '&' for `&&`, ';' for `;` / a newline, 'o' for `||`, 0 for the first.
+func segmentsWithSeparators(cmd string) ([]string, []byte) {
 	var out []string
+	var seps []byte
 	var cur strings.Builder
 	depth := 0
 	inS, inD := false, false
+	sep := byte(0)
 	flush := func() {
 		s := strings.TrimSpace(cur.String())
 		cur.Reset()
-		if s != "" {
-			out = append(out, s)
+		if s == "" {
+			return
 		}
+		// a subshell `(cd x && node y) 2>&1` is its inner commands; what follows the closing
+		// paren (a redirection) rides on the last of them
+		if inner, rest, ok := subshell(s); ok {
+			segs, innerSeps := segmentsWithSeparators(inner)
+			for i, sg := range segs {
+				if i == len(segs)-1 && rest != "" {
+					sg += " " + rest
+				}
+				out = append(out, sg)
+				if i == 0 {
+					seps = append(seps, sep)
+				} else {
+					seps = append(seps, innerSeps[i])
+				}
+			}
+			return
+		}
+		out = append(out, s)
+		seps = append(seps, sep)
 	}
 	for i := 0; i < len(cmd); i++ {
 		c := cmd[i]
@@ -664,22 +938,26 @@ func segments(cmd string) []string {
 			}
 		case depth == 0 && (c == '\n' || c == ';'):
 			flush()
+			sep = ';'
 			continue
 		case depth == 0 && c == '&' && i+1 < len(cmd) && cmd[i+1] == '&':
 			flush()
+			sep = '&'
 			i++
 			continue
 		case depth == 0 && c == '|':
+			flush()
+			sep = '|'
 			if i+1 < len(cmd) && cmd[i+1] == '|' {
+				sep = 'o'
 				i++
 			}
-			flush()
 			continue
 		}
 		cur.WriteByte(c)
 	}
 	flush()
-	return out
+	return out, seps
 }
 
 var shellKeywords = map[string]bool{"if": true, "then": true, "else": true, "elif": true, "fi": true, "for": true, "while": true, "until": true, "do": true, "done": true, "case": true, "esac": true, "in": true, "function": true, "select": true, "time": true, "!": true, "{": true, "}": true}
@@ -717,6 +995,13 @@ func matchHead(seg string) (Rule, string, bool) {
 			}
 			break
 		}
+	}
+	if base == "make" || base == "ninja" {
+		return matchTargets(base, fields)
+	}
+	// `<tool> --version` alone prints and exits: a lookup, whatever the tool builds
+	if len(fields) == 2 && (fields[1] == "--version" || fields[1] == "-version") {
+		return wordRules["--version"], "--version", true
 	}
 	// exact word rules first: four-word (xcrun devicectl device install) … down to one-word
 	for n := 5; n >= 2; n-- {
@@ -758,7 +1043,9 @@ func matchHead(seg string) (Rule, string, bool) {
 			}
 			return Rule{}, "", false
 		}
-		if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		// `bun test.ts` / `python3 scripts/check.py` are judged by the script name; a bare word
+		// (`bun test`, `deno lint`) is a subcommand and has its own rows, never a script guess
+		if len(args) > 0 && !strings.HasPrefix(args[0], "-") && strings.ContainsAny(args[0], "./") {
 			if r, label, ok := matchScript(args[0]); ok {
 				return r, label, true
 			}
@@ -817,6 +1104,9 @@ func matchHead(seg string) (Rule, string, bool) {
 // file) rather than a system binary. Positional-subcommand inference is limited to these so an
 // unknown system tool with an argument that happens to read like a verb is never reclassified.
 func isLocalScript(head string) bool {
+	if strings.HasPrefix(head, "@") {
+		return false // a scoped package name (@scope/tool) unwrapped from a runner
+	}
 	return strings.Contains(head, "/") || strings.HasSuffix(head, ".sh") || strings.HasSuffix(head, ".bash")
 }
 
@@ -845,6 +1135,10 @@ func matchScript(path string) (Rule, string, bool) {
 	base := path
 	if i := strings.LastIndex(path, "/"); i >= 0 {
 		base = path[i+1:]
+	}
+	// cargo's output directories: ./target/release/app is the built binary, not a release script
+	if strings.Contains(path, "target/release/") || strings.Contains(path, "target/debug/") {
+		return Rule{}, "", false
 	}
 	for _, rr := range headRules {
 		if rr.re.MatchString(base) {
@@ -903,6 +1197,24 @@ func shellFields(s string) []string {
 		out = append(out, cur.String())
 	}
 	return out
+}
+
+// sleepMs reads a sleep argument (30, 0.5, 5s, 2m, 1h) as milliseconds; 0 when it is not a number.
+func sleepMs(arg string) int64 {
+	unit := 1000.0
+	switch {
+	case strings.HasSuffix(arg, "s"):
+		arg = strings.TrimSuffix(arg, "s")
+	case strings.HasSuffix(arg, "m"):
+		arg, unit = strings.TrimSuffix(arg, "m"), 60000
+	case strings.HasSuffix(arg, "h"):
+		arg, unit = strings.TrimSuffix(arg, "h"), 3600000
+	}
+	v, err := strconv.ParseFloat(arg, 64)
+	if err != nil || v < 0 {
+		return 0
+	}
+	return int64(v * unit)
 }
 
 func isNumberish(s string) bool {

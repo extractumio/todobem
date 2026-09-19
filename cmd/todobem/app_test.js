@@ -711,7 +711,7 @@ function lifecycleSession() {
   ];
   lane.segments = [
     { s: 1000, e: 2000, p: 'llm', lc: 'implement' },
-    { s: 2000, e: 3000, p: 'code', lc: 'implement', op: 'op-A' },
+    { s: 2000, e: 3000, p: 'code', lc: 'implement', op: 'op-A', sub: 'read' },
     { s: 3000, e: 10000, p: 'llm', lc: 'test' },
     { s: 10000, e: 20000, p: 'test', lc: 'test', op: 'op-T' },
     { s: 20000, e: 50000, p: 'llm', lc: 'llm' },
@@ -798,6 +798,57 @@ test('Development lists sub-rows by what its calls did, and a sub-row filters th
   assert.match(h.node('inspector').innerHTML, /Development › Reading files · read/);
 });
 
+test('a compound command is listed under every phase it shares, the breakdown names the estimate, the inspector lists the split', async () => {
+  const h = await harness().ready();
+  const model = lifecycleSession();
+  const lane = model.lanes[0];
+  // op-T (10 s, test) becomes `go build ./... && go test ./...`: 5 s build (compile) + 5 s test
+  const op = lane.ops.find(o => o.id === 'op-T');
+  Object.assign(op, { title: 'go build ./... && go test ./...', shares: [
+    { phase: 'build', kind: 'go build', segment: 'go build ./...', ms: 5000, lc: 'implement', sub: 'compile' },
+    { phase: 'test', kind: 'go test', segment: 'go test ./...', ms: 5000, lc: 'test' },
+  ] });
+  const i = lane.segments.findIndex(sg => sg.op === 'op-T');
+  lane.segments.splice(i, 1, { s: 10000, e: 15000, p: 'build', lc: 'implement', op: 'op-T', sub: 'compile', shared: true }, { s: 15000, e: 20000, p: 'test', lc: 'test', op: 'op-T', shared: true });
+  lane.by_phase = { llm: 248000, code: 1000, test: 15000, build: 5000, infra: 1000, wait_user: 20000 };
+  lane.by_lifecycle = { implement: 7000, test: 12000, llm: 30000, wait_user: 20000, review: 231000 };
+  await h.open('session', model);
+  const body = h.node('breakdownBody').innerHTML;
+  const build = (body.match(/<button class="breakdown-item"[^]*?data-phase="build"[^]*?<\/button>/) || [''])[0];
+  assert.match(build, /<small class="row-sub">≈ 5s shared from compound commands<\/small>/, 'the Build row names its estimated part in the label, not only in the tooltip');
+  assert.match(build, /<span class="time num">≈ 5s/, 'the number itself reads as an estimate');
+  assert.match(h.node('chartSvg').innerHTML, /<rect class="est" [^>]*fill="url\(#estHatch\)"/, 'the estimated span is hatched in the lane fill');
+  assert.match(body, /data-sub-phase="build" data-sub="compile"/, 'the share lands in the compile sub-row');
+  h.action('filter', { phase: 'build' });
+  assert.match(h.node('operationList').innerHTML, /go build \.\/\.\.\. &amp;&amp; go test/, 'a Build filter lists the compound command');
+  h.action('inspect', { id: 'op-T' });
+  assert.match(h.node('inspector').innerHTML, /wall clock shared: Build 5s \(1\/2\) · Testing 5s \(1\/2\) — an equal split, not measured/);
+});
+
+test('Build splits into compiling and installing dependencies, and the empty sub-row is hidden', async () => {
+  const h = await harness().ready();
+  const model = lifecycleSession();
+  const lane = model.lanes[0];
+  const op = lane.ops.find(o => o.id === 'op-P');
+  Object.assign(op, { title: 'npm ci', phase: 'build', kind: 'npm install', sub: 'deps', lc: 'review' });
+  Object.assign(lane.segments.find(sg => sg.op === 'op-P'), { p: 'build', sub: 'deps' });
+  lane.by_phase = { llm: 248000, code: 1000, test: 20000, build: 1000, wait_user: 20000 };
+  await h.open('session', model);
+  const body = h.node('breakdownBody').innerHTML;
+  const build = body.indexOf('data-phase="build"');
+  const deps = body.indexOf('data-action="filter-sub" data-sub-phase="build" data-sub="deps"');
+  assert.ok(build >= 0 && deps > build, 'the Installing dependencies sub-row follows the Build row');
+  const row = (body.match(/<button class="breakdown-item sub"[^]*?data-sub="deps"[^]*?<\/button>/) || [''])[0];
+  assert.match(row, /<span class="label">Installing dependencies<\/span>/);
+  assert.match(row, /<span class="count num">1<\/span>/);
+  assert.doesNotMatch(body, /data-sub="compile"/, 'no compile call: the sub-row is hidden');
+  h.action('filter-sub', { subPhase: 'build', sub: 'deps' });
+  assert.match(h.node('operationCount').textContent, /^1 operation /);
+  assert.match(h.node('operationList').innerHTML, /npm ci/);
+  h.action('inspect', { id: 'op-P' });
+  assert.match(h.node('inspector').innerHTML, /Build › Installing dependencies · npm install/);
+});
+
 test('a lifecycle row filters the operations list by stage and is exclusive with the activity filter', async () => {
   const h = await harness().ready();
   await h.open('session', lifecycleSession());
@@ -881,10 +932,13 @@ test('the SDLC ring shows every stage: a work stage with time is filled and show
 });
 
 
-// Colour = concept, shape = partition: the legend names the fill (activity) and the rail
-// (lifecycle stage) as two groups, a stage is drawn as a rail everywhere, and no stage without an
-// activity counterpart may borrow a fill's hue — purple is Build and nothing else.
-test('the legend separates activity fills from lifecycle rails, and stage hues never collide with a different activity', async () => {
+// Hue = stage, tint = activity: the legend names the fill (activity) as a grid of squares and the
+// stages as the pipeline itself — eight steps in lifecycle order, each on its own hue. An
+// activity that serves a stage by default (Development → Implementation, Testing → Verification,
+// Release & deploy → Deployment, Infrastructure → Maintenance) is a lighter tint of that stage's
+// hue, never its hex; every other activity keeps a hue no stage has. The breakdown keeps the
+// shapes: a rail for a stage row, a square for an activity row.
+test('the legend separates activity fills from the stage pipeline; every stage has its own hue and its home activity is a lighter tint of it', async () => {
   const h = await harness().ready();
   await h.open('session', lifecycleSession());
   const main = h.node('main').innerHTML;
@@ -893,24 +947,54 @@ test('the legend separates activity fills from lifecycle rails, and stage hues n
   // in order of kind — what the agent did, then waiting, overhead and gaps
   assert.match(legend, /<div class="legend-caption"><b>Activity<\/b>the fill of a lane<\/div><div class="legend-group"><span class="row"><i class="color-square"/);
   assert.match(legend, /Infrastructure<\/span><span class="row"><i class="color-square" style="background:#48aa8c"><\/i>Waiting for workers/);
-  assert.match(legend, /<div class="legend-caption"><b>Lifecycle stage<\/b>the band above each lane, the strip under the overview<\/div><div class="legend-group" id="legendLifecycle"><span class="row"><i class="color-rail"/);
-  assert.equal((legend.match(/class="legend-group"/g) || []).length, 2, 'one activity group, one stage group');
-  const rails = [...legend.matchAll(/<i class="color-rail" style="background:(#[0-9a-f]{6})"><\/i>([^<]+)</g)].map(m => [m[2], m[1]]);
-  assert.deepEqual(rails.map(r => r[0]), ['Planning', 'Requirements', 'Design', 'Implementation', 'Code review', 'Verification', 'Deployment / release', 'Maintenance / operations']);
-  assert.ok(!legend.includes('color-rail" style="background:#a889fc'), 'no stage is Build purple');
-  // the four stages with no activity home take hues no fill uses; the four with one share it
+  assert.match(legend, /<div class="legend-caption"><b>Lifecycle stage<\/b>the band above each lane, the strip under the overview<\/div><div class="legend-pipeline" id="legendLifecycle"><span class="lc-step"/);
+  assert.equal((legend.match(/class="legend-group"/g) || []).length, 1, 'one activity group; the stages are a pipeline, not a second group');
+  const steps = [...legend.matchAll(/<span class="lc-step" style="background:(#[0-9a-f]{6})" data-lc="([a-z_]+)">([^<]+)<\/span>/g)].map(m => ({ color: m[1], key: m[2], name: m[3] }));
+  assert.deepEqual(steps.map(x => x.name), ['Planning', 'Requirements', 'Design', 'Implementation', 'Code review', 'Verification', 'Deployment / release', 'Maintenance / operations']);
+  const stages = Object.fromEntries(steps.map(x => [x.name, x.color]));
+  assert.equal(new Set(Object.values(stages)).size, 8, 'every stage has its own colour');
   const fills = Object.fromEntries([...legend.matchAll(/<i class="color-square(?: hatch)?" style="background:(#[0-9a-f]{6})"><\/i>([^<]+)</g)].map(m => [m[2], m[1]]));
-  const home = { Implementation: 'Development', 'Verification': 'Testing', 'Deployment / release': 'Release & deploy', 'Maintenance / operations': 'Infrastructure' };
-  for (const [stage, color] of rails) {
-    const owner = Object.keys(fills).find(k => fills[k] === color);
-    assert.equal(owner, home[stage], `${stage} rail ${color} must be the hue of ${home[stage] || 'no fill'}, found ${owner}`);
+  // the pairing: the activity is the same hue as its stage, lighter, and not the same hex
+  const rgb = c => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16) / 255);
+  const lum = c => { const [r, g, b] = rgb(c).map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4); return .2126 * r + .7152 * g + .0722 * b; };
+  const hue = c => { const [r, g, b] = rgb(c), max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min; const x = max === r ? (g - b) / d : max === g ? 2 + (b - r) / d : 4 + (r - g) / d; return (x * 60 + 360) % 360; };
+  const home = { Development: 'Implementation', Testing: 'Verification', 'Release & deploy': 'Deployment / release', Infrastructure: 'Maintenance / operations' };
+  for (const [activity, stage] of Object.entries(home)) {
+    const a = fills[activity], st = stages[stage];
+    assert.ok(a && st, `${activity} and ${stage} are in the legend`);
+    assert.notEqual(a, st, `${activity} is not the hex of ${stage}`);
+    assert.ok(Math.abs(hue(a) - hue(st)) <= 8, `${activity} ${a} keeps the hue of ${stage} ${st}`);
+    assert.ok(lum(a) > lum(st) * 1.15, `${activity} ${a} is the lighter tint of ${stage} ${st}`);
   }
-  // the breakdown uses the same shapes: a rail for a stage row, a square for an activity row
+  // every other activity keeps a hue of its own: never a stage's colour
+  for (const [activity, color] of Object.entries(fills)) if (!home[activity]) assert.ok(!Object.values(stages).includes(color), `${activity} ${color} is not a stage colour`);
+  assert.ok(!legend.includes('lc-step" style="background:#a889fc'), 'no stage is Build purple');
+  // the breakdown uses the shapes: a rail for a stage row, a square for an activity row
   h.run('renderLower()');
   const body = h.node('breakdownBody').innerHTML;
   assert.match(body, /data-lc="review"[^]*?<span class="name"><i class="color-rail" style="background:#cf5e9e">/);
-  assert.match(body, /data-phase="test"[^]*?<span class="name"><i class="color-square" style="background:#d9bc3d">/);
+  assert.match(body, /data-phase="test"[^]*?<span class="name"><i class="color-square" style="background:#f0d76c">/);
   assert.match(body, /data-lc="wait_user"[^]*?<span class="name"><i class="color-square"/, 'a pass-through row is its activity: a square');
+});
+
+// A retry role is neither an activity nor a stage, so its row carries no colour: every role
+// square and bar is the one neutral grey, which no activity and no stage uses, and a retry-group
+// member in the inspector keeps the square of its activity.
+test('retry-role rows are neutral grey, never an activity or stage colour', async () => {
+  const h = await harness().ready();
+  const model = session();
+  model.lanes[0].ops.push(
+    { id: 'try1', lane: 'lane', turn: 'turn', title: 'go test ./...', phase: 'test', kind: 'go test|first', status: 'failed', exit: 1, start: 8000, end: 9000, group: 'G01', attempt: 1 },
+    { id: 'try2', lane: 'lane', turn: 'turn', title: 'go test ./...', phase: 'test', kind: 'go test|retry_after_failure', status: 'completed', start: 9500, end: 10500, group: 'G01', attempt: 2 },
+  );
+  await h.open('session', model);
+  h.run('renderLower()');
+  const body = h.node('breakdownBody').innerHTML;
+  const roleRows = [...body.matchAll(/data-action="filter-role" data-role="([a-z_]+)"[^>]*><span class="name"><i class="color-square" style="background:(#[0-9a-f]{6})"><\/i>[^]*?<span class="bar-fill" style="width:[^;]*;background:(#[0-9a-f]{6})"/g)].map(m => ({ role: m[1], square: m[2], bar: m[3] }));
+  assert.ok(roleRows.length >= 2, `role rows listed (${roleRows.length})`);
+  for (const r of roleRows) { assert.equal(r.square, '#6b7f90', `${r.role} square is the role grey`); assert.equal(r.bar, '#6b7f90', `${r.role} bar is the role grey`); }
+  const used = h.run('JSON.stringify(Object.values(PHASES).map(p => p.color).concat(Object.values(LIFECYCLES).map(l => l.color)))');
+  assert.ok(!JSON.parse(used).includes('#6b7f90'), 'the role grey is no activity or stage colour');
 });
 
 // The brush handles are sliders: a focused one answers the keyboard — an arrow steps its edge
@@ -1024,12 +1108,54 @@ test('the session list marks a session whose agent is waiting for an answer, wit
   await flush();
   const rows = h.node('fleetRows').innerHTML;
   const row = id => (rows.match(new RegExp(`<tr><td><button class="session-link" data-action="session" data-id="${id}"[^]*?</tr>`)) || [''])[0];
-  // the chip sits in the Updated cell, after the timestamp, where the "active" chip goes
-  assert.match(row('ask'), /<td class="mono">\d\d [A-Z][a-z]{2} \d\d:\d\d <span class="chip ask" title="[^"]*"><i class="qmark" aria-hidden="true">\?<\/i>waiting 2h 13m<\/span><\/td>/);
+  // the chip sits in the Updated cell, on the status row under the timestamp, where the
+  // "active" chip goes — never inline after the stamp, whose trailing space browsers place
+  // differently row by row
+  assert.match(row('ask'), /<td class="mono">\d\d [A-Z][a-z]{2} \d\d:\d\d<div class="status"><span class="chip ask" title="[^"]*"><i class="qmark" aria-hidden="true">\?<\/i>waiting 2h 13m<\/span><\/div><\/td>/);
+  assert.doesNotMatch(row('done'), /class="status"/, 'no chips, no status row');
   assert.doesNotMatch(row('ask'), /<button[^>]*>[^]*?qmark[^]*?<\/button>/, 'not inside the title link');
   assert.doesNotMatch(row('done'), /chip ask/, 'a session with no recorded question carries no chip');
   // the mobile tile carries it too
   assert.equal((rows.match(/class="qmark"/g) || []).length, 2);
+});
+
+test('an active session wears its chip on the same status row, next to the waiting chip', async () => {
+  const h = await harness().ready();
+  h.run("go('sessions')");
+  const now = Date.now();
+  h.take('/api/sessions').resolve([
+    { id: 'both', title: 'Running and asking', cwd: '/synthetic', started: now - 3600e3, updated: now - 60e3, bytes: 10, agents: 0, question: now - 5 * 60e3 },
+    { id: 'live', title: 'Running', cwd: '/synthetic', started: now - 3600e3, updated: now - 60e3, bytes: 10, agents: 0 },
+  ]);
+  await flush();
+  const rows = h.node('fleetRows').innerHTML;
+  const row = id => (rows.match(new RegExp(`<tr><td><button class="session-link" data-action="session" data-id="${id}"[^]*?</tr>`)) || [''])[0];
+  assert.match(row('both'), /\d\d:\d\d<div class="status"><span class="chip live" style="[^"]*"><i class="dot"><\/i>active<\/span><span class="chip ask" [^]*?waiting 5m<\/span><\/div><\/td>/);
+  assert.match(row('live'), /\d\d:\d\d<div class="status"><span class="chip live" style="[^"]*"><i class="dot"><\/i>active<\/span><\/div><\/td>/);
+});
+
+test('a question older than a day is no longer presented as waiting: no chip, no rank, in the list and in the top bar', async () => {
+  const h = await harness().ready();
+  h.run("go('sessions')");
+  const now = Date.now();
+  const day = 24 * 3600e3;
+  h.take('/api/sessions').resolve([
+    { id: 'fresh', title: 'Fresh', cwd: '/synthetic', started: now - 3 * day, updated: now - 2 * day, bytes: 10, agents: 0 },
+    { id: 'stale', title: 'Asked long ago', cwd: '/synthetic', started: now - 12 * day, updated: now - 11 * day, bytes: 10, agents: 0, question: now - (11 * day + 8 * 3600e3) },
+    { id: 'recent', title: 'Asked yesterday', cwd: '/synthetic', started: now - 2 * day, updated: now - day + 3600e3, bytes: 10, agents: 0, question: now - day + 3600e3 },
+  ]);
+  await flush();
+  const rows = h.node('fleetRows').innerHTML;
+  const row = id => (rows.match(new RegExp(`<tr><td><button class="session-link" data-action="session" data-id="${id}"[^]*?</tr>`)) || [''])[0];
+  assert.doesNotMatch(row('stale'), /chip ask/, 'a question nobody answered for 11 days is not waiting');
+  assert.match(row('recent'), /chip ask[^]*?waiting 23h<\/span>/, 'up to a day it is');
+  assert.equal((rows.match(/class="qmark"/g) || []).length, 2, 'the table row and the mobile tile of the recent one only');
+  // the rank follows the chip: the stale one sorts by its update time, under the others
+  const order = [...rows.matchAll(/<tr><td><button class="session-link" data-action="session" data-id="([^"]+)"/g)].map(m => m[1]);
+  assert.deepEqual(order, ['recent', 'fresh', 'stale']);
+  // the session page's top bar reads the same summary
+  assert.equal(h.run(`askChip(state.sessions.find(s => s.id === 'stale'), ${now})`), '');
+  assert.match(h.run(`askChip(state.sessions.find(s => s.id === 'recent'), ${now})`), /^<span class="chip ask"/);
 });
 
 test('an age reads in seconds, minutes, hours, and in days from two days on', async () => {
@@ -1066,7 +1192,7 @@ test('the session page wears the waiting chip in its top bar while the question 
   h.take('/api/sessions').resolve([summary]); await flush();
   h.take('/api/sessions/ask').resolve(session('ask')); await flush();
   assert.equal(h.errors.length, 0);
-  assert.match(h.node('liveLabel').innerHTML, /Session closed · [^<]*<\/span> <span class="chip ask" title="[^"]*"><i class="qmark" aria-hidden="true">\?<\/i>waiting 2h 13m<\/span>$/);
+  assert.match(h.node('liveLabel').innerHTML, /Session closed · [^<]*<\/span><span class="chip ask" title="[^"]*"><i class="qmark" aria-hidden="true">\?<\/i>waiting 2h 13m<\/span>$/);
   // the file grew (the answer): the session reloads, then the summaries, and the chip is gone
   const polling = h.poll();
   h.take('/api/sessions/ask/version').resolve({ version: 'v2' }); await flush();

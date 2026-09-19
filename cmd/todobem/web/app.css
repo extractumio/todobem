@@ -20,10 +20,9 @@
   --canvas:#17222d;--sidebar:#131c25;--surface:#1f2d3a;--surface-hi:#223442;--raised:#2a3b4a;--hover:#324858;
   --text:#f3f6f8;--muted:#c3ced6;--subtle:#9eafbb;--line:#344754;--line-soft:#283946;
   --accent:#a5c5df;--accent-ink:#14232d;--accent-soft:#2b4658;--focus:#86d0b9;
-  --llm:#348989;--develop:#4690ce;--build:#a889fc;--test:#d9bc3d;
-  --release:#4aa65f;--infra:#c4956e;--wait_worker:#48aa8c;--wait_user:#d3d8dc;--idle:#30414f;
+  --llm:#348989;--develop:#68a9e2;--build:#a889fc;--test:#f0d76c;
+  --release:#6dbd7c;--infra:#dbaf8c;--wait_worker:#48aa8c;--wait_user:#d3d8dc;--idle:#30414f;
   --compaction:#c08a45;--no_telemetry:#7d8fa1;--unknown:#98a4ad;
-  --fix:#b22998;--retry:#d77729;--rerun:#e2cf6a;--first:#d9bc3d;
   /* session sources (filter.js SOURCES): a mark next to a session, never a fill on the timeline */
   --src-codex:#6f52cc;--src-claude:#b0693c;
   /* corners, as on an instrument panel: panels barely rounded, keys tighter, marks tighter still;
@@ -251,8 +250,8 @@ main{padding:22px 28px 40px;display:flex;flex-direction:column;gap:24px;max-widt
 .lifecycle-ring{margin:0;background:var(--surface);box-shadow:var(--edge);border-radius:var(--radius);padding:8px 10px 4px;display:flex;flex-direction:column;align-items:center;justify-content:center}
 .lifecycle-ring svg{width:100%;height:auto;display:block}
 .lifecycle-ring figcaption{font-size:11px;color:var(--subtle);text-align:center;margin-top:2px}
-.lifecycle-ring .lc-pct{font-size:9px;font-weight:700;font-variant-numeric:tabular-nums;fill:#fff}
-.lifecycle-ring .lc-pct.off{fill:var(--subtle)}
+.lifecycle-ring .lc-pct{font-size:9px;font-weight:700;font-variant-numeric:tabular-nums;fill:#fff;paint-order:stroke;stroke:var(--surface);stroke-width:2.2px;stroke-linejoin:round}
+.lifecycle-ring .lc-pct.off{fill:var(--subtle);stroke:none}
 .lifecycle-ring .lc-name{font-size:8.5px;font-weight:600;fill:var(--subtle)}
 .lifecycle-ring .lc-hub{font-size:12px;font-weight:700;fill:var(--muted);letter-spacing:.5px}
 .lifecycle-ring .lc-hub-sub{font-size:8px;fill:var(--subtle);letter-spacing:.5px;text-transform:uppercase}
@@ -290,7 +289,8 @@ main{padding:22px 28px 40px;display:flex;flex-direction:column;gap:24px;max-widt
 .overview-lc{position:relative;height:20px;margin-top:3px;border-radius:var(--radius-tag);overflow:hidden;background:#141f28}
 .overview-lc .lc-band-seg{position:absolute;top:0;bottom:0;display:flex;align-items:center;justify-content:center;overflow:hidden;box-shadow:inset -1px 0 0 rgba(9,15,20,.5)}
 .overview-lc .lc-band-seg span{font-size:10.5px;font-weight:700;line-height:1;white-space:nowrap;letter-spacing:.2px}
-.overview-lc .lc-band-seg.work span{color:#fff;text-shadow:0 1px 1px rgba(9,15,20,.55)}
+/* a stage's ink is dark on every stage hue (≥ 4.2:1 on all eight; white is under 2:1 on the pale ones) */
+.overview-lc .lc-band-seg.work span{color:#1b2630}
 .overview-lc .lc-band-seg.user span{color:#3a464f;font-weight:600}
 .overview-axis{display:flex;justify-content:space-between;font-size:12px;color:var(--subtle);padding:8px 0 4px}
 .timeline-toolbar{display:flex;justify-content:space-between;gap:10px;align-items:center;background:#243543;box-shadow:inset 0 1px 0 rgba(0,0,0,.3),inset 0 -1px 0 rgba(0,0,0,.3);padding:12px 22px;flex-wrap:wrap;margin-top:16px}
@@ -342,6 +342,12 @@ kbd{background:#243543;box-shadow:var(--edge);clip-path:var(--chamfer);padding:1
 .legend-caption{font-size:12px;line-height:1.35;color:var(--subtle);padding-top:2px}
 .legend-caption b{display:block;font-size:13px;font-weight:600;color:var(--muted)}
 .legend-group{display:grid;grid-template-columns:repeat(auto-fill,minmax(198px,1fr));gap:5px 12px}
+/* the stage legend is the pipeline: eight steps in lifecycle order on their own hues, joined
+   like the strip under the overview and in the same dark ink */
+.legend-pipeline{display:flex;flex-wrap:wrap;gap:4px 0;align-items:stretch;padding-top:1px}
+.legend-pipeline .lc-step{font-size:12px;font-weight:600;line-height:1;padding:5px 9px;color:#1b2630;white-space:nowrap;box-shadow:inset -1px 0 0 rgba(9,15,20,.35)}
+.legend-pipeline .lc-step:first-child{border-radius:var(--radius-tag) 0 0 var(--radius-tag)}
+.legend-pipeline .lc-step:last-child{border-radius:0 var(--radius-tag) var(--radius-tag) 0;box-shadow:none}
 
 /* lower */
 .analysis-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:24px}
@@ -417,14 +423,22 @@ kbd{background:#243543;box-shadow:var(--edge);clip-path:var(--chamfer);padding:1
 .fleet-table{width:100%;border-collapse:collapse;font-size:14px}
 .fleet-table th{font-size:12px;letter-spacing:.8px;text-transform:uppercase;color:var(--subtle);text-align:left;padding:10px 14px;border-top:1px solid var(--line-soft)}
 .fleet-table td{padding:12px 14px;border-top:1px solid var(--line-soft);vertical-align:top}
+/* the Session column takes the width the other columns leave: max-width:0 frees it from its
+   nowrap meta line, which would otherwise pin the column at the link's max width and push the
+   table out of its card on a laptop screen; the min-width keeps a title readable on a narrow
+   one, where the numbers clip first. A timestamp or a number never breaks in two. */
+.fleet-table td:first-child{width:100%;max-width:0;min-width:260px}
+.fleet-table th:nth-child(n+2),.fleet-table td:nth-child(n+2){white-space:nowrap}
 /* numbers (elapsed, sub-agents, log size) align right so magnitudes compare down the column */
-.fleet-table th:nth-child(n+4),.fleet-table td:nth-child(n+4){text-align:right;white-space:nowrap}
-.session-link{text-align:left;display:flex;flex-direction:column;gap:3px;max-width:520px}
+.fleet-table th:nth-child(n+4),.fleet-table td:nth-child(n+4){text-align:right}
+.session-link{text-align:left;display:flex;flex-direction:column;gap:3px;width:100%;max-width:520px}
 .session-link strong{font-size:14px;font-weight:600;line-height:1.4}
 .session-link span{font-size:13px;color:var(--subtle);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .session-link .desc{font-size:13px;font-style:normal;color:var(--muted);line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 /* a question the agent is still waiting on: a chip like "active", with a white circle pulsing */
 .chip.ask{background-color:#3b4d5e;color:var(--text);padding:2px 6px;gap:6px;font-weight:600}
+/* the status chips (active, waiting) under the Updated stamp: one row per cell, left edge */
+.fleet-table .status{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 .session-tile .chip.ask{align-self:flex-start;margin-top:4px}
 .qmark{display:inline-flex;align-items:center;justify-content:center;flex:none;width:16px;height:16px;border-radius:50%;background:#fff;color:#17222d;font-size:11px;font-weight:700;font-style:normal;line-height:1;animation:askPulse 1.6s infinite}
 @keyframes askPulse{0%{box-shadow:0 0 0 0 rgba(255,255,255,.6)}70%{box-shadow:0 0 0 7px rgba(255,255,255,0)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}}

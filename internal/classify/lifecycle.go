@@ -193,10 +193,11 @@ func ReviewSkillMatchers() []string { return matcherSources(lifecycleSkills)[LcR
 // is invalidated whenever classification could change. The leading schema tag also invalidates it
 // across model changes (2: the lifecycle partition; 3: sub-agent turns inherit the parent turn's
 // stage and model output takes the nearest tool call's stage; 4: skill runs, the change window,
-// model-output ops carry their segment's stage, subgroups).
+// model-output ops carry their segment's stage, subgroups; 5: the build phase's compile / deps
+// sub-rows; 6: compound commands share their wall clock, segments carry their sub-row).
 func RulesFingerprint() string {
 	h := sha1.New()
-	fmt.Fprint(h, "schema=4;")
+	fmt.Fprint(h, "schema=6;")
 	change := make([]string, 0, len(ChangeKinds))
 	for k := range ChangeKinds {
 		change = append(change, k)

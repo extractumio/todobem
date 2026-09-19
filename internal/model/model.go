@@ -51,7 +51,14 @@ type Operation struct {
 	LifecycleRule string    `json:"lc_rule,omitempty"`
 	// Subgroup is the finer breakdown row of the phase (classify.Subgroup): "" when the phase has none.
 	Subgroup string `json:"sub,omitempty"`
-	Src      *Src   `json:"src,omitempty"`
+	// Shares: a compound command that chained work of several categories (`go build && go
+	// test`) has its wall clock shared among them — one Share per distinct category, in first
+	// appearance order, consecutive in time. An explicit estimate (docs/ARCHITECTURE.md §5.4):
+	// a `sleep N` share takes its literal seconds, the rest is divided equally. Phase, Kind and
+	// Identity stay the dominant segment's; the partition, by_phase and the stages follow the
+	// shares. Nil for a single-category command.
+	Shares []Share `json:"shares,omitempty"`
+	Src    *Src    `json:"src,omitempty"`
 	// Compaction ops only: Context is the input of the last counted model call before the
 	// compaction (the context it started from); Tokens the first counted call after it (what
 	// the model re-read). Zero / nil = no usage record around it.
@@ -59,6 +66,78 @@ type Operation struct {
 	Tokens  *TokenUsage `json:"tokens,omitempty"`
 	// call links this op to a tool-call envelope (old-format process polling).
 	call string
+}
+
+// Share is one category's slice of a compound command's wall clock (Operation.Shares).
+type Share struct {
+	Phase     Phase     `json:"phase"`
+	Kind      string    `json:"kind"`              // the first segment of that category
+	Segment   string    `json:"segment"`           // its text, clipped
+	Ms        int64     `json:"ms"`                // the slice: literal for sleep N, an equal share otherwise
+	Literal   bool      `json:"literal,omitempty"` // Ms is literal evidence (sleep N), not an equal share
+	Lifecycle Lifecycle `json:"lc,omitempty"`      // the stage this slice served (Derive)
+	Sub       string    `json:"sub,omitempty"`     // the category's sub-row (classify.Subgroup)
+}
+
+// SharesOf turns the classifier's parts into shares when they span at least two categories:
+// one share per distinct category, in first appearance order, a sleep's literal seconds
+// summed into its share. A category is the phase and its sub-row (`npm ci && npm run build`
+// is deps and compile, not one build share named by whichever came first); an unknown
+// command is one category whatever its sub-row. Ms of the equal shares is filled by Derive,
+// which knows the wall clock.
+func SharesOf(parts []classify.Part) []Share {
+	type key struct {
+		phase Phase
+		sub   string
+	}
+	keyOf := func(pt classify.Part) key {
+		if pt.Phase == classify.Unknown {
+			return key{pt.Phase, ""}
+		}
+		return key{pt.Phase, classify.Subgroup(pt.Phase, pt.Kind)}
+	}
+	var out []Share
+	idx := map[key]int{}
+	for _, pt := range parts {
+		k := keyOf(pt)
+		i, ok := idx[k]
+		if !ok {
+			i = len(out)
+			idx[k] = i
+			out = append(out, Share{Phase: pt.Phase, Kind: pt.Kind, Segment: pt.Segment, Sub: classify.Subgroup(pt.Phase, pt.Kind)})
+		}
+		if pt.Ms > 0 {
+			out[i].Ms += pt.Ms
+			out[i].Literal = true
+		}
+	}
+	if len(out) < 2 {
+		return nil
+	}
+	return out
+}
+
+// Booked reports what of the op is booked to a phase: the whole op (its detail or title and
+// wall clock) when that is its phase and it has no shares, else the share of that phase (its
+// segment text and slice), else nothing. The unknown-command loop and D13 read unknown work
+// through it, so an unknown part of a compound command is listed by its own head.
+func (o *Operation) Booked(phase Phase) (text string, ms int64, ok bool) {
+	if len(o.Shares) == 0 {
+		if o.Phase != phase {
+			return "", 0, false
+		}
+		text = o.Detail
+		if text == "" {
+			text = o.Title
+		}
+		return text, o.End - o.Start, true
+	}
+	for _, sh := range o.Shares {
+		if sh.Phase == phase {
+			return sh.Segment, sh.Ms, true
+		}
+	}
+	return "", 0, false
 }
 
 // Failure reports whether the op counts as a failed step: a recorded failure or non-zero exit
@@ -84,6 +163,11 @@ type Segment struct {
 	Phase     Phase     `json:"p"`
 	Lifecycle Lifecycle `json:"lc"`
 	Op        string    `json:"op,omitempty"`
+	// Sub is the breakdown sub-row of the op-backed segment (the share's for a split op, the
+	// op's otherwise); "" for interval phases and phases without sub-rows.
+	Sub string `json:"sub,omitempty"`
+	// Shared marks a slice of a compound command's equal split (an estimate, not measured).
+	Shared bool `json:"shared,omitempty"`
 }
 
 type Marker struct {
@@ -189,6 +273,10 @@ type Lane struct {
 	Tokens     *TokenUsage     `json:"tokens,omitempty"` // usage consumed by this thread: per-call usage summed on every change of the cumulative counter (survives counter restarts and a forked child's inherited counter)
 	ByPhase    map[Phase]int64 `json:"by_phase"`         // exclusive partition
 	RawByPhase map[Phase]int64 `json:"raw_by_phase"`     // plain sum of op durations (overlaps counted)
+	// ByPhaseShared is the part of ByPhase that is an equal share of a compound command (an
+	// estimate; the literal sleep slices are not counted here). The totals carry the root's;
+	// the UI sums a window's from Segment.Shared, so the lane's stays out of the payload.
+	ByPhaseShared map[Phase]int64 `json:"-"`
 	// ByLifecycle is the same exclusive partition keyed by SDLC stage (sums to the same total).
 	ByLifecycle map[Lifecycle]int64 `json:"by_lifecycle"`
 	// Lifecycle is the stage the lane's agent role pins on every turn (overlay roles); "" = none.
@@ -215,6 +303,8 @@ type Totals struct {
 	RawOpsMs   int64           `json:"raw_ops_ms"` // sum of op durations, overlaps counted
 	ByPhase    map[Phase]int64 `json:"by_phase"`
 	RawByPhase map[Phase]int64 `json:"raw_by_phase"`
+	// ByPhaseShared is the estimated part of ByPhase: equal shares of compound commands.
+	ByPhaseShared map[Phase]int64 `json:"by_phase_shared,omitempty"`
 	// ByLifecycle is the root lane's exclusive partition by SDLC stage: sum(by_lifecycle) ==
 	// sum(by_phase) == elapsed_ms. LLM time inside a turn is attributed to the stage of the tool
 	// call that followed it (or the turn's signal); the two partitions are not comparable per key.

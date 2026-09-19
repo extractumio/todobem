@@ -64,13 +64,16 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
   message); `tools.go` the tool-name → operation mapping. Design: `docs/ARCHITECTURE.md` §2.2.
 - `internal/classify/` — `Rules` in `classify.go` is the single source of truth for command →
   phase/kind (served at `/api/rules`), plus the heredoc and remote/queued regexes right below
-  it; `shell.go` splits commands and masks heredocs; `Identity` normalizes commands for retry
-  groups; `lifecycle.go` holds the SDLC-stage type, the phase → stage defaults, the change
+  it; `head.go` unwraps wrappers, package runners and option prefixes, `make.go` judges make /
+  ninja by their targets; `shell.go` splits commands and masks heredocs; `Identity` normalizes
+  commands for retry groups; `Result.Parts` lists a compound command's working segments (the
+  categories its wall clock is shared among); `lifecycle.go` holds the SDLC-stage type, the phase → stage defaults, the change
   kinds, the kind pins and the skill / role / path matchers; `subgroup.go` the breakdown
   sub-rows (phase, kind → subgroup); `userconfig.go` the overlay. Definitions:
   `docs/ARCHITECTURE.md` §3, §4.
 - `internal/model/` — `model.go` is the normalized schema (`docs/ARCHITECTURE.md` §3); `derive.go`
-  builds the exclusive partition, stages, retry groups, background flags and totals;
+  builds the exclusive partition (a compound command's shares laid back to back, §5.5), stages,
+  retry groups, background flags and totals;
   `lifecycle.go` assigns the second partition (lane role → turn signal and skill runs → inherited
   → op pin → the turn's composition: the plan run and the change window → phase default; the
   operations-before-release guard; model output to the nearest tool call, and model-output ops
@@ -128,9 +131,18 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
 2. Never compute "goal achieved". Show user messages and final answers as recorded: rendered
    as Markdown by default, the recorded text one toggle away, never summarized or reworded.
 3. Unknown is honest: unmatched commands are `unknown`, intervals without events are
-   `no_telemetry`. A wrong `code` is worse than an honest `unknown`. No guessing.
+   `no_telemetry`. A wrong `code` is worse than an honest `unknown`. No guessing — with one
+   declared estimate: a **compound command** that chained work of several categories in one
+   call (`go build && go test`, a poll loop then a remote test) shares its wall clock among
+   them — a `sleep N` takes its literal seconds, the rest is divided *equally* per distinct
+   category (build, test, release, infra, waiting, unknown; reads, edits, git and pipe filters
+   are glue) — because the log records one clock per call and booking it all to one phase
+   made the others a blind zone. The shares are marked (`Operation.shares`, `Segment.shared`),
+   summed apart (`by_phase_shared`) and named as an estimate wherever they are shown.
 4. Classification is deterministic: a rule table over literal command text (head word +
-   subcommand, script names, literal heredoc signals). No similarity, no models, no duration.
+   subcommand, script names, literal heredoc signals). No similarity, no models, no duration
+   (the equal share of rule 3 divides a measured clock by a count; it never reads a duration
+   to decide a phase).
 5. Retry groups join only operations with an identical normalized command (+cwd). Nothing fuzzy.
 6. Session totals are the root lane's exclusive partition: `sum(by_phase) == elapsed_ms`
    (unit-tested on totals, checked per lane by `cmd/dump`). Sub-agent time is `parallel`, never
@@ -149,7 +161,13 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
    (key file `~/.todobem/auth.key`, 0600, the root of trust; `-auth=off` is an explicit choice
    the server announces). Read-only access to the rollout tree, `/api/event` serves only recorded
    source spans, the only writes are under `~/.todobem/` (cache, key, settings), no telemetry, no
-   outbound calls. Ever.
+   outbound calls — except for the matter of the fleet, chosen by the owner, and of testing the
+   core functionality of the product: an **agent** (`-agent`, `docs/AGENT-MODE.md`) answers —
+   never calls — the hub its owner paired it with, over TLS pinned at pairing, to a holder of the
+   bearer; a **hub** dials only the agents listed in its `~/.todobem/agents.json` (0600, their
+   read credentials), and announces that list at start; and a test or a verification run may
+   connect a hub and an agent of its own, on loopback, for as long as it runs. Neither role ever
+   speaks to anything else; nothing else ever speaks out. The UI stays on loopback in every mode.
 
 ## Engineering rules
 
@@ -195,8 +213,10 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
   `:7788` (one started by hand is adopted, a lost pidfile rebuilt from the port) and prints a
   login link; an open tab follows the new build by itself on its next request or when it comes
   back into view (`X-Todobem-Build`, `build.js`; only the session page polls). Never start a
-  second instance on another port or from a scratchpad, and nothing you start outlives the
-  task: `./scripts/deploy.sh status` lists every todobem listening.
+  second instance on another port or from a scratchpad — the one exception is an agent under
+  test (`-agent`, loopback, `:7789`) paired with the instance on `:7788` to verify the fleet —
+  and nothing you start outlives the task: `./scripts/deploy.sh status` lists every todobem
+  listening.
 - Report what changed, why, how it was verified, what was excluded and **Noticed, not fixed** —
   the last list holds only items that need a decision (see "Leave it better"); anything else
   noticed was fixed. Unverified work is unfinished; a missing gate is absent, never passing.

@@ -1,6 +1,7 @@
 package model
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/extractumio/todobem/internal/classify"
@@ -383,5 +384,156 @@ func TestSubAgentOpenTurnAfterRootClosedIsOrphaned(t *testing.T) {
 	sub = s.Lanes[1]
 	if !sub.Live || sub.Turns[0].Status != "open" || sub.Ended != 100000 || !s.Live {
 		t.Fatalf("live root: live=%v status=%q ended=%d session live=%v", sub.Live, sub.Turns[0].Status, sub.Ended, s.Live)
+	}
+}
+
+// A compound command shares its wall clock among its categories: a sleep takes its literal
+// seconds, the rest is split equally, the slices sit back to back, the partition and the raw
+// sum follow the split, the estimate is summed apart, and the stages follow each slice.
+func TestCompoundCommandSharesItsWallClock(t *testing.T) {
+	l := &Lane{ID: "L", Path: "/root", Started: 0, Ended: 1000}
+	l.Turns = []*Turn{{ID: "t1", Start: 100, End: 900, Status: "completed"}}
+	res := classify.Command("sleep 0.1 && go build ./... && go test ./...", "")
+	op := mkOp("c1", res.Phase, 200, 700, "completed", res.Identity)
+	op.Turn, op.Kind = "t1", res.Kind
+	op.Shares = SharesOf(res.Parts)
+	single := mkOp("c2", classify.Build, 750, 800, "completed", "")
+	single.Kind = "go build"
+	l.Ops = []*Operation{op, single}
+	s := &Session{ID: "s", Lanes: []*Lane{l}}
+	Derive(s, 2000)
+	if op.Phase != classify.Test || len(op.Shares) != 3 {
+		t.Fatalf("dominant phase %s, shares %+v", op.Phase, op.Shares)
+	}
+	// wall 500: sleep 100 (literal), build 200, test 200
+	want := []Share{{Phase: classify.WaitWorker, Ms: 100, Literal: true}, {Phase: classify.Build, Ms: 200}, {Phase: classify.Test, Ms: 200}}
+	for i, w := range want {
+		g := op.Shares[i]
+		if g.Phase != w.Phase || g.Ms != w.Ms || g.Literal != w.Literal {
+			t.Fatalf("share %d = %+v, want %+v", i, g, w)
+		}
+	}
+	if op.Shares[1].Sub != "compile" || op.Shares[1].Kind != "go build" || op.Shares[2].Kind != "go test" {
+		t.Fatalf("share kinds %+v", op.Shares)
+	}
+	var total int64
+	for _, sg := range l.Segments {
+		total += sg.End - sg.Start
+	}
+	if total != 1000 {
+		t.Fatalf("partition %d", total)
+	}
+	if l.ByPhase[classify.WaitWorker] != 100 || l.ByPhase[classify.Build] != 250 || l.ByPhase[classify.Test] != 200 {
+		t.Fatalf("by_phase %+v", l.ByPhase)
+	}
+	if l.ByPhaseShared[classify.Build] != 200 || l.ByPhaseShared[classify.Test] != 200 || l.ByPhaseShared[classify.WaitWorker] != 0 {
+		t.Fatalf("by_phase_shared %+v (the sleep is literal, c2 is whole)", l.ByPhaseShared)
+	}
+	if l.RawByPhase[classify.Build] != 250 || l.RawByPhase[classify.Test] != 200 || l.RawByPhase[classify.WaitWorker] != 100 {
+		t.Fatalf("raw by phase %+v", l.RawByPhase)
+	}
+	// the slices in order, each carrying its sub-row and the shared mark
+	var slices []Segment
+	for _, sg := range l.Segments {
+		if sg.Op == "c1" {
+			slices = append(slices, sg)
+		}
+	}
+	if len(slices) != 3 || slices[0].Phase != classify.WaitWorker || slices[0].Start != 200 || slices[0].End != 300 || slices[0].Shared ||
+		slices[1].Phase != classify.Build || slices[1].End != 500 || !slices[1].Shared || slices[1].Sub != "compile" ||
+		slices[2].Phase != classify.Test || slices[2].End != 700 || !slices[2].Shared {
+		t.Fatalf("slices %+v", slices)
+	}
+	// stages: the build slice serves implementation, the test slice verification
+	if slices[1].Lifecycle != classify.LcImplement || slices[2].Lifecycle != classify.LcTest || op.Shares[1].Lifecycle != classify.LcImplement || op.Shares[2].Lifecycle != classify.LcTest {
+		t.Fatalf("stages %s %s (shares %+v)", slices[1].Lifecycle, slices[2].Lifecycle, op.Shares)
+	}
+	var lc, ph int64
+	for _, v := range l.ByLifecycle {
+		lc += v
+	}
+	for _, v := range l.ByPhase {
+		ph += v
+	}
+	if lc != ph || s.Totals.ByPhaseShared[classify.Build] != 200 {
+		t.Fatalf("lifecycle %d vs phase %d, totals shared %+v", lc, ph, s.Totals.ByPhaseShared)
+	}
+	// a single-category command is never split
+	if single.Shares != nil || SharesOf(classify.Command("gofmt -w x.go && go vet ./... && go test ./...", "").Parts) != nil {
+		t.Fatal("single-category commands must not be split")
+	}
+	// a skill's stage covers every slice
+	l2 := &Lane{ID: "L2", Path: "/root", Started: 0, Ended: 1000}
+	l2.Turns = []*Turn{{ID: "t1", Start: 100, End: 900, Status: "completed", Skill: "code-review-cc"}}
+	op2 := mkOp("c1", res.Phase, 200, 700, "completed", "")
+	op2.Turn, op2.Shares = "t1", SharesOf(res.Parts)
+	l2.Ops = []*Operation{op2}
+	Derive(&Session{ID: "s2", Lanes: []*Lane{l2}}, 2000)
+	if op2.Shares[1].Lifecycle != classify.LcReview || op2.Shares[2].Lifecycle != classify.LcReview {
+		t.Fatalf("skill turn shares %+v", op2.Shares)
+	}
+}
+
+// The invariants a split op must keep whatever surrounds it: the categories are (phase,
+// sub-row); the slices survive the turn-boundary split; a slice competes by its own phase
+// with concurrent ops; a live op's shares move with its growing wall clock.
+func TestCompoundCommandInvariants(t *testing.T) {
+	// deps and compile are two categories, not one build share named by the first
+	res := classify.Command("npm ci && npm run build && npm test", "")
+	shares := SharesOf(res.Parts)
+	if len(shares) != 3 || shares[0].Sub != "deps" || shares[1].Sub != "compile" || shares[2].Phase != classify.Test {
+		t.Fatalf("shares %+v", shares)
+	}
+	// a split op crossing a turn boundary keeps its slices' sub-row and estimate mark
+	l := &Lane{ID: "L", Path: "/root", Started: 0, Ended: 1000}
+	l.Turns = []*Turn{{ID: "t1", Start: 100, End: 400, Status: "completed"}, {ID: "t2", Start: 400, End: 900, Status: "completed"}}
+	op := mkOp("c1", res.Phase, 200, 800, "completed", "")
+	op.Turn, op.Kind, op.Shares = "t1", res.Kind, SharesOf(res.Parts)
+	// a concurrent measured build of lower priority than the test slice it overlaps
+	other := mkOp("c2", classify.Build, 700, 850, "completed", "")
+	other.Turn, other.Kind = "t2", "go build"
+	l.Ops = []*Operation{op, other}
+	s := &Session{ID: "s", Lanes: []*Lane{l}}
+	Derive(s, 2000)
+	if op.Shares[0].Ms+op.Shares[1].Ms+op.Shares[2].Ms != 600 {
+		t.Fatalf("shares must sum to the wall clock: %+v", op.Shares)
+	}
+	var seen []string
+	for _, sg := range l.Segments {
+		if sg.Op == "c1" {
+			seen = append(seen, string(sg.Phase)+":"+sg.Sub+":"+map[bool]string{true: "est", false: "meas"}[sg.Shared])
+		}
+	}
+	// deps 200 → [200,400) crosses nothing; compile 200 → [400,600); test 200 → [600,800): the
+	// test slice (priority 80) outranks the concurrent go build (70) from 700 to 800
+	if got := strings.Join(seen, " "); got != "build:deps:est build:compile:est test::est" {
+		t.Fatalf("slices %q", got)
+	}
+	if l.ByPhase[classify.Build] != 200+200+50 || l.ByPhase[classify.Test] != 200 || l.ByPhaseShared[classify.Build] != 400 {
+		t.Fatalf("by_phase %+v shared %+v", l.ByPhase, l.ByPhaseShared)
+	}
+	for k, v := range l.ByPhaseShared {
+		if v > l.ByPhase[k] {
+			t.Fatalf("shared %s %d > by_phase %d", k, v, l.ByPhase[k])
+		}
+	}
+	var total int64
+	for _, sg := range l.Segments {
+		total += sg.End - sg.Start
+	}
+	if total != 1000 {
+		t.Fatalf("partition %d", total)
+	}
+	// a live op: its shares follow the wall clock on every refresh
+	live := &Lane{ID: "L2", Path: "/root", Started: 0, Ended: 500}
+	live.Turns = []*Turn{{ID: "t1", Start: 100, End: 500, Status: "open"}}
+	o := mkOp("c1", classify.Test, 200, 200, "running", "")
+	o.Turn, o.Open, o.Shares = "t1", true, SharesOf(classify.Command("go build ./... && go test ./...", "").Parts)
+	live.Ops = []*Operation{o}
+	Derive(&Session{ID: "s2", Lanes: []*Lane{live}}, 1000)
+	first := o.Shares[0].Ms + o.Shares[1].Ms
+	Derive(&Session{ID: "s2", Lanes: []*Lane{live}}, 1400)
+	if second := o.Shares[0].Ms + o.Shares[1].Ms; first != 800 || second != 1200 || o.Shares[0].Ms != 600 {
+		t.Fatalf("live shares %d then %d (%+v)", first, second, o.Shares)
 	}
 }

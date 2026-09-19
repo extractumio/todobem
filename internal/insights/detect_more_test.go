@@ -88,8 +88,8 @@ func TestRunsUnseenAndModelDetectors(t *testing.T) {
 	if x := byKey["code:edit"]; x.N != 1 || x.Note != "1 call, 1 failed" || x.TimeMs != 1 {
 		t.Fatalf("D16 code:edit %+v (all %+v)", x, r16.Findings)
 	}
-	if x := byKey["build"]; x.N != 1 || x.TimeMs != 5*minute {
-		t.Fatalf("D16 build %+v", x)
+	if x := byKey["build:compile"]; x.N != 1 || x.TimeMs != 5*minute {
+		t.Fatalf("D16 build:compile %+v (all %+v)", x, r16.Findings)
 	}
 	if x := byKey["unknown:command"]; x.N != 1 || x.TimeMs != 2*minute {
 		t.Fatalf("D16 unknown:command %+v", x)

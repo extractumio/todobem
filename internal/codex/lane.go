@@ -1033,6 +1033,7 @@ func (p *laneParser) commandOp(id, turn, cmd, codexKind string, s, e int64, src 
 	op.Queued = res.Queued
 	op.Rule = res.Rule
 	op.Lifecycle = res.Lifecycle
+	op.Shares = model.SharesOf(res.Parts)
 	return op
 }
 

@@ -23,8 +23,9 @@ import (
 // intervals (Blind), a gap's TurnChangedFiles instead of the session-level AfterFirstChange.
 // 11: the llm_error points dropped with the D14 card. 12: the delivery walk's pushes (D25), what
 // verified the session by kind, failed test runs and stop hooks run; retry windows session-scoped
-// with the retry op and the "other" recovery.
-const FactsVersion = 12
+// with the retry op and the "other" recovery. 13: the tool-call mix per slice (a compound
+// command's shares land in their categories) with the shared calls and time apart.
+const FactsVersion = 13
 
 // Facts is everything the detectors need about one session, in a few KB.
 type Facts struct {
@@ -230,6 +231,10 @@ type ToolCallFacts struct {
 	Ms     int64       `json:"ms"`
 	Misses int         `json:"misses"`
 	Failed int         `json:"failed"`
+	// Shared counts the compound calls whose equal share landed here (their call is counted
+	// once, under the dominant phase); SharedMs is that estimated part of Ms.
+	Shared   int   `json:"shared,omitempty"`
+	SharedMs int64 `json:"shared_ms,omitempty"`
 }
 
 // CellFacts is time and tokens for one (lane kind, model, effort, lifecycle) cell. Tokens are a
@@ -331,8 +336,20 @@ func Extract(s *model.Session) Facts {
 	f.UnknownMs = map[string]int64{}
 	for _, l := range s.Lanes {
 		for _, o := range l.Ops {
-			if o.Phase == classify.Unknown && !o.Background {
-				f.UnknownMs[o.Subgroup] += o.End - o.Start
+			if o.Background {
+				continue
+			}
+			if _, ms, ok := o.Booked(classify.Unknown); ok {
+				sub := o.Subgroup
+				if len(o.Shares) > 0 {
+					sub = classify.Subgroup(classify.Unknown, "unknown")
+					for _, sh := range o.Shares {
+						if sh.Phase == classify.Unknown {
+							sub = sh.Sub
+						}
+					}
+				}
+				f.UnknownMs[sub] += ms
 			}
 		}
 	}
@@ -372,13 +389,23 @@ func toolCallFacts(root *model.Lane) []ToolCallFacts {
 		} else if o.Failure() {
 			t.Failed++
 		}
+		for _, sh := range o.Shares {
+			if sh.Phase != o.Phase && !sh.Literal {
+				get(sh.Phase, sh.Sub).Shared++
+			}
+		}
 	}
 	for _, sg := range root.Segments {
 		o := byID[sg.Op]
 		if o == nil || o.Background || o.Phase == classify.LLM || o.Phase == classify.WaitUser || o.Phase == classify.Compaction {
 			continue
 		}
-		get(o.Phase, o.Subgroup).Ms += sg.End - sg.Start
+		// the slice's own phase and sub-row: a compound command's shares land in their categories
+		t := get(sg.Phase, sg.Sub)
+		t.Ms += sg.End - sg.Start
+		if sg.Shared {
+			t.SharedMs += sg.End - sg.Start
+		}
 	}
 	out := make([]ToolCallFacts, 0, len(acc))
 	for _, t := range acc {
@@ -607,12 +634,17 @@ func waitFacts(s *model.Session, opByID map[string]*model.Operation) []WaitFacts
 	})
 	var out []WaitFacts
 	for _, sg := range root.Segments {
-		if sg.Phase != classify.WaitWorker {
-			continue
+		if sg.Phase != classify.WaitWorker || sg.Shared {
+			continue // a wait is measured; an equal share of a compound command is not one
 		}
 		w := WaitFacts{Start: sg.Start, End: sg.End, Kind: "harness"}
 		if o := opByID[sg.Op]; o != nil {
 			w.Kind = o.Kind
+			for _, sh := range o.Shares { // a literal `sleep N` slice of a compound command
+				if sh.Phase == sg.Phase {
+					w.Kind = sh.Kind
+				}
+			}
 			if i := strings.IndexByte(w.Kind, '|'); i >= 0 {
 				w.Kind = w.Kind[:i]
 			}
@@ -723,17 +755,24 @@ func unknownHeads(s *model.Session) []HeadFacts {
 	heads := map[string]*HeadFacts{}
 	for _, l := range s.Lanes {
 		for _, o := range l.Ops {
-			if o.Phase != classify.Unknown || o.Background {
+			if o.Background {
 				continue
 			}
-			h := unknownHead(o.Title)
+			text, ms, ok := o.Booked(classify.Unknown) // the op, or the unknown share of a compound one
+			if !ok {
+				continue
+			}
+			if len(o.Shares) == 0 {
+				text = o.Title
+			}
+			h := unknownHead(text)
 			e := heads[h]
 			if e == nil {
 				e = &HeadFacts{Head: h}
 				heads[h] = e
 			}
 			e.Count++
-			e.Ms += o.End - o.Start
+			e.Ms += ms
 		}
 	}
 	var out []HeadFacts

@@ -62,7 +62,7 @@ built from; Insights reads the derived model and never a log line.
 | `internal/source/` | the seam: `Meta`, `Source`, `Session` (joiner), `LaneParser`, `Multi`, `Summaries`, `TailReader`, text helpers |
 | `internal/codex/` | Codex adapter: `index.go`, `reader.go` (line typing by prefix), `lane.go` (turns, ops, markers), `tokens.go` |
 | `internal/claude/` | Claude Code adapter: `index.go`, `lane.go` (turn state machine), `tools.go` (tool name → operation) |
-| `internal/classify/` | `classify.go` (the rule table `Rules`, priority, segments, heredocs), `shell.go` (tokenizer, `Identity`), `lifecycle.go` (stages, change kinds, pins, matchers, fingerprint), `subgroup.go`, `userconfig.go` (overlay) |
+| `internal/classify/` | `classify.go` (the rule table `Rules`, priority, segments, heredocs), `head.go` (head unwrapping: wrappers, runners, option prefixes), `make.go` (make / ninja targets), `shell.go` (tokenizer, `Identity`), `lifecycle.go` (stages, change kinds, pins, matchers, fingerprint), `subgroup.go`, `userconfig.go` (overlay) |
 | `internal/model/` | `model.go` (schema), `derive.go` (partition, groups, totals), `lifecycle.go` (the second partition) |
 | `internal/server/` | JSON API, auth gate, session pools, `/api/settings`, `/api/insights/*` |
 | `internal/auth/` | key file, one-time tokens, HMAC sessions |
@@ -241,13 +241,18 @@ sub-agent's lane id), `result_returned`, `message_sent`, `message_received`, `pl
 `turn_start`, `turn_end`, `compaction`, `interrupted`, `resumed`, `goal`, `skill` (`ref` = the
 skill name), `llm_error` (an invalid tool call, an API error, a refusal).
 
+`Operation.shares` (a compound command's categories with their slices of its wall clock,
+§5.5), `Segment.sub` (the slice's breakdown sub-row) and `Segment.shared` (the slice is an
+equal share, an estimate) are the fields the compound-command rule adds; `by_phase_shared` on
+a lane and on the totals is the estimated part of `by_phase`.
+
 ### 3.1 Phases (the activity partition)
 
 | phase | meaning | source of the label |
 |---|---|---|
 | `llm` | the model generating: `Reasoning` / `AgentMessage` items (verified) plus uncovered in-turn time (convention); includes the generation of every patch | turn boundaries + item timestamps |
 | `code` | shown as **Development**: every tool call around the code short of build, test and release — reading, searching, listing, web / MCP lookups, edits, local VCS, formatting, probes, scripted reads and writes | `parsed_cmd`, `FileChange`, `apply_patch`, the rule table, the Claude tool mapping |
-| `build` | compiling, bundling, dependency installation | rule table |
+| `build` | compiling, bundling, packaging, a container image; dependency installation (its own sub-row, §3.2) | rule table |
 | `test` | test runners, linters, type checks, simulators, browser automation | rule table |
 | `release` | push, PR / MR, CI reruns, deploy, device install, publish, scripts named deploy / release / ship | rule table |
 | `infra` | services, containers, remote hosts, processes, cleanup, packages, media tools, diagnostics | rule table |
@@ -265,7 +270,9 @@ and which phase a multi-segment command gets: release 90 > test 80 > build 70 > 
 ### 3.2 Subgroups (the breakdown's sub-rows)
 
 `classify.Subgroup(phase, kind)` is a deterministic function of the phase and the base kind,
-carried on every op as `sub`; only the phases that lump different work have one:
+carried on every op as `sub`; only the phases that lump different work have one. Build splits
+into compiling and installing dependencies so "build time" can be read as compile time alone
+(`DepsKinds` in `subgroup.go` is the deps set; everything else in the phase compiles):
 
 | phase | subgroup | kinds |
 |---|---|---|
@@ -276,9 +283,11 @@ carried on every op as `sub`; only the phases that lump different work have one:
 | | `hosting` | gh, gh api, glab, glab mr, glab ci, glab api (queries) |
 | | `network` | http, dns, net, web_search |
 | | `mcp` | mcp |
-| | `shell` | inspect, shell, probe, process, system, version, script-read, sqlite, sql, go env / list / doc, npm, cargo, docker / kubectl queries, devicectl, simulator, xcode, codesign, everything else |
+| | `shell` | inspect, shell, probe, process, system, version, script-read, sqlite, sql, go env / list / doc, npm, cargo, rm, docker / kubectl queries, devicectl, simulator, xcode, codesign, everything else |
+| `build` | `compile` | cargo build / check, go build / generate / install, swift build, xcodebuild, cc, link, configure, rustc, tsc, vite, esbuild, webpack, next build, npm / pnpm / yarn / bun build, make and its build targets, cmake, ninja, meson, bazel, gradle, mvn, dotnet build, docker build, build-flag, build-script, everything else |
+| | `deps` | npm / pnpm / yarn / bun install, pip install, uv, poetry, pipenv, go mod / get, go install tool (`pkg@version`), cargo deps / install, bundle, pod, carthage, mint, swift package resolve, make deps |
 | `wait_worker` | `agents` / `polling` / `hooks` | agent / sleep, poll-loop, tail-f, process, ci, wait / hook |
-| `unknown` | `script` / `tool` / `command` | python, node, ruby, perl, npm run, run, swift run, exec-script-error / `tool:<name>` / unknown |
+| `unknown` | `script` / `tool` / `command` | python, node, ruby, perl, npm run, run, swift / go / cargo / bazel / dotnet / deno run, exec-script-error / `tool:<name>` / unknown |
 
 A heredoc classified by its inner command (`script→<kind>`) maps by the inner kind. `Phase`
 itself never changes: priority, retry groups, query kinds and the timeline colours stay.
@@ -317,15 +326,36 @@ pin. Word rules are looked up exactly (longest key first: `xcrun devicectl devic
 2. Heredoc bodies are masked (`maskHeredocs`): only stdin consumed as interpreter source is
    kept for inspection; data heredocs (`cat`, a named script) stay opaque.
 3. The masked command is split into top-level segments at `&&`, `;`, `|`, `||`, newline
-   (quotes and `(){}` depth respected). Every segment is normalized: env assignments, `sudo` /
+   (quotes and `(){}` depth respected; a subshell `(cd x && npm run build) | tail` is its inner
+   commands, the redirection after the paren riding on the last). Every segment is normalized:
+   a comment (`# …`) or a continuation fragment (`-t page.yml | head -1)`) runs nothing; env
+   assignments, `sudo` /
    `nohup` / `exec` / `command` / `nice` / `timeout` / `env` / `xargs` / `caffeinate` / `time`
    wrappers and shell keywords stripped (`for x in …` / `case` headers carry no command);
-   `node_modules/.bin/<tool>` → `<tool>`; `git -C dir -c k=v <sub>` → `git <sub>`; `npm --prefix
-   … <sub>` → `npm <sub>`; `go run <pkg>` / `cargo run --bin <name>` judged by the package or
-   binary name (a `-serve` flag → service); interpreters (`python3 script.py` judged by the
-   script name, `bash -c '…'` by the inner command, `bash -n` a syntax check, `python3 -` opaque).
-4. Every segment is matched (`matchHead`): word rules, then script-name rules (`head:` /
-   `headpath:`; a read-only subcommand such as `status` / `list` keeps a deploy script a
+   `node_modules/.bin/<tool>` → `<tool>`; a package runner (`npx [-y] [-p pkg] [--] <tool>`,
+   `bunx`, `bun x`, `npm exec` / `x`, `pnpm dlx` / `exec`, `yarn dlx` / `exec`, `bundle exec`,
+   `poetry run`, `uv run`, `pipenv run`; `head.go` `runners`) → the tool it runs, its
+   `@version` dropped (`npx -c '…'` and `uv run -m` stay opaque; a scoped `@scope/tool` is not
+   a local script); `git -C dir -c k=v <sub>` → `git <sub>`; `npm --prefix … <sub>` → `npm
+   <sub>` (also before a runner: `pnpm --filter web exec tsc` → `tsc`); `npm run build:prod` /
+   `pnpm test-e2e` / `npm run tests` → the base script `build` / `test` (the package.json
+   `<name>[:_-]<variant>` convention; `build:watch` stays a build); `make [-C dir] [-f file]
+   [-jN] [-k] [--] [VAR=val] <target>…` → `make <target>…` and `ninja [-C dir] [-jN] <target>…`
+   → `ninja <target>…` (`make.go` `targetFields`: a dry run, a question, `--version` / `--help`
+   → `<tool> -n`; ninja's `-t <sub-tool>` is kept); `go run <pkg>` / `cargo run --bin <name>`
+   judged by the package or binary name (a `-serve` flag → service); interpreters (`python3
+   scripts/x.py` / `bun test.ts` judged by the script name — a bare word after an interpreter
+   is a subcommand, never a script guess — `bash -c '…'` by the inner command, `bash -n` a
+   syntax check, `python3 -` opaque). A `seg:` rule matches the segment as written **or** as
+   unwrapped, so `npx -y tsc --noEmit` and `./node_modules/.bin/tsc --noEmit` are `tsc
+   --noEmit`.
+4. Every segment is matched (`matchHead`): `make` / `ninja` by their targets (`matchTargets`:
+   the listed target of the highest priority decides — `make clean all` builds, `make build
+   test` tests — an artifact target, a path or a file name such as `build/app` or `main.o`,
+   builds, and an unlisted phony target makes the call `unknown` under `make <target>`, the
+   dispatcher-verb precedent, so `todobem unknown` lists it and the overlay can pin it); a
+   `--version` alone is a lookup for any tool; then word rules, then script-name rules (`head:`
+   / `headpath:`; a read-only subcommand such as `status` / `list` keeps a deploy script a
    lookup), then a local dispatcher script's first positional verb (`./dev ci-build` → build;
    only unambiguous verbs, only for a clearly local script), then literal flags (`--build-only`,
    `--test`, `--deploy`, `--serve`). An unmatched executable stays unknown.
@@ -440,13 +470,76 @@ flagged as such, and `todobem unknown -explain <command>` prints the word key a 
    highest-priority open op owns the segment (`Segment.op`). Adjacent same-phase segments merge.
    `by_phase` sums the segments; `raw_by_phase` sums op durations (larger when commands ran in
    parallel). `sum(by_phase) == ended − started` on every lane (unit-tested on totals, checked
-   per lane by `cmd/dump`).
+   per lane by `cmd/dump`). The sweep runs over *spans*: an op is one span, a compound command
+   its shares back to back (5.5).
 6. **Lifecycle partition** (`assignLifecycle`, §6).
 7. **Active intervals** (a sub-agent is active inside its own turns) and **totals**: the root
    lane's partitions, `raw_ops_ms`, `by_kind` (LLM verified vs gap, test sub-kinds), counts,
    failures vs query misses, compactions, background, `reviews`, tokens summed over all lanes;
    `parallel` = the sum and the union of sub-agent active intervals. Sub-agent time is never
    added to the root totals.
+
+### 5.5 Compound commands: the shared wall clock (product rule 3)
+
+One tool call can chain work of several categories — `go build ./... && go test ./...`, `npm
+run build && npm test | tail`, `while ssh … lease; do sleep 20; done; run-remote-tests.sh` —
+and both harnesses record one start and one end for the call, nothing per part (Codex's
+`CommandExecution` is per `exec_command`, already one op each; tool-printed durations exist in
+~5 % of such calls and are not used). Booking the whole call to its strongest phase (the
+`Priority` rule that still decides `Operation.phase`) made the other categories a blind zone,
+so the wall clock is **shared**:
+
+- `classify.Result.Parts` lists the call's jobs in order, each with its *category* — build,
+  test, release, infra, `wait_worker` for a `sleep N` or a loop that only sleeps, `unknown`
+  for a command that ran something. A job is a **pipeline** (the segments joined by `|`,
+  named by its strongest stage: `xcodebuild … | xcbeautify` is a build, `cat x | python3 s.py`
+  is a lookup), a **loop block** (`for` / `while` / `until` … `done` at depth 0, named by its
+  body's strongest non-sleep verdict, else a `poll-loop` wait — how many rounds it ran is not
+  in the log, so no literal seconds inside a block), or a heredoc's inner literal command.
+  Glue takes nothing: `code` (cd, echo, reads, searches, edits, git, formatters, rm), an infra
+  kind whose exit is not a verdict (`infraAttemptKinds` is the category set: docker, kubectl,
+  ssh / scp / rsync, brew / apt, rustup, setup scripts, remote VMs, devicectl; a chmod, a
+  kill, an open, a cleanup, an osascript take nothing — an equal share would hand them the
+  clock of the work next to them), a shell keyword, a bare assignment, a comment, the masked
+  heredoc itself, and an unknown line no rule named unless it reads as a command (a head with
+  a path, an extension, a variable or a dash, or at most four words — a line of prose from a
+  quoted block is not a command). A part's text drops the `do` / `then` that introduced it, so
+  `todobem unknown` keys an unknown part by its own head.
+- `model.SharesOf(parts)`: when the parts span ≥ 2 distinct categories, one `Share` per
+  category in first-appearance order (its first segment's kind and text, its sub-row). A
+  category is the phase **and its sub-row** — `npm ci && npm run build && npm test` is deps,
+  compile and test, three equal shares, not one build share named by whichever came first —
+  except unknown, one category whatever its sub-row. A top-level `sleep N` part carries its
+  literal milliseconds (`Literal`; `sleep $N` is an equal share). A single-category call is
+  not split.
+- `shareWallClock` (Derive, after the pending/background pass): literal shares keep their
+  seconds (capped at the wall clock), the remainder is divided equally among the other shares,
+  the last one taking the rounding remainder — Σ shares == wall clock exactly. The sweep lays
+  the shares back to back in share order (`spansOf`), so the fill reads build then test; the
+  slices carry `Segment.sub` (the share's sub-row) and `Segment.shared` (an equal share, not
+  the literal sleep). `by_phase` and `raw_by_phase` follow the shares; `by_phase_shared` (lane
+  and totals) is the estimated part of `by_phase` per phase.
+- Stages: a share serves `PhaseLifecycle(share.phase)` only when the op's stage was its phase
+  default (rule "phase X"); every other rule — a turn signal, a skill, a role, the plan window,
+  the change window, a kind pin, the operate-before-release guard — covers every share alike,
+  so the op's inspector line and its slices always read the same rule (`assignLifecycle`).
+  Model output around a split op brackets to the *adjacent slice's* stage (§6.4): before
+  `go build && go test` it is implementation, after it verification.
+- Unchanged: `Operation.phase`, `kind`, `identity` (retry groups), failure and query-miss
+  semantics, the op list and D9 shapes — the dominant segment still names the call. Insights
+  D16 sums time per slice (`Segment.phase`, `Segment.sub`) and counts the call once, under its
+  dominant phase, with the compound calls whose share landed in a row noted apart
+  (`ToolCallFacts.Shared`, `SharedMs`). Waits are measured, an equal share is not: the
+  wait findings (`WaitFacts`, D3 / D4) skip `Segment.shared` slices; a literal `sleep N`
+  slice counts as a wait of kind `sleep`.
+- What it is not: a measurement. Every place a shared number appears says so: the lane fill
+  hatches the estimated slices (`estHatch`), the breakdown row prints `≈` before the number
+  and "≈ X shared from compound commands" under the label, the inspector lists the split
+  ("Build 5s (1/2) · Testing 5s (1/2) — an equal split, not measured", and "the command
+  failed, so its later parts may not have run" when the `&&` chain may have stopped early),
+  D16's note counts the compound calls shared into a row, `cmd/dump -ops` prints one `share`
+  line per part and `cmd/dump` checks Σ shares == wall clock per op and shared ≤ by_phase per
+  key. The decision and its alternatives: §13, 2026-09-19.
 
 ---
 
@@ -538,6 +631,10 @@ the neighbouring turn. Then, inside a turn:
   the stage of the segment that covers it, so the operations a stage row lists and the time it
   shows agree (before 2026-09-15 the op kept `llm` while its segment carried the stage: a row
   with 875 operations and 0 s).
+
+A compound command split into shares (§5.5) is several anchors in a row: the model output
+before it takes the stage of its first slice, the output after it the stage of its last —
+before `go build && go test` implementation, after it verification.
 
 `by_lifecycle` sums the segments; the inspector shows every op's `lc` and `lc_rule` (the literal
 signal that decided it); the timeline's stage band draws runs of consecutive same-stage segments
@@ -653,10 +750,13 @@ only new or changed files have their head re-read.
 ## 9. UI (`cmd/todobem/web`)
 
 Pages (hash routes): the lock screen (on a 401), **Sessions** (the list with source marks,
-last answer, a pulsing `?` for a pending question — under the default order the active sessions
-come first, then those with a pending question, then the rest by update time; an explicit sort
-is its key alone — the period / project / source filter of `filter.js`), **Session**, **Insights**, **Settings**, and the guide dialog ("How to read")
-that lists the live rule tables from `/api/rules`.
+last answer, a pulsing `?` for a pending question — a question asked within the last day
+(`ASK_WINDOW`); an older one stays recorded but is no longer presented as waiting — under the
+default order the active sessions come first, then those with a pending question, then the
+rest by update time; an explicit sort is its key alone — the period / project / source filter
+of `filter.js`; the "active" and "waiting" chips sit on a status row under the Updated stamp,
+never inline after it), **Session**, **Insights**, **Settings**, and the guide dialog ("How to
+read") that lists the live rule tables from `/api/rules`.
 
 ### 9.1 The session page
 
@@ -694,8 +794,15 @@ to the parent; only lanes alive in the window are drawn). Inside a row:
 - the **fill** is the raw exclusive partition (§5.5): teal is model output, colours are tool
   phases, grey is waiting for the user, hatched is missing telemetry — *what ran*;
 - the **stage band** above the fill is the lifecycle partition: runs of consecutive same-stage
-  segments in the stage colours with a label, the model / tools split and the tool-call count in
-  the tooltip; time outside the stages leaves the band empty — *why*. It replaced the activity
+  segments in the stage tones with a label, the model / tools split and the tool-call count in
+  the tooltip; time outside the stages leaves the band empty — *why*. Hue = stage, tint =
+  activity: each of the eight stages has its own hue and is drawn in the pure colour (the band,
+  the strip under the overview, the ring, a rail in the breakdown, the legend pipeline); an
+  activity that serves a stage by default — Development → Implementation, Testing →
+  Verification, Release & deploy → Deployment, Infrastructure → Maintenance — is a lighter
+  tint of that hue (L + .08, chroma × .9 in OKLab), never the stage's hex, so the two legends
+  read as one family per concept and never as one mark; the activities no stage owns keep hues
+  no stage has (decision of 2026-09-19, §13). It replaced the activity
   brackets (a run of tool calls of one phase plus the model output before each call) on
   2026-09-15: a bracket attributed model time to the next call by phase and contradicted the
   stage of the same minutes;
@@ -718,13 +825,15 @@ only" changes the denominator):
   "Model output, no tool call": inside or between the stages, same denominator, so the two lists
   add up to the whole;
 - **Activity** — the phases, with **sub-rows** for Development (reading, searching, editing,
-  git, code hosting, network, MCP, shell), Waiting for workers (sub-agents, polling, hooks) and
-  Unknown (scripts, tools, commands); then attempts and retries, background processes, sub-agent
-  time. Every row filters the operations list; a stage row, a phase row, a sub-row and a role
+  git, code hosting, network, MCP, shell), Build (compiling & bundling, installing
+  dependencies), Waiting for workers (sub-agents, polling, hooks) and Unknown (scripts, tools,
+  commands); then attempts and retries, background processes, sub-agent time. Every row filters the operations list; a stage row, a phase row, a sub-row and a role
   are mutually exclusive filters.
 
 Raw op-sum is shown next to exclusive time; a "Failures only" toggle lists failed steps and
-leaves query misses out.
+leaves query misses out. An operation row's square is its activity, never its stage: a stage
+filter lists rows of every activity that served it (a test run inside the change window is a
+yellow square under Implementation), and the stage is named in the inspector.
 
 ---
 
@@ -804,7 +913,7 @@ denominator nor in "no data" — the page says "of M sessions with changes".
 | D7 | Failures and retries | exposure | a retry group with a failed attempt; per failed-to-retry window, what ran between the failure and the retry (only reads, a fix on any lane, an infra step, a wait, another step, several kinds, a user turn) and whether the retry failed again | the retry, fix, recovery and queue time, by shape; a group on a sub-agent lane is parallel time; stats: windows by recovery path, blind test retries that passed |
 | D15 | Failures and retries | info | a failed step in the code phase (edit, patch, script, shell, git, hosting, network); query misses and CI status waits excluded | count, by subgroup |
 
-| D16 | Tool calls | info | the main thread's tool calls by phase and subgroup, with query misses and failures | exclusive time, calls (own group) |
+| D16 | Tool calls | info | the main thread's tool calls by phase and subgroup, with query misses and failures; a compound command's shares land in their categories, the call counted once, the shared part noted | exclusive time, calls (own group) |
 | D9 | Long tool runs | exposure | the longest verdict-phase ops and stop hooks, for shapes that ran at least twice in the period | their time, by shape (a hook under its command, marked); the per-run average of the longest shape on the card; sub-agent runs are parallel time |
 | D12 | Long tool runs | exposure | background ops | how long they kept running; sub-agent ops are parallel time |
 | D11 | Context size | exposure | compaction events; how many sat between two edits of one turn is a stat | their pauses; context before, re-read after; the share over the main thread's time in turns |
@@ -1024,3 +1133,72 @@ simulation (the three Claude Code sessions matched to the second).
   product), stage-shape and commit-batch dashboards (no action), cards that would read "0 of
   M" and never render (max_tokens, userModified, fast mode), everything needing paths on
   operations (batch 2) or per-op tokens.
+- **2026-09-19, build time readable as compile time.** The build phase lumped dependency
+  installs with compilation, so "how long did the project build" had no honest answer; the
+  phase now carries `compile` / `deps` sub-rows (the same mechanism as Development's), the
+  D16 keys follow (`build:compile`, `build:deps`). `make` and `ninja` are judged by their
+  targets with the options stripped (`make -C src test` was build; `make clean all` was
+  cleanup); a bare `make` and an artifact target build, an unlisted phony target is unknown
+  under its name — the review held today's "any target builds" default against product rule 3
+  and the dispatcher-verb precedent, and the artifact rule keeps the CMake / autotools case.
+  Package runners (`npx`, `bunx`, `pnpm dlx`, `bundle exec`, `uv run`, …) unwrap to the tool
+  they run instead of one row per `npx <tool>`, and `seg:` rules see the unwrapped segment —
+  without that, `npx -y tsc --noEmit` would have turned from an honest unknown into a wrong
+  build (`./node_modules/.bin/tsc --noEmit` already was one). `bundle exec rspec` had been a
+  build because the executable name matched the build-script regex; `bun test` / `deno lint`
+  had been right by accident (the subcommand judged as a script name) and have rows now. The
+  C / C++ toolchain, the build systems (cmake, ctest, meson, ninja, bazel, scons, zig) and the
+  package managers of the ecosystems in scope have rows; the JVM / .NET / Haskell / Elixir /
+  OCaml / Flutter rows drafted with them were cut — no session behind them, and `mvn -B test`
+  shows they need their own option stripping to be right; grow them from `todobem unknown`.
+  `cargo run` / `go run` / `bazel run` / `deno run` stay unknown (they run the product),
+  `brew` / `apt` stay infra (system packages, not the project's). Kept: the multi-segment rule
+  — `go build && go test` is one test op, the largest remaining understatement of "total build
+  time" and a per-segment-partition (schema) decision, not this change.
+- **2026-09-19, compound commands share their wall clock.** The multi-segment rule booked
+  `go build && go test` entirely to test; over 300 sessions such mixed calls were 713 ops /
+  6h26m (build-involving 426 / 1h15m; poll-loop-then-remote-test 197 / 4h50m), and the logs
+  hold no per-part time (one clock per call in both harnesses; tool-printed durations in ~5 %
+  of them, and often cut off by `| tail`). Three answers were weighed: (a) split only where a
+  tool printed its own duration — honest, ~5 % coverage, a marker table per tool; (b) record
+  the composition without time and show the unattributable total — honest, but the owner's
+  point was that hours booked to one phase are a blind zone for the others; (c) share the
+  wall clock equally per distinct category, literal `sleep N` exact, marked and summed apart.
+  The owner chose (c) as the declared exception to "no guessing": a known-even estimate beats
+  a silent all-to-one. Per category, not per segment (`build && test && lint && typecheck` is
+  50/50, not 25/75): the categories are what the question is about. The dominant phase still
+  names the op, so retry groups, failures and shapes did not move. (a) remains a possible
+  refinement on the same `Shares` schema (a measured share would replace an equal one).
+- **2026-09-19, stage hues and activity tints (reviewed by the `pragmatic` agent).** Four of
+  the eight stage colours were their home activity's hex (Implementation = Development blue,
+  Verification = Testing yellow, Deployment = Release green, Maintenance = Infrastructure tan),
+  on the theory that colour = concept and the shape (square vs rail) would keep the partitions
+  apart. In use the two legends read as one. Weighed: (a) a diagonal hatch on the activity
+  fills — rejected: the fill is the densest layer (segments of 1–3 px turn a hatch into noise)
+  and hatch already means measurement quality here (no telemetry, a worker wait, an estimated
+  share); (b) a second multi-hue palette clear of the eleven fills — nineteen hues do not stay
+  apart on a dark surface; (c) the stages as four tones of one rose hue, darker along the
+  pipeline, the activities keeping their hues — built, and rejected by the owner the same day:
+  the stage is the concept and must keep a unique hue of its own, the activity is the derived
+  mark; (d) chosen: every stage keeps its hue (the palette as it was), and the activity that
+  serves a stage by default becomes the lighter tint of that hue (L + .08, chroma × .9 in
+  OKLab: Development `#68a9e2`, Testing `#f0d76c`, Release & deploy `#6dbd7c`, Infrastructure
+  `#dbaf8c`; ≥ 5.6:1 on the surface). The tint is lighter, not darker, because a darker
+  Infrastructure lands on Context compaction (ΔE 4.8) and a darker Development on model
+  output (8.8); lighter moves every tint away from its nearest neighbour except Testing from
+  the user-wait grey (17 → 11, both still above the CVD floor). Infrastructure pairs with
+  Maintenance / operations as the legend always did, although `PhaseLifecycle` sends the
+  infra phase to Implementation by default and only the log / service kinds pin Maintenance:
+  the pairing is the concept the reader sees, not the default. Consequences kept from (c):
+  the strip under the overview and the legend take dark ink (≥ 4.2:1 on every stage hue;
+  the white ink before it was under 2:1 on the pale stages), the ring's percentage keeps a
+  halo in the surface colour because the waterline can cross it, the skill marker takes its
+  own literal instead of the review stage's colour, and the legend draws the stages as the
+  pipeline (eight steps on their hues) rather than a second grid of swatches beside the
+  activity one. The owner's follow-up the same day: a stage filter listing yellow test runs
+  under blue Implementation read as a contradiction; the stage is a property of the run, not
+  of the activity (a test between two edits is the loop, after the last edit the check), so
+  the square is never recoloured by the stage; a glow of the stage's hue around the square was
+  tried the same day and withdrawn by the owner — the row keeps the plain activity square, the
+  inspector names the stage. Noted, not changed: Release & deploy and Waiting for workers were ΔE 5.9
+  apart before and are 7.1 now; Context compaction and Infrastructure 4.7 before, 12.4 now.

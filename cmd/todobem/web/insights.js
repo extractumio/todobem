@@ -237,7 +237,7 @@ const INSIGHT_TEXT = {
     },
     D16: {
       title: 'What the tool calls did',
-      signal: 'Every tool call on the main thread, grouped by what it did. Reading files, searching, editing, git, code hosting, network, shell; build, test, release, infrastructure; sub-agents, polling, hooks.',
+      signal: 'Every tool call on the main thread, grouped by what it did. Reading files, searching, editing, git, code hosting, network, shell; compiling, installing dependencies, test, release, infrastructure; sub-agents, polling, hooks.',
       measured: 'The calls and their exclusive time per group, the same partition as the session breakdown. How many found nothing or failed.',
       happened: c => {
         const s = c.stats || {};

@@ -173,6 +173,19 @@ func assignLifecycle(l, parent *Lane) {
 			o.LifecycleRule = "kind " + o.Kind
 		}
 	}
+	// a compound command's shares: each category serves its own default stage when the op's
+	// stage is only its phase default; every other rule — a turn signal, a skill, a role, the
+	// plan or change window, a kind pin, the operate-before-release guard — covers every share
+	// alike, so the op and its slices always read the same rule
+	for _, o := range l.Ops {
+		for i := range o.Shares {
+			sh := &o.Shares[i]
+			sh.Lifecycle = o.Lifecycle
+			if o.LifecycleRule == "phase "+string(o.Phase) {
+				sh.Lifecycle = classify.PhaseLifecycle(sh.Phase)
+			}
+		}
+	}
 	splitSegmentsAtTurns(l)
 	segs := l.Segments
 	n := len(segs)
@@ -208,9 +221,20 @@ func assignLifecycle(l, parent *Lane) {
 		if sg.Op != "" {
 			op = opByID[sg.Op]
 		}
+		opLc := Lifecycle("")
+		if op != nil {
+			opLc = op.Lifecycle
+			if len(op.Shares) > 0 { // a split op: the slice's own category decides
+				for _, sh := range op.Shares {
+					if sh.Phase == sg.Phase && sh.Sub == sg.Sub {
+						opLc = sh.Lifecycle
+					}
+				}
+			}
+		}
 		switch {
-		case op != nil && classify.IsWorkLifecycle(op.Lifecycle):
-			sg.Lifecycle, kind[i] = op.Lifecycle, segAnchor
+		case op != nil && classify.IsWorkLifecycle(opLc):
+			sg.Lifecycle, kind[i] = opLc, segAnchor
 		case sg.Phase == classify.LLM: // model output, or a message op without a stage of its own
 			kind[i] = segModel
 		case sg.Phase == classify.Unknown:
@@ -219,7 +243,7 @@ func assignLifecycle(l, parent *Lane) {
 			// a harness interruption, not a decision the model made: transparent to the bracket
 			sg.Lifecycle, kind[i] = Lifecycle(sg.Phase), segTransparent
 		case op != nil:
-			sg.Lifecycle = op.Lifecycle
+			sg.Lifecycle = opLc
 		default:
 			sg.Lifecycle = Lifecycle(sg.Phase)
 		}

@@ -33,6 +33,14 @@ func TestSubgroupCoversEveryKind(t *testing.T) {
 	for _, k := range []string{"unknown", "python", "node", "run", "tool:Artifact", "exec-script-error"} {
 		check(Unknown, k)
 	}
+	for _, k := range []string{"build-flag", "build-script", "script→make"} {
+		check(Build, k)
+	}
+	for k := range DepsKinds {
+		if Subgroup(Build, k) != "deps" {
+			t.Errorf("deps kind %q does not map to the deps sub-row", k)
+		}
+	}
 	cases := map[[2]string]string{
 		{"code", "read"}: "read", {"code", "image"}: "read", {"code", "search"}: "search", {"code", "list"}: "search",
 		{"code", "edit"}: "edit", {"code", "sed -i"}: "edit", {"code", "format"}: "edit", {"code", "git rm"}: "edit",
@@ -41,6 +49,8 @@ func TestSubgroupCoversEveryKind(t *testing.T) {
 		{"code", "probe"}: "shell", {"code", "script→docker"}: "shell", {"code", "script-write"}: "edit",
 		{"wait_worker", "agent"}: "agents", {"wait_worker", "hook"}: "hooks", {"wait_worker", "ci"}: "polling", {"wait_worker", "sleep"}: "polling",
 		{"unknown", "python"}: "script", {"unknown", "tool:Artifact"}: "tool", {"unknown", "unknown"}: "command",
+		{"build", "cargo build"}: "compile", {"build", "build-flag"}: "compile", {"build", "make"}: "compile", {"build", "cc"}: "compile", {"build", "go install"}: "compile",
+		{"build", "npm install"}: "deps", {"build", "go install tool"}: "deps", {"build", "make deps"}: "deps", {"build", "npm install|rerun"}: "deps", {"build", "script→pip install"}: "deps",
 		{"test", "go test"}: "", {"release", "git push"}: "", {"llm", "reasoning"}: "", {"compaction", "compaction"}: "",
 	}
 	for k, want := range cases {

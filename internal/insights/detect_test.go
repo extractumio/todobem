@@ -163,7 +163,11 @@ func TestExtractLaneKindsGapsAndShapes(t *testing.T) {
 	if got := Shape(classify.Release, "/p\ngit push --force-with-lease origin main"); got != "release git push" {
 		t.Fatalf("shape %q", got)
 	}
-	if got := Shape(classify.Test, "/p\nmake -j8 test"); got != "test make" {
+	// make's options go and its target names the shape: `make -j8 test` and `make test` are one
+	if got := Shape(classify.Test, "/p\nmake -j8 test"); got != "test make test" {
+		t.Fatalf("shape %q", got)
+	}
+	if got := Shape(classify.Build, "/p\nmake -C src -j8 all"); got != "build make all" {
 		t.Fatalf("shape %q", got)
 	}
 	// the deciding segment names the shape, not the first word of the text

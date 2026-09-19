@@ -164,12 +164,10 @@ func collectUnknown(srv *server.Server, ids []string, withOps bool) unknownRepor
 					if toolPhase[o.Phase] {
 						rep.ToolMs += o.End - o.Start
 					}
-					if o.Phase != classify.Unknown {
+					// the whole op, or the unknown share of a compound command (its own segment)
+					cmd, ms, ok := o.Booked(classify.Unknown)
+					if !ok {
 						continue
-					}
-					cmd := o.Detail
-					if cmd == "" {
-						cmd = o.Title
 					}
 					head := classify.Head(cmd)
 					if strings.HasPrefix(o.Kind, "tool:") {
@@ -180,7 +178,6 @@ func collectUnknown(srv *server.Server, ids []string, withOps bool) unknownRepor
 					if head == "" {
 						head = o.Title
 					}
-					ms := o.End - o.Start
 					rep.UnknownOps++
 					rep.UnknownMs += ms
 					h := heads[head]
