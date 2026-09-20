@@ -191,3 +191,44 @@ func TestExtractLaneKindsGapsAndShapes(t *testing.T) {
 		}
 	}
 }
+
+// TestSleepsCountTheAgentsOwnWaits: a `sleep`, a poll loop and a `tail -f` on the root are the
+// card's findings, keyed by kind with their measured time; the harness's wait for a sub-agent
+// and a CI watch are not, and a session with only those has no finding.
+func TestSleepsCountTheAgentsOwnWaits(t *testing.T) {
+	root := &model.Lane{ID: "R", Path: "/root", Started: 0, Ended: 20 * minute}
+	root.Turns = []*model.Turn{{ID: "t1", Start: 0, End: 20 * minute, Status: "completed"}}
+	sleep := op("s1", "R", classify.WaitWorker, "sleep", 1*minute, 1*minute+30*1000, "completed")
+	loop := op("l1", "R", classify.WaitWorker, "poll-loop", 3*minute, 8*minute, "completed")
+	tail := op("f1", "R", classify.WaitWorker, "tail-f", 9*minute, 10*minute, "completed")
+	agent := op("w1", "R", classify.WaitWorker, "agent", 11*minute, 15*minute, "completed")
+	ci := op("c1", "R", classify.WaitWorker, "ci", 16*minute, 18*minute, "completed")
+	for _, o := range []*model.Operation{sleep, loop, tail, agent, ci} {
+		o.Turn = "t1"
+	}
+	root.Ops = []*model.Operation{sleep, loop, tail, agent, ci}
+	f := Extract(session(t, root))
+	r := detectSleeps(&f)
+	if !r.Measurable || len(r.Findings) != 3 {
+		t.Fatalf("findings %+v", r.Findings)
+	}
+	want := map[string]int64{"sleep": 30 * 1000, "poll loop": 5 * minute, "tail -f": 1 * minute}
+	for _, fd := range r.Findings {
+		if want[fd.Key] != fd.TimeMs {
+			t.Fatalf("%s: %d ms, want %d", fd.Key, fd.TimeMs, want[fd.Key])
+		}
+		delete(want, fd.Key)
+	}
+	if len(want) != 0 || r.Stats["sleep"] != 1 || r.Stats["poll-loop"] != 1 || r.Stats["tail-f"] != 1 {
+		t.Fatalf("keys left %v, stats %v", want, r.Stats)
+	}
+	if r.Findings[0].Note != "sleep · 30 s" || r.Findings[1].Note != "poll loop · 5 min 0 s" {
+		t.Fatalf("notes %q %q", r.Findings[0].Note, r.Findings[1].Note)
+	}
+	// negative: only the harness's waits
+	root.Ops = []*model.Operation{agent, ci}
+	f = Extract(session(t, root))
+	if r := detectSleeps(&f); !r.Measurable || len(r.Findings) != 0 {
+		t.Fatalf("harness waits counted: %+v", r.Findings)
+	}
+}

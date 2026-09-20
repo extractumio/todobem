@@ -185,6 +185,17 @@ const INSIGHT_TEXT = {
       },
       todo: 'Try a faster or incremental version. Or start it early and let the agent do other work while it runs. A slow stop hook holds every turn: narrow it or move it to a pre-commit step.',
     },
+    D26: {
+      title: 'Sleeps and polling loops',
+      signal: 'A wait the agent wrote itself on the main thread: a `sleep N`, a polling loop, a `tail -f`. The harness\'s own waits — for a sub-agent, a CI watch, a stop hook — are not counted here.',
+      measured: 'The time of each such wait, by kind. The per-run average on the card is the interval the agent chose. What it was waiting for is not inferred.',
+      happened: c => {
+        const top = c.distribution && c.distribution[0];
+        const first = top ? ` Most of it: ${top.label}, ${top.n} runs, ${fmt(top.time_ms)}, ${fmt(top.time_ms / Math.max(1, top.n), true)} per run.` : '';
+        return `Sleeps and polling loops the agent wrote took ${mainText(c)}.${first} ${inSessions(c)}`;
+      },
+      todo: 'The agent picks the interval; the harness has no say beyond the tool\'s timeout. Many short rounds: a longer interval, or a blocking wait such as `gh run watch` or a `--wait` flag, costs fewer tool calls. A few long sleeps: a shorter interval returns control sooner. Tell the agent in CLAUDE.md or AGENTS.md how to wait for what it usually polls, or give it a command that blocks until ready.',
+    },
     D12: {
       title: 'Processes left running',
       signal: 'A command that kept running after its turn ended (a server, a watcher).',

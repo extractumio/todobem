@@ -108,6 +108,7 @@ var Catalogue = []Detector{
 
 	{ID: "D9", Group: GroupLongRuns, Title: "Long tool runs", Run: detectLongRuns},
 	{ID: "D12", Group: GroupLongRuns, Title: "Processes left running", Run: detectBackground},
+	{ID: "D26", Group: GroupLongRuns, Title: "Sleeps and polling loops", Run: detectSleeps},
 	{ID: "D11", Group: GroupContext, Title: "Context compaction pauses", Run: detectCompactions},
 	{ID: "T2", Group: GroupContext, Title: "Context size", Class: ClassInfo, Run: detectContextSize},
 	{ID: "M1", Group: GroupModels, Title: "Model time by model, effort and stage", Class: ClassInfo, Run: detectModelTime},

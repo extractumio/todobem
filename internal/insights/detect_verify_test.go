@@ -157,7 +157,7 @@ func TestRetryWindowPathsAndCompactionAndQuestionStats(t *testing.T) {
 			n++
 		}
 	}
-	if n != 3 || len(Catalogue) != 22 {
+	if n != 3 || len(Catalogue) != 23 {
 		t.Fatalf("catalogue: %d checks, %d detectors", n, len(Catalogue))
 	}
 }
