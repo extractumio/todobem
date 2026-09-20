@@ -33,7 +33,7 @@ async function inspectMarker(key) {
   const ownsRequest = () => request === inspectorRequest && dlg.open && state.page === 'session' && current()?.id === m.id;
   if (mk.src) {
     try {
-      const d = await api(`/api/event?file=${encodeURIComponent(mk.src.file)}&off=${mk.src.off}&len=${mk.src.len}`);
+      const d = await api(`/api/event?session=${encodeURIComponent(m.id)}&file=${encodeURIComponent(mk.src.file)}&off=${mk.src.off}&len=${mk.src.len}`);
       if (ownsRequest()) source.textContent = JSON.stringify(d, null, 1).slice(0, 60000);
     } catch (e) { if (ownsRequest()) source.textContent = 'unavailable'; }
   } else source.textContent = '(no source pointer)';
@@ -134,7 +134,7 @@ async function inspectLane(id) {
   const ownsRequest = () => request === inspectorRequest && dlg.open && state.page === 'session' && current()?.id === m.id;
   try {
     const src = prompt.marker.src;
-    const d = await api(`/api/event?file=${encodeURIComponent(src.file)}&off=${src.off}&len=${src.len}`);
+    const d = await api(`/api/event?session=${encodeURIComponent(m.id)}&file=${encodeURIComponent(src.file)}&off=${src.off}&len=${src.len}`);
     if (!ownsRequest()) return;
     source.textContent = JSON.stringify(d, null, 1).slice(0, 60000);
     const content = d.payload?.content || [];

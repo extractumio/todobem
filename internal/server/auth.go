@@ -82,12 +82,17 @@ func jsonPost(w http.ResponseWriter, r *http.Request) bool {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return false
 	}
-	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || mt != "application/json" {
+	if !jsonBody(r) {
 		http.Error(w, "expected application/json", http.StatusUnsupportedMediaType)
 		return false
 	}
 	return true
+}
+
+// jsonBody reports whether a request declares a JSON body.
+func jsonBody(r *http.Request) bool {
+	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	return err == nil && mt == "application/json"
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -107,27 +112,58 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
-	ttl, err := s.auth.RedeemToken(body.Token, now)
-	if err != nil {
-		reason := "invalid"
-		switch {
-		case errors.Is(err, auth.ErrExpired):
-			reason = "expired"
-		case errors.Is(err, auth.ErrUsed):
-			reason = "used"
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "auth", "reason": reason})
+	value, expiry, reason, err := redeem(s.auth, body.Token, now)
+	if reason != "" {
+		jsonError(w, http.StatusUnauthorized, "auth", reason)
 		return
 	}
-	value, _, err := s.auth.MintSession(ttl, now)
 	if err != nil {
 		http.Error(w, "auth key unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: value, Path: "/api", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: int(ttl / time.Second)})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: value, Path: "/api", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: int(expiry.Sub(now) / time.Second)})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// redeem exchanges a one-time token for a session: the UI's login and an agent's pairing are
+// the same step. reason names a refused token for the caller ("invalid", "expired", "used");
+// err is a key that could not sign.
+func redeem(v *auth.Verifier, token string, now time.Time) (value string, expiry time.Time, reason string, err error) {
+	ttl, err := v.RedeemToken(token, now)
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrExpired):
+			return "", time.Time{}, "expired", nil
+		case errors.Is(err, auth.ErrUsed):
+			return "", time.Time{}, "used", nil
+		}
+		return "", time.Time{}, "invalid", nil
+	}
+	value, expiry, err = v.MintSession(ttl, now)
+	return value, expiry, "", err
+}
+
+// jsonError answers {"error": code, "reason": …}: the shape of every refusal the UI's gate and
+// the agent's port send.
+func jsonError(w http.ResponseWriter, status int, code, reason string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	body := map[string]string{"error": code}
+	if reason != "" {
+		body["reason"] = reason
+	}
+	json.NewEncoder(w).Encode(body)
+}
+
+// getOnly admits a GET, the twin of jsonPost.
+func getOnly(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return false
+	}
+	return true
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {

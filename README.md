@@ -103,7 +103,8 @@ report more complete, and the rules stay yours, in one inspectable JSON file.
 * **Every insight is a named detector with evidence.** A card without a session, lane or
   interval to open is not rendered. Exposure, distribution and advice — no savings estimates.
 * **Nothing leaves the machine.** Loopback bind, a token-locked UI, read-only access to the
-  rollout tree, no telemetry, no outbound calls. Ever.
+  rollout tree, no telemetry, no outbound calls — except the fleet you set up yourself: an
+  agent answers the hub it was paired with, a hub dials only its paired agents (see *Fleet*).
 
 ## Who it is for
 
@@ -249,7 +250,10 @@ ports.
   cause guessed from a duration; sessions that cannot carry a signal are listed as "no data".
   Change the period (7 / 30 / 90 days, all time, custom dates, one session), pick the project,
   order by time or by tokens, and **Analyze** the sessions that are not parsed yet. Plain English
-  throughout. Design and rules: `docs/ARCHITECTURE.md` §10.
+  throughout. Every report has an address you can copy: `#session/<id>/insights` is one
+  session's report, `#insights?f=…` the filters in force (the address bar follows them; the
+  session list has the same, `#sessions?f=…`, search and sort included).
+  Design and rules: `docs/ARCHITECTURE.md` §10.
 
 ## How it decides
 
@@ -290,6 +294,61 @@ the stage detection mechanism). Short version:
   shows a stale number. **Refresh** forces a full re-parse. Disable with `-cache=off`. The server
   prints the cache size at start; `todobem cache` reports it and `todobem cache -prune` drops the
   entries of sessions the configured folders do not list (another home, deleted rollouts).
+
+## Fleet: agents on your servers, one dashboard
+
+Run todobem headless on the machines where the agents work and read them all from one place.
+The **agent** is the same binary with `-agent`: it indexes and parses that host's sessions
+exactly as the viewer does and answers a **hub** — an ordinary todobem — over TLS (a
+self-signed certificate pinned when you pair) with a bearer on every request. It never
+connects anywhere; the hub dials only the agents in `~/.todobem/agents.json`. Design and the
+wire protocol: `docs/AGENT-MODE.md`.
+
+On each server (needs nothing but the binary):
+
+```
+todobem -agent                        # TLS on :7789, every interface; no UI; prints a pairing string
+AGENT=1 ./scripts/deploy.sh           # the same in the background, from a clone
+todobem agent pair                    # another pairing string later (one use, 5 min, against a running agent)
+```
+
+On the hub:
+
+```
+todobem hub add 'todobem-agent://…'   # pair (-name web-01 -addr 10.0.0.5:7789 before the string override)
+todobem hub list                      # every agent, reached or not, its build and session count
+todobem hub doctor web-01             # the agent's health report (-all: every agent, in parallel)
+todobem hub rotate web-01             # a new bearer; the old key retires on the new one's first use (-all)
+todobem hub remove -revoke web-01     # forget it (-revoke: nobody holds a bearer any more)
+```
+
+A hundred unattended agents want a supervisor, not a `nohup`; a unit to paste
+(`/etc/systemd/system/todobem-agent.service`, then `systemctl enable --now todobem-agent`):
+
+```
+[Unit]
+Description=todobem agent
+After=network-online.target
+
+[Service]
+User=ci
+ExecStart=/usr/local/bin/todobem -agent
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+A running hub picks the file up by itself; the Settings page has the same in a **Paired
+servers** section. Remote sessions join the list with a host chip and the id `<uuid>@<host>`,
+a **Host** filter sits next to Project (the same path on several hosts is one project entry,
+"· 3 hosts"), Insights take the host too, and a session opens through the hub — model, op
+details, source lines — as if it were local. The hub polls each agent every minute while you
+look and every ten minutes otherwise, asks only for what changed, fetches a model when you open
+its session, and keeps what it fetched so an unreachable agent still shows its last-known
+sessions. Models are comparable only between equal builds (the row says so otherwise); the list
+always works.
 
 ## Development
 

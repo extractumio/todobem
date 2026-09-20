@@ -55,7 +55,167 @@ const SETTINGS_TEXT = {
     savedToast: n => `Settings saved · ${plural(n, 'folder')} · sessions rescanned.`,
     saveFailed: why => `Could not save: ${why}`,
   },
+  // The Servers section: the paired agents (todobem -agent on other machines) this hub pulls
+  // sessions from. Bearers are never shown; the agents file holds them (docs/AGENT-MODE.md §5).
+  servers: {
+    title: 'Paired servers',
+    subtitle: 'Machines running todobem as an agent. This hub dials them — and nothing else — for their session lists, models and facts; their sessions appear in the list with a host chip and under the Host filter.',
+    none: 'No server paired. Start `todobem -agent` on a machine and paste its pairing string here, or run `todobem hub add` on this one.',
+    columns: ['Server', 'Address', 'Status', 'Build', 'Sessions', 'Facts', 'Bearer until'],
+    add: 'Add server',
+    adding: 'Pairing…',
+    pairing: 'Pairing string (todobem-agent://…)',
+    name: 'Name (default: its hostname)',
+    addr: 'Address host:port (default: from the string)',
+    poll: 'Poll now',
+    doctor: 'Doctor',
+    rotate: 'Rotate key',
+    remove: 'Remove',
+    removeAsk: name => `Remove ${name} from this hub? Its sessions leave the list; the agent keeps running.`,
+    rotateAsk: name => `Rotate the key on ${name}? The hub receives a new bearer; the old one dies on its first use.`,
+    doctorTitle: name => `Doctor · ${name}`,
+    close: 'Close',
+    status: {
+      ok: t => `ok · ${ago(t)}`,
+      never: 'not reached yet',
+      unreachable: (t, why) => `unreachable since ${stamp(t)} · ${why}`,
+      protocol: 'incompatible: the agent does not speak protocol v1',
+      models: 'build differs: models unavailable until one side is upgraded',
+      facts: 'build differs: facts unavailable',
+      expiring: days => `bearer expires in ${days} d — rotate`,
+    },
+    savedIn: path => `Recorded in ${path} (bearers inside; mode 0600). The command line does the same: todobem hub add | list | remove | doctor | rotate.`,
+    failed: why => `Could not do that: ${why}`,
+    fleet: n => `${n} paired`,
+  },
 };
+
+function serversState() {
+  const st = settingsState();
+  if (!st.servers) st.servers = { data: null, error: '', busy: '', pairing: '', name: '', addr: '', doctor: null };
+  return st.servers;
+}
+
+async function loadServers() {
+  const sv = serversState();
+  const navigation = navigationRequest;
+  try {
+    const data = await api('/api/fleet');
+    if (navigation !== navigationRequest) return;
+    sv.data = data;
+    sv.error = '';
+  } catch (e) {
+    if (navigation !== navigationRequest || e instanceof AuthError) return;
+    sv.data = sv.data || { agents: [] };
+    sv.error = e.message;
+  }
+  renderSettings();
+}
+
+// serversInput: a keystroke in one of the add-server fields updates the draft only.
+function serversInput(field, value) {
+  const sv = serversState();
+  if (field in sv) sv[field] = value;
+}
+
+// serversAction runs one of the Servers section's actions; every one is a JSON POST answered
+// with the fresh status of every agent.
+async function serversAction(a, el) {
+  const sv = serversState();
+  const T = SETTINGS_TEXT.servers;
+  const name = el && el.dataset ? el.dataset.name : '';
+  if (a === 'set-srv-doctor-close') {
+    sv.doctor = null;
+    renderSettings();
+    return;
+  }
+  if (a === 'set-srv-doctor') {
+    sv.busy = 'doctor:' + name;
+    renderSettings();
+    try {
+      const rep = await api('/api/fleet/doctor?name=' + encodeURIComponent(name));
+      sv.doctor = { name, text: JSON.stringify(rep, null, 2) };
+      sv.error = '';
+    } catch (e) {
+      if (e instanceof AuthError) return;
+      sv.error = T.failed(e.message);
+    }
+    sv.busy = '';
+    renderSettings();
+    return;
+  }
+  let path = '', body = {};
+  if (a === 'set-srv-add') {
+    if (!sv.pairing.trim()) return;
+    path = '/api/fleet/add';
+    body = { pairing: sv.pairing.trim(), name: sv.name.trim(), addr: sv.addr.trim() };
+  } else if (a === 'set-srv-remove') {
+    if (!confirm(T.removeAsk(name))) return;
+    path = '/api/fleet/remove';
+    body = { name };
+  } else if (a === 'set-srv-rotate') {
+    if (!confirm(T.rotateAsk(name))) return;
+    path = '/api/fleet/rotate';
+    body = { name };
+  } else if (a === 'set-srv-poll') {
+    path = '/api/fleet/poll';
+    body = { name };
+  } else return;
+  sv.busy = a + ':' + name;
+  renderSettings();
+  const r = await apiPost(path, body);
+  sv.busy = '';
+  if (r.status === 401) {
+    lock();
+    return;
+  }
+  if (!r.ok) {
+    sv.error = T.failed(postFailure(r));
+    renderSettings();
+    return;
+  }
+  sv.error = '';
+  sv.data = r.payload; // every action answers with the fresh status of every agent
+  if (a === 'set-srv-add') {
+    sv.pairing = '';
+    sv.name = '';
+    sv.addr = '';
+  }
+  renderSettings();
+  refreshSessionList(); // the session list gains or loses a host, or gets fresh rows
+}
+
+// serverStatusHTML is the Status cell: reachability first, then compatibility, then the bearer.
+function serverStatusHTML(a) {
+  const T = SETTINGS_TEXT.servers.status;
+  const notes = [];
+  if (a.since) notes.push(['warn', T.unreachable(a.since, a.error || '')]);
+  else if (a.last_ok) notes.push(['', T.ok(a.last_ok)]);
+  else notes.push(['', T.never]);
+  if (a.protocol < 0) notes.push(['warn', T.protocol]);
+  else if (a.reached && !a.models_ok) notes.push(['warn', T.models]);
+  if (a.reached && a.models_ok && !a.facts_ok) notes.push(['warn', T.facts]);
+  const days = Math.floor((a.expires - Date.now()) / DAY_MS);
+  if (a.expires && days < 30) notes.push(['warn', T.expiring(Math.max(0, days))]);
+  return notes.map(([cls, text]) => `<span class="home-status ${cls}">${esc(text)}</span>`).join('<br>');
+}
+
+function serversSectionHTML(st) {
+  const T = SETTINGS_TEXT.servers;
+  const sv = serversState();
+  const agents = (sv.data && sv.data.agents) || [];
+  const busy = sv.busy;
+  const row = a => `<tr><td><strong>${esc(a.name)}</strong></td><td class="mono">${esc(a.addr)}</td><td>${serverStatusHTML(a)}</td><td class="mono">${esc(a.version || '—')}</td><td class="mono">${a.sessions}</td><td class="mono">${a.digested}/${a.sessions}</td><td class="mono">${a.expires ? dayLabel(a.expires) : '—'}</td><td class="server-actions"><button class="btn small ghost" data-action="set-srv-poll" data-name="${esc(a.name)}" ${busy ? 'disabled' : ''}>${esc(T.poll)}</button><button class="btn small ghost" data-action="set-srv-doctor" data-name="${esc(a.name)}" ${busy ? 'disabled' : ''}>${esc(T.doctor)}</button><button class="btn small ghost" data-action="set-srv-rotate" data-name="${esc(a.name)}" ${busy ? 'disabled' : ''}>${esc(T.rotate)}</button><button class="btn small ghost" data-action="set-srv-remove" data-name="${esc(a.name)}" ${busy ? 'disabled' : ''}>${icon('close', true)}${esc(T.remove)}</button></td></tr>`;
+  const table = agents.length
+    ? `<table class="fleet-table servers-table"><thead><tr>${T.columns.map(c => `<th>${esc(c)}</th>`).join('')}<th></th></tr></thead><tbody>${agents.map(row).join('')}</tbody></table>`
+    : `<p class="muted-note">${icon('info', true)}${esc(T.none)}</p>`;
+  const adding = busy.startsWith('set-srv-add');
+  const form = `<div class="home-rows server-add"><input class="lock-input" type="text" data-server="pairing" value="${esc(sv.pairing)}" placeholder="${esc(T.pairing)}" aria-label="${esc(T.pairing)}" autocomplete="off" spellcheck="false"><div class="home-row"><input class="lock-input" type="text" data-server="name" value="${esc(sv.name)}" placeholder="${esc(T.name)}" aria-label="${esc(T.name)}" autocomplete="off" spellcheck="false"><input class="lock-input" type="text" data-server="addr" value="${esc(sv.addr)}" placeholder="${esc(T.addr)}" aria-label="${esc(T.addr)}" autocomplete="off" spellcheck="false"></div><div class="settings-actions"><button class="btn primary" type="button" data-action="set-srv-add" ${busy ? 'disabled' : ''}>${icon('check', true)}${esc(adding ? T.adding : T.add)}</button></div></div>`;
+  const doctor = sv.doctor ? `<details class="json-details" open><summary>${esc(T.doctorTitle(sv.doctor.name))} <button class="btn small ghost" type="button" data-action="set-srv-doctor-close">${esc(T.close)}</button></summary><pre class="event-log">${esc(sv.doctor.text)}</pre></details>` : '';
+  const error = sv.error ? `<p class="lock-note" role="alert">${esc(sv.error)}</p>` : '';
+  const note = sv.data && sv.data.path ? `<p class="muted-note">${icon('info', true)}${esc(T.savedIn(sv.data.path))}</p>` : '';
+  return `<section class="card settings-source" aria-labelledby="set-servers"><div class="card-head"><div><h2 id="set-servers">${esc(T.title)}${agents.length ? ` <span class="count">${esc(T.fleet(agents.length))}</span>` : ''}</h2><p>${esc(T.subtitle)}</p></div></div><div class="settings-body">${error}${table}${doctor}${form}${note}</div></section>`;
+}
 
 function settingsState() {
   if (!state.settings) state.settings = { loading: false, error: '', data: null, draft: {}, saving: false };
@@ -96,6 +256,7 @@ async function loadSettings() {
   st.loading = true;
   st.error = '';
   renderSettings();
+  loadServers();
   try {
     const data = await api('/api/settings');
     if (navigation !== navigationRequest) return;
@@ -123,8 +284,7 @@ async function saveSettings() {
     return;
   }
   if (!r.ok) {
-    const why = r.payload && r.payload.error ? r.payload.error : (r.text || '').trim() || `HTTP ${r.status}`;
-    st.error = SETTINGS_TEXT.states.saveFailed(why);
+    st.error = SETTINGS_TEXT.states.saveFailed(postFailure(r));
     renderSettings();
     return;
   }
@@ -133,13 +293,18 @@ async function saveSettings() {
   st.draft = draftOf(r.payload);
   renderSettings();
   toast(SETTINGS_TEXT.states.savedToast(draftCount(st)));
-  // the session list is the new folders' now
-  loadSessions().then(applied => { if (applied && state.page === 'sessions') render(); }).catch(() => {});
+  refreshSessionList(); // the session list is the new folders' now
+}
+
+// postFailure: why a JSON POST failed, as the page tells it (the server's error line or the status).
+function postFailure(r) {
+  return r.payload && r.payload.error ? r.payload.error : (r.text || '').trim() || `HTTP ${r.status}`;
 }
 
 function settingsAction(a, el) {
   const st = settingsState();
   if (a === 'settings') return go('settings');
+  if (a.startsWith('set-srv-')) return serversAction(a, el);
   if (a === 'set-add') {
     const source = el.dataset.source;
     if (!st.draft[source]) st.draft[source] = [];
@@ -219,7 +384,7 @@ function settingsPage() {
     const foot = pinned
       ? `<p class="muted-note">${icon('info', true)}${esc(T.homes.pinned)}</p>`
       : `<div class="settings-actions"><button class="btn primary" type="submit" id="setSave" data-action="set-save" ${!dirty || st.saving ? 'disabled' : ''}>${icon('check', true)}${esc(st.saving ? T.states.saving : dirty ? T.homes.save : T.homes.saved)}</button></div><p class="muted-note">${icon('info', true)}${esc(T.homes.savedTo(st.data.path))}</p>`;
-    body = `<form id="settingsForm" class="settings-form">${st.error ? `<p class="lock-note" role="alert">${esc(st.error)}</p>` : ''}${sections}<section class="card"><div class="settings-body settings-foot">${foot}<p class="muted-note">${esc(T.homes.note)}</p></div></section></form>`;
+    body = `<form id="settingsForm" class="settings-form">${st.error ? `<p class="lock-note" role="alert">${esc(st.error)}</p>` : ''}${sections}<section class="card"><div class="settings-body settings-foot">${foot}<p class="muted-note">${esc(T.homes.note)}</p></div></section></form>${serversSectionHTML(st)}`;
   }
   return head + body + footer();
 }

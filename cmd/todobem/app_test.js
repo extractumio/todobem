@@ -67,6 +67,7 @@ function harness({ hash = '#sessions' } = {}) {
   const window = events({ innerWidth: 1200, innerHeight: 900, scrollTo() {} });
   const context = vm.createContext({
     document, window, location, history: { pushState: (_state, _title, hash) => { location.hash = hash; }, replaceState: (_state, _title, hash) => { location.hash = hash; } },
+    btoa, atob, TextEncoder, TextDecoder,
     console: { error: e => errors.push(e), warn: e => errors.push(e) },
     setInterval: (fn, delay) => { const id = ++timerID; intervals.set(id, { fn, delay }); return id; },
     clearInterval: id => intervals.delete(id),
@@ -234,7 +235,7 @@ test('switching between operation and marker inspectors invalidates both request
   await h.open('session', model);
   const a = h.run("inspect('op-A')"), old = h.take('/api/sessions/session/op/op-A');
   const marker = h.run("inspectMarker('lane:4000:question')");
-  const markerRequest = h.take('/api/event?file=%2Fsynthetic%2Frollout.jsonl&off=10&len=20');
+  const markerRequest = h.take('/api/event?session=session&file=%2Fsynthetic%2Frollout.jsonl&off=10&len=20');
   const b = h.run("inspect('op-B')"); h.take('/api/sessions/session/op/op-B').resolve({ detail: 'B detail' }); await b;
   old.reject(); markerRequest.reject(); await Promise.all([a, marker]);
   assert.equal(h.node('opDetail').textContent, 'B detail');
@@ -438,7 +439,7 @@ test('the agent card shows a plain-text spawn prompt and the final answer', asyn
   assert.match(html, /Review module A/);
   assert.match(html, /Early is done\./);
   assert.match(h.node('lanePromptNote').textContent, /^User-role message · 15 chars\./);
-  h.take('/api/event?file=%2Fsynthetic%2Fearly.jsonl&off=5&len=9').resolve({ payload: { content: [{ type: 'input_text', text: 'Review module A' }] } });
+  h.take('/api/event?session=session&file=%2Fsynthetic%2Fearly.jsonl&off=5&len=9').resolve({ payload: { content: [{ type: 'input_text', text: 'Review module A' }] } });
   await opening;
   assert.match(h.node('lanePromptNote').textContent, /^User-role message/);
   assert.match(h.node('laneSource').textContent, /Review module A/);
@@ -449,7 +450,7 @@ test('the agent card says so when the spawn prompt is stored encrypted', async (
   await h.open('session', agentsSession());
   const opening = h.run("inspectLane('late')");
   assert.match(h.node('lanePromptNote').textContent, /Only the message header/);
-  h.take('/api/event?file=%2Fsynthetic%2Flate.jsonl&off=7&len=11').resolve({ payload: { content: [{ type: 'input_text', text: 'Message Type: NEW_TASK' }, { type: 'encrypted_content', encrypted_content: 'gAAAAAB' }] } });
+  h.take('/api/event?session=session&file=%2Fsynthetic%2Flate.jsonl&off=7&len=11').resolve({ payload: { content: [{ type: 'input_text', text: 'Message Type: NEW_TASK' }, { type: 'encrypted_content', encrypted_content: 'gAAAAAB' }] } });
   await opening;
   assert.match(h.node('lanePromptNote').textContent, /stored encrypted \(encrypted_content, 7 chars\); no plaintext of it is recorded/);
   assert.match(h.node('inspector').innerHTML, /Prompt from the parent/);
@@ -535,7 +536,7 @@ test('a clipped agent message is completed from its source event', async () => {
   await h.open('session', model);
   const opening = h.run("inspectLane('late')");
   assert.equal(h.node('lanePromptNote').textContent, '');
-  h.take('/api/event?file=%2Fsynthetic%2Flate.jsonl&off=7&len=11').resolve({ payload: { content: [{ type: 'input_text', text: long }] } });
+  h.take('/api/event?session=session&file=%2Fsynthetic%2Flate.jsonl&off=7&len=11').resolve({ payload: { content: [{ type: 'input_text', text: long }] } });
   await opening;
   // the completed text goes through the prose view, not textContent: rendered, one paragraph
   assert.equal(h.node('lanePromptText').innerHTML, `<p>${long}</p>`);
@@ -933,11 +934,12 @@ test('the SDLC ring shows every stage: a work stage with time is filled and show
 
 
 // Hue = stage, tint = activity: the legend names the fill (activity) as a grid of squares and the
-// stages as the pipeline itself — eight steps in lifecycle order, each on its own hue. An
-// activity that serves a stage by default (Development → Implementation, Testing → Verification,
+// stages as the pipeline itself — steps in lifecycle order, each on its own hue. An activity
+// that serves a stage by default (Development → Implementation, Testing → Verification,
 // Release & deploy → Deployment, Infrastructure → Maintenance) is a lighter tint of that stage's
-// hue, never its hex; every other activity keeps a hue no stage has. The breakdown keeps the
-// shapes: a rail for a stage row, a square for an activity row.
+// hue, never its hex; every other activity keeps a hue no stage has. The contract is over the
+// palette tables — the legend of one session shows only the part of them the session drew.
+// The breakdown keeps the shapes: a rail for a stage row, a square for an activity row.
 test('the legend separates activity fills from the stage pipeline; every stage has its own hue and its home activity is a lighter tint of it', async () => {
   const h = await harness().ready();
   await h.open('session', lifecycleSession());
@@ -946,35 +948,115 @@ test('the legend separates activity fills from the stage pipeline; every stage h
   // a grid: the caption column names the partition and where it shows, then the group's entries
   // in order of kind — what the agent did, then waiting, overhead and gaps
   assert.match(legend, /<div class="legend-caption"><b>Activity<\/b>the fill of a lane<\/div><div class="legend-group"><span class="row"><i class="color-square"/);
-  assert.match(legend, /Infrastructure<\/span><span class="row"><i class="color-square" style="background:#48aa8c"><\/i>Waiting for workers/);
+  assert.match(legend, /Infrastructure<\/span><span class="row"><i class="color-square" style="background:#d3d8dc"><\/i>Waiting for user/);
   assert.match(legend, /<div class="legend-caption"><b>Lifecycle stage<\/b>the band above each lane, the strip under the overview<\/div><div class="legend-pipeline" id="legendLifecycle"><span class="lc-step"/);
   assert.equal((legend.match(/class="legend-group"/g) || []).length, 1, 'one activity group; the stages are a pipeline, not a second group');
   const steps = [...legend.matchAll(/<span class="lc-step" style="background:(#[0-9a-f]{6})" data-lc="([a-z_]+)">([^<]+)<\/span>/g)].map(m => ({ color: m[1], key: m[2], name: m[3] }));
-  assert.deepEqual(steps.map(x => x.name), ['Planning', 'Requirements', 'Design', 'Implementation', 'Code review', 'Verification', 'Deployment / release', 'Maintenance / operations']);
-  const stages = Object.fromEntries(steps.map(x => [x.name, x.color]));
+  assert.deepEqual(steps.map(x => x.name), ['Implementation', 'Code review', 'Verification'], 'the stages this session served, in lifecycle order');
+  for (const step of steps) assert.equal(step.color, h.run(`LIFECYCLES[${JSON.stringify(step.key)}].color`), `${step.name} is drawn in its own hue`);
+  // the palette contract: every work stage has its own hue; its home activity is the same hue,
+  // lighter, and never the same hex; every other activity keeps a hue of its own
+  const LIFECYCLES = h.run('LIFECYCLES'), PHASES = h.run('PHASES');
+  const stages = Object.fromEntries(Object.values(LIFECYCLES).filter(d => d.work).map(d => [d.name, d.color]));
+  assert.equal(Object.keys(stages).length, 8, 'eight work stages');
   assert.equal(new Set(Object.values(stages)).size, 8, 'every stage has its own colour');
-  const fills = Object.fromEntries([...legend.matchAll(/<i class="color-square(?: hatch)?" style="background:(#[0-9a-f]{6})"><\/i>([^<]+)</g)].map(m => [m[2], m[1]]));
-  // the pairing: the activity is the same hue as its stage, lighter, and not the same hex
+  const fills = Object.fromEntries(Object.entries(PHASES).filter(([k]) => k !== 'idle').map(([, d]) => [d.name, d.color]));
   const rgb = c => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16) / 255);
   const lum = c => { const [r, g, b] = rgb(c).map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4); return .2126 * r + .7152 * g + .0722 * b; };
   const hue = c => { const [r, g, b] = rgb(c), max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min; const x = max === r ? (g - b) / d : max === g ? 2 + (b - r) / d : 4 + (r - g) / d; return (x * 60 + 360) % 360; };
   const home = { Development: 'Implementation', Testing: 'Verification', 'Release & deploy': 'Deployment / release', Infrastructure: 'Maintenance / operations' };
   for (const [activity, stage] of Object.entries(home)) {
     const a = fills[activity], st = stages[stage];
-    assert.ok(a && st, `${activity} and ${stage} are in the legend`);
+    assert.ok(a && st, `${activity} and ${stage} are in the palette`);
     assert.notEqual(a, st, `${activity} is not the hex of ${stage}`);
     assert.ok(Math.abs(hue(a) - hue(st)) <= 8, `${activity} ${a} keeps the hue of ${stage} ${st}`);
     assert.ok(lum(a) > lum(st) * 1.15, `${activity} ${a} is the lighter tint of ${stage} ${st}`);
   }
-  // every other activity keeps a hue of its own: never a stage's colour
   for (const [activity, color] of Object.entries(fills)) if (!home[activity]) assert.ok(!Object.values(stages).includes(color), `${activity} ${color} is not a stage colour`);
-  assert.ok(!legend.includes('lc-step" style="background:#a889fc'), 'no stage is Build purple');
+  assert.ok(!Object.values(stages).includes(PHASES.build.color), 'no stage is Build purple');
   // the breakdown uses the shapes: a rail for a stage row, a square for an activity row
   h.run('renderLower()');
   const body = h.node('breakdownBody').innerHTML;
   assert.match(body, /data-lc="review"[^]*?<span class="name"><i class="color-rail" style="background:#cf5e9e">/);
   assert.match(body, /data-phase="test"[^]*?<span class="name"><i class="color-square" style="background:#f0d76c">/);
   assert.match(body, /data-lc="wait_user"[^]*?<span class="name"><i class="color-square"/, 'a pass-through row is its activity: a square');
+});
+
+// The legend is the session's, not the palette's: an activity or a stage no lane spent time in
+// is not a colour on the page, so it is not an entry. Every lane counts (a sub-agent's fill and
+// band too), the order stays the palette's, a live update adds the entry its new segment
+// needs, and a session with no stage says so instead of showing an empty pipeline.
+test('the legend lists only the activities and stages the session has', async () => {
+  const h = await harness().ready();
+  const legendOf = () => { const main = h.node('main').innerHTML; return main.slice(main.indexOf('id="legend"'), main.indexOf('<div class="timeline-toolbar"')); };
+  const activities = legend => [...legend.matchAll(/<i class="color-square(?: hatch)?"[^>]*><\/i>([^<]+)</g)].map(m => m[1]);
+  const stages = legend => [...legend.matchAll(/<span class="lc-step"[^>]*data-lc="([a-z_]+)">/g)].map(m => m[1]);
+  const model = lifecycleSession();
+  // a sub-agent lane brings an activity and a stage the root never had
+  model.lanes.push({ id: 'child', parent: 'lane', path: '/root/child', depth: 1, started: 4000, ended: 9000, turns: [], ops: [], markers: [], segments: [{ s: 4000, e: 9000, p: 'build', lc: 'release' }], by_phase: { build: 5000, idle: 0 }, by_lifecycle: { release: 5000 } });
+  await h.open('session', model);
+  let legend = legendOf();
+  assert.deepEqual(activities(legend), ['LLM', 'Development', 'Build', 'Testing', 'Infrastructure', 'Waiting for user'], 'the phases with time, in palette order; a zero entry is absent');
+  assert.deepEqual(stages(legend), ['implement', 'review', 'test', 'release'], 'the stages with time, in lifecycle order');
+  assert.ok(!legend.includes('No telemetry'), 'a phase this session never drew is not an entry');
+  assert.ok(!legend.includes('data-lc="plan"'), 'a stage this session never served is not a step');
+  // a live update that brings a new phase and stage rebuilds the legend with them
+  h.run("state.model.lanes[0].by_phase.no_telemetry = 3000; state.model.lanes[0].by_lifecycle.operate = 3000; render();");
+  legend = legendOf();
+  assert.ok(activities(legend).includes('No telemetry'), 'the entry appears with the first segment that needs it');
+  assert.deepEqual(stages(legend), ['implement', 'review', 'test', 'release', 'operate']);
+  // a session that served no stage (model output and the user's wait only) says so
+  const chat = session('chat');
+  chat.lanes[0].segments = [{ s: 1000, e: 61000, p: 'llm', lc: 'llm' }, { s: 61000, e: 121000, p: 'wait_user', lc: 'wait_user' }];
+  chat.lanes[0].by_phase = { llm: 60000, wait_user: 60000 };
+  chat.lanes[0].by_lifecycle = { llm: 60000, wait_user: 60000 };
+  await h.open('chat', chat);
+  legend = legendOf();
+  assert.deepEqual(activities(legend), ['LLM', 'Waiting for user']);
+  assert.deepEqual(stages(legend), []);
+  assert.match(legend, /<div class="legend-pipeline" id="legendLifecycle"><span class="row note">No stage recorded/);
+});
+
+// The product version is one literal (APP_VERSION): the sidebar shows it once the app boots, the
+// page footer names it on every page.
+test('the sidebar and the footer show the one product version', async () => {
+  const h = await harness().ready();
+  const version = h.run('APP_VERSION');
+  assert.match(version, /^\d+\.\d+$/);
+  assert.equal(h.node('appVersion').textContent, `todobem / ${version}`);
+  assert.ok(h.node('main').innerHTML.includes(`todobem / ${version}</span></footer>`), 'the footer names the version');
+});
+
+// The marks legend under the chart follows the same rule: a row for a glyph only when some lane
+// draws it — a marker of that kind, a turn end of that status, a background bar, a failure the
+// lane marks with the red ×, a stage band. The rows keep their order; no glyph, no legend.
+test('the marks legend lists only the glyphs the timeline draws for the session', async () => {
+  const h = await harness().ready();
+  const marks = () => { const main = h.node('main').innerHTML, at = main.indexOf('id="legendMarks"'); return at < 0 ? null : [...main.slice(at, main.indexOf('</div></section>', at)).matchAll(/<\/svg>([^<]+)</g)].map(m => m[1]); };
+  // two completed turns, four ops that passed, a stage band: nothing else is drawn
+  await h.open('session', lifecycleSession());
+  assert.deepEqual(marks(), ['Turn completed', 'Stage band (the SDLC stage the time served, above the raw fill; colours above)']);
+  // a live update brings the user's message and the answer, a background op, an aborted turn in
+  // a sub-agent lane, a tool failure and an LLM failure — each adds its row, in legend order
+  h.run(`const l = state.model.lanes[0];
+    l.markers.push({ t: 1000, kind: 'user_message', lane: 'lane', text: 'go' }, { t: 300000, kind: 'final_answer', lane: 'lane', text: 'done' }, { t: 95000, kind: 'llm_error', lane: 'lane', text: 'invalid args' });
+    l.ops.push({ id: 'op-BG', lane: 'lane', turn: 'turn2', title: 'tail -f log', phase: 'infra', kind: 'tail', status: 'completed', start: 102000, end: 200000, background: true });
+    l.ops.push({ id: 'op-F', lane: 'lane', turn: 'turn2', title: 'go test', phase: 'test', kind: 'go test', status: 'failed', start: 110000, end: 111000 });
+    state.model.lanes.push({ id: 'child', parent: 'lane', path: '/root/child', depth: 1, started: 4000, ended: 9000, turns: [{ id: 'ct', start: 4000, end: 9000, status: 'aborted' }], ops: [], markers: [], segments: [], by_phase: {}, by_lifecycle: {} });
+    render();`);
+  assert.deepEqual(marks(), ['User message', 'Final answer', 'Background process', 'Turn completed', 'Interrupted', 'Stage band (the SDLC stage the time served, above the raw fill; colours above)', 'Tool failure (non-zero exit)', 'LLM failure: invalid tool call / broken exec script / API error']);
+  // a query miss is not a failure, and an LLM failure op is the orange marker, not the red ×
+  h.run(`state.model.lanes[0].ops.find(o => o.id === 'op-F').query_miss = true; render();`);
+  assert.ok(!marks().includes('Tool failure (non-zero exit)'), 'a query miss draws no red ×, so no row');
+  h.run(`state.model.lanes[0].ops.find(o => o.id === 'op-F').query_miss = false; state.model.lanes[0].ops.find(o => o.id === 'op-F').kind = 'llm-invalid-args|go test'; render();`);
+  assert.ok(!marks().includes('Tool failure (non-zero exit)'), 'an invalid tool call is the LLM failure row');
+  // a session whose only turn never closed: the one glyph it draws
+  const orphan = session('orphan');
+  orphan.lanes[0].turns[0].status = 'orphaned';
+  orphan.lanes[0].segments = [{ s: 1000, e: 121000, p: 'llm', lc: 'llm' }];
+  orphan.lanes[0].by_phase = { llm: 120000 };
+  await h.open('orphan', orphan);
+  assert.deepEqual(marks(), ['Never closed']);
 });
 
 // A retry role is neither an activity nor a stage, so its row carries no colour: every role
@@ -1526,6 +1608,108 @@ test('a focus parameter in the session hash highlights the interval after the lo
   assert.equal(h.errors.length, 0);
 });
 
+// A filter as an address: filterToLink writes one base64url word, filterFromLink reads it back
+// field by field; what it does not know it drops, what is not a filter is null.
+test('a filter round-trips through its link word; unknown fields are dropped and garbage is null', async () => {
+  const h = await harness().ready();
+  const f = { kind: 'custom', from: '2026-09-01', to: '2026-09-19', cwd: '/home/dev/проект', host: 'web-01', sources: { claude: false } };
+  const word = h.run(`filterToLink(${JSON.stringify(f)})`);
+  assert.match(word, /^[A-Za-z0-9_-]+$/, 'base64url: safe in a hash, no padding');
+  const read = w => JSON.parse(h.run(`JSON.stringify(filterFromLink(${JSON.stringify(w)}))`));
+  assert.deepEqual(read(word), f);
+  // the defaults are left out of the word, and read back as the defaults
+  const plain = h.run("filterToLink({ kind: '30d', from: '', to: '', cwd: '', host: '', sources: { codex: true } })");
+  assert.deepEqual(read(plain), { kind: '30d', from: '', to: '', cwd: '', host: '', sources: {} });
+  assert.ok(plain.length < word.length);
+  // a session travels with the word for the page that accepts that period
+  const withSession = h.run("filterToLink({ kind: 'session', session: 'S1', from: '', to: '', cwd: '', host: '', sources: {} })");
+  assert.equal(h.run(`filterFromLink(${JSON.stringify(withSession)}, [...FILTER_KINDS, 'session'])`).session, 'S1');
+  assert.equal(h.run(`filterFromLink(${JSON.stringify(withSession)})`), null, 'a period the page does not accept is not a filter for it');
+  // a hand-written word: an unknown kind, a malformed date, an unknown source and a number for a path are dropped or refused
+  const hand = payload => h.run(`btoa(${JSON.stringify(JSON.stringify(payload))})`);
+  assert.equal(h.run(`filterFromLink(${JSON.stringify(hand({ kind: 'yesterday' }))})`), null);
+  assert.deepEqual(read(hand({ kind: 'custom', from: '1 Sep', to: '2026-09-19', cwd: 42, off: ['gemini', 'codex'] })), { kind: 'custom', from: '', to: '2026-09-19', cwd: '', host: '', sources: { codex: false } });
+  assert.equal(h.run("filterFromLink('not base64!')"), null);
+  assert.equal(h.run("filterFromLink('')"), null);
+  assert.equal(h.run(`filterFromLink(${JSON.stringify(h.run("btoa('[1,2]')"))})`), null, 'JSON that is not an object');
+  assert.equal(h.errors.length, 0);
+});
+
+// The report has an address: #session/<id>/insights opens one session's report, #insights?f=<word>
+// opens a set of filters, and the address bar follows every change of the filters (replaced, not
+// pushed), so whatever is on screen can be copied as a link.
+test('#session/<id>/insights opens the session report; the address follows the filters and a filter link opens them', async () => {
+  const h = await harness().ready();
+  const sessions = [{ id: 'S1', title: 'First', cwd: '/proj', updated: 5000, started: 1 }, { id: 'S2', title: 'Second', cwd: '/other', updated: 4000, started: 1 }];
+  // the session form, typed into the address bar
+  h.location.hash = '#session/S1/insights';
+  h.run('route()');
+  h.take('/api/sessions').resolve(sessions); await flush();
+  h.take('/api/insights/report?period=session&session=S1').resolve(insightsReport()); await flush();
+  assert.equal(h.run('state.page'), 'insights');
+  assert.equal(h.run('state.insights.params.kind'), 'session');
+  assert.equal(h.location.hash, '#session/S1/insights', 'the address stays the session form');
+  assert.match(h.node('main').innerHTML, /id="insSession"[^>]*>(?:(?!<\/select>).)*value="S1" selected/, 'the picker shows the session');
+  // picking another session in the picker moves the address to that session
+  h.document.emit('change', { target: { id: 'insSession', value: 'S2' } });
+  h.take('/api/sessions').resolve(sessions); await flush();
+  h.take('/api/insights/report?period=session&session=S2').resolve(insightsReport()); await flush();
+  assert.equal(h.location.hash, '#session/S2/insights');
+  // switching to a period writes the filter form: the word reads back as the filters in force
+  // (the project resolves to the default, as it always did when none was chosen)
+  h.document.emit('change', { target: { id: 'insPeriod', value: '7d' } });
+  h.take('/api/sessions').resolve(sessions); await flush();
+  const first = h.requests.find(r => !r.done && r.url.startsWith('/api/insights/report?period=7d'));
+  assert.ok(first, 'a 7-day report is requested');
+  first.resolve(insightsReport()); await flush();
+  assert.match(h.location.hash, /^#insights\?f=[A-Za-z0-9_-]+$/);
+  const inForce = JSON.parse(h.run(`JSON.stringify(filterFromLink(${JSON.stringify(h.location.hash.slice('#insights?f='.length))}))`));
+  assert.deepEqual(inForce, { kind: '7d', from: '', to: '', cwd: h.run('state.insights.params.cwd'), host: '', sources: {} });
+  h.document.emit('change', { target: { id: 'insProject', value: '/other' } });
+  h.take('/api/sessions').resolve(sessions); await flush();
+  h.take('/api/insights/report?period=7d&cwd=%2Fother').resolve(insightsReport()); await flush();
+  const link = h.location.hash;
+  assert.equal(h.run(`filterFromLink(${JSON.stringify(link.slice('#insights?f='.length))}).cwd`), '/other');
+  // a filter link opens those filters: from the list page, and while the page is already shown
+  h.run("go('sessions')");
+  h.take('/api/sessions').resolve(sessions); await flush();
+  assert.equal(h.run('state.page'), 'sessions');
+  const other = h.run("filterToLink({ kind: '90d', from: '', to: '', cwd: '/proj', host: '', sources: { claude: false } })");
+  h.location.hash = '#insights?f=' + other;
+  h.run('route()');
+  h.take('/api/sessions').resolve(sessions); await flush();
+  h.take('/api/insights/report?period=90d&cwd=%2Fproj&sources=codex').resolve(insightsReport()); await flush();
+  assert.equal(h.run('state.page'), 'insights');
+  assert.equal(h.location.hash, '#insights?f=' + other, 'the address is the link as given');
+  h.location.hash = link;
+  h.run('route()');
+  h.take('/api/sessions').resolve(sessions); await flush();
+  h.take('/api/insights/report?period=7d&cwd=%2Fother').resolve(insightsReport()); await flush();
+  assert.equal(h.run('state.insights.params.cwd'), '/other');
+  assert.equal(h.location.hash, link);
+  // an unreadable word: the page opens as it stands and says so
+  h.location.hash = '#insights?f=***';
+  h.run('route()');
+  await flush();
+  assert.equal(h.run('state.insights.params.cwd'), '/other', 'nothing applied');
+  assert.match(h.node('toast').textContent, /could not read/);
+  assert.equal(h.location.hash, link, 'the address names the report shown, not the bad word');
+  // a plain #insights while on the page changes nothing and asks for nothing
+  h.location.hash = '#insights';
+  h.run('route()');
+  await flush();
+  assert.ok(!h.requests.some(r => !r.done), 'no request pending');
+  assert.equal(h.errors.length, 0);
+});
+
+test('the session page links to the session report by its address', async () => {
+  const h = await harness().ready();
+  await h.open('S1@web-01', session('S1@web-01'));
+  h.take('/api/insights/report?period=session&session=S1%40web-01').resolve(insightsReport()); await flush();
+  assert.match(h.node('sessionInsights').innerHTML, /<a class="text-btn" href="#session\/S1%40web-01\/insights">Open the full report for this session<\/a>/);
+  assert.equal(h.errors.length, 0);
+});
+
 test('changing the period or the project requests a new report', async () => {
   const h = await harness().ready();
   await openInsights(h);
@@ -1557,20 +1741,104 @@ test('changing the period or the project requests a new report', async () => {
   assert.equal(h.errors.length, 0);
 });
 
-test('the sessions list defaults to 30 days, remembers the chosen period in a cookie, and restores it', async () => {
+test('the sessions list defaults to 30 days, remembers the whole bar in a cookie, restores it, drops a vanished project and clears to the defaults', async () => {
   const h = await harness().ready();
+  const now = Date.now(), day = 24 * 3600e3;
+  const list = [
+    { id: 'A', source: 'codex', title: 'A', cwd: '/proj/a', updated: now - day, started: now - day, bytes: 1, agents: 0 },
+    { id: 'B@web-01', host: 'web-01', source: 'claude', title: 'B', cwd: '/proj/b', updated: now - day, started: now - day, bytes: 1, agents: 0 },
+  ];
   h.run("go('sessions')");
-  h.take('/api/sessions').resolve([]);
+  h.take('/api/sessions').resolve(list);
   await flush();
-  // default: 30 days, and the choice is written to a cookie the moment it changes
+  // default: 30 days, every project, host and source; Clear has nothing to do
   assert.equal(h.run('state.fleetFilter.kind'), '30d');
+  assert.match(h.node('main').innerHTML, /data-action="fleet-clear"[^>]*disabled/);
+  // every choice is written to the cookie the moment it changes
   h.document.emit('change', { target: { id: 'fleetPeriod', value: 'all' } });
-  assert.match(String(h.document.cookie || ''), /todobem_fleet_period=/, 'the period is saved to a cookie');
-  assert.match(decodeURIComponent(String(h.document.cookie)), /"kind":"all"/);
-  // a fresh session (state reset) restores the remembered period from the cookie
-  h.run("state.fleetFilter = { kind: '30d', from: '', to: '', cwd: '', sources: {} }");
-  h.run('restoreFleetPeriod()');
-  assert.equal(h.run('state.fleetFilter.kind'), 'all', 'the period is restored from the cookie');
+  h.document.emit('change', { target: { id: 'fleetProject', value: '/proj/b' } });
+  h.document.emit('change', { target: { id: 'fleetHost', value: 'web-01' } });
+  h.document.emit('change', { target: { id: 'fleetSrcCodex', type: 'checkbox', checked: false, value: 'on' } });
+  h.document.emit('input', { target: { id: 'sessionSearch', value: 'needle' } });
+  h.document.emit('change', { target: { id: 'fleetSort', value: 'size' } });
+  const saved = JSON.parse(decodeURIComponent(String(h.document.cookie).match(/todobem_fleet=([^;]*)/)[1]));
+  assert.deepEqual(saved, { kind: 'all', from: '', to: '', cwd: '/proj/b', host: 'web-01', sources: { codex: false }, search: 'needle', sort: 'size' });
+  assert.doesNotMatch(h.node('main').innerHTML, /data-action="fleet-clear"[^>]*disabled/);
+  // a fresh session (state reset) restores everything from the cookie
+  h.run("state.fleetFilter = { kind: '30d', from: '', to: '', cwd: '', host: '', sources: {} }; state.search = ''; state.fleetSort = 'updated'");
+  h.run('restoreFleetFilter()');
+  assert.equal(h.run("JSON.stringify(fleetPrefs())"), JSON.stringify(saved));
+  // the remembered project and host vanish from the list: back to All, the rest kept
+  h.run("go('sessions')");
+  h.take('/api/sessions').resolve([list[0]]);
+  await flush();
+  assert.equal(h.run('state.fleetFilter.cwd'), '');
+  assert.equal(h.run('state.fleetFilter.host'), '');
+  assert.equal(h.run('state.fleetFilter.kind'), 'all');
+  assert.equal(h.run('state.search'), 'needle');
+  // Clear: the defaults, saved
+  h.action('fleet-clear');
+  assert.equal(h.run("JSON.stringify(fleetPrefs())"), JSON.stringify({ kind: '30d', from: '', to: '', cwd: '', host: '', sources: {}, search: '', sort: 'updated' }));
+  assert.match(decodeURIComponent(String(h.document.cookie)), /todobem_fleet=.*"kind":"30d"/);
+  assert.match(h.node('main').innerHTML, /data-action="fleet-clear"[^>]*disabled/);
+  // the Project control is the bar's primary one
+  assert.match(h.node('main').innerHTML, /<label class="ctl primary">Project<select class="select" id="fleetProject"/);
+  assert.equal(h.errors.length, 0);
+});
+
+// The list has an address too: #sessions while everything is the default, #sessions?f=<word>
+// once the filter, the search or the sort is off it — the address bar follows every change
+// (replaced, never pushed), Clear puts #sessions back, and a filter link opens that view over
+// the defaults, from a fresh load and from the list itself.
+test('#sessions?f=<word> names the list as filtered and opens it', async () => {
+  const list = [
+    { id: 'A', title: 'Alpha', cwd: '/proj/a', updated: Date.now(), started: 1, bytes: 10, agents: 0, source: 'codex' },
+    { id: 'B', title: 'Beta', cwd: '/proj/b', updated: Date.now(), started: 1, bytes: 10, agents: 0, source: 'claude', host: 'web-01' },
+  ];
+  let h = await harness().ready();
+  h.run("go('sessions')");
+  h.take('/api/sessions').resolve(list); await flush();
+  assert.equal(h.location.hash, '#sessions', 'the defaults have the plain address');
+  h.document.emit('change', { target: { id: 'fleetPeriod', value: 'all' } });
+  h.document.emit('change', { target: { id: 'fleetProject', value: '/proj/b' } });
+  h.document.emit('change', { target: { id: 'fleetSrcCodex', type: 'checkbox', checked: false, value: 'on' } });
+  h.document.emit('input', { target: { id: 'sessionSearch', value: 'beta' } });
+  h.document.emit('change', { target: { id: 'fleetSort', value: 'size' } });
+  assert.match(h.location.hash, /^#sessions\?f=[A-Za-z0-9_-]+$/);
+  const word = h.location.hash.slice('#sessions?f='.length);
+  assert.deepEqual(JSON.parse(h.run(`JSON.stringify(filterFromLink(${JSON.stringify(word)}))`)), { kind: 'all', from: '', to: '', cwd: '/proj/b', host: '', sources: { codex: false }, search: 'beta', sort: 'size' });
+  // the default sort is left out of the word
+  h.document.emit('change', { target: { id: 'fleetSort', value: 'updated' } });
+  assert.equal(JSON.parse(h.run(`JSON.stringify(filterFromLink(${JSON.stringify(h.location.hash.slice('#sessions?f='.length))}))`)).sort, undefined);
+  h.action('fleet-clear');
+  assert.equal(h.location.hash, '#sessions');
+  // a fresh load on the address: the view it names, over the defaults, and the address kept
+  h = harness({ hash: '#sessions?f=' + word });
+  h.take('/api/auth').resolve({ enabled: false, authenticated: true }); await flush();
+  h.take('/api/sessions').resolve(list); await flush();
+  assert.ok(!h.requests.some(r => !r.done), 'the boot load is the list; the address needs no second one');
+  assert.equal(h.run('state.page'), 'sessions');
+  assert.equal(h.run('JSON.stringify(fleetPrefs())'), JSON.stringify({ kind: 'all', from: '', to: '', cwd: '/proj/b', host: '', sources: { codex: false }, search: 'beta', sort: 'size' }));
+  assert.equal(h.location.hash, '#sessions?f=' + word);
+  assert.match(h.node('main').innerHTML, /id="sessionSearch"[^>]*value="beta"/);
+  assert.match(h.node('fleetRows').innerHTML, /data-id="B"/);
+  assert.doesNotMatch(h.node('fleetRows').innerHTML, /data-id="A"/);
+  // a link pasted while the list is shown: applied and drawn, no reload of the list
+  const other = h.run("filterToLink({ kind: '7d', from: '', to: '', cwd: '/proj/a', host: '', sources: {} })");
+  h.location.hash = '#sessions?f=' + other;
+  h.run('route()');
+  await flush();
+  assert.equal(h.run('state.fleetFilter.cwd'), '/proj/a');
+  assert.equal(h.run('state.search'), '', 'an address describes the whole view: the search it does not carry is off');
+  assert.ok(!h.requests.some(r => !r.done), 'no request pending');
+  assert.match(h.node('fleetRows').innerHTML, /data-id="A"/);
+  // an unreadable word: the list as it stands, a note, and the address rewritten to what is shown
+  h.location.hash = '#sessions?f=%%%';
+  h.run('route()');
+  await flush();
+  assert.equal(h.run('state.fleetFilter.cwd'), '/proj/a');
+  assert.match(h.node('toast').textContent, /could not read/);
+  assert.equal(h.location.hash, '#sessions?f=' + other);
   assert.equal(h.errors.length, 0);
 });
 
@@ -2039,4 +2307,136 @@ test('the grain rasters for a dense screen are laid exactly as app.css lays the 
 test('the session list description keeps underscores inside identifiers', async () => {
   const h = harness();
   assert.equal(h.run("descriptionOf('Fix **session_test.go** and __init__.py, see _notes_.\\n\\nMore.', 100)"), 'Fix session_test.go and init.py, see notes.');
+});
+
+test('sessions of paired servers share the list: a host chip per remote row, a Host select that narrows the list, and one project entry per path counting its hosts', async () => {
+  const h = await harness().ready();
+  const now = Date.now(), day = 24 * 3600e3;
+  const list = [
+    { id: 'L-1', source: 'codex', title: 'Local one', cwd: '/srv/app', updated: now - day, started: now - 2 * day, bytes: 1e6, agents: 0 },
+    { id: 'R-1@web-01', host: 'web-01', source: 'codex', title: 'Remote one', cwd: '/srv/app', updated: now - 2 * day, started: now - 2 * day, bytes: 1e6, agents: 0 },
+    { id: 'R-2@web-02', host: 'web-02', source: 'claude', title: 'Remote two', cwd: '/srv/other', updated: now - 3 * day, started: now - 3 * day, bytes: 1e6, agents: 0 },
+  ];
+  h.run("go('sessions')");
+  h.take('/api/sessions').resolve(list); await flush();
+  let main = h.node('main').innerHTML;
+  // the Host select: this machine first, then the agents, each with its count in the period
+  assert.match(main, /<label class="ctl">Host<select class="select" id="fleetHost" aria-label="Host"><option value="" selected>All hosts<\/option><option value="\." >This machine \(1\)<\/option><option value="web-01" >web-01 \(1\)<\/option><option value="web-02" >web-02 \(1\)<\/option><\/select><\/label>/);
+  // the projects in name order, whatever their session counts
+  assert.match(main, /id="fleetProject"[^>]*>(?:(?!<\/select>).)*srv\/app \(2\)(?:(?!<\/select>).)*srv\/other \(1\)(?:(?!<\/select>).)*<\/select>/);
+  // one project entry for the path seen on two hosts, saying so; a path seen on one agent
+  // only is labelled with that agent; no "…/" before a path
+  assert.match(main, /id="fleetProject"[^>]*>(?:(?!<\/select>).)*<option value="\/srv\/app" >srv\/app \(2\) · 2 hosts<\/option>(?:(?!<\/select>).)*<\/select>/);
+  assert.match(main, /<option value="\/srv\/other"  data-host="web-02" data-name="srv\/other \(1\)">web-02 · srv\/other \(1\)<\/option>/);
+  assert.match(main, /<option value="\/srv\/app" >srv\/app \(2\) · 2 hosts<\/option>/, 'no host attributes on a project of several hosts');
+  assert.doesNotMatch(main, /…\/srv/);
+  // the rows: the host is the second column — the agent's chip for a remote row, empty for a
+  // local one; the tile (no columns) carries the chip before the title
+  let rows = h.node('fleetRows').innerHTML;
+  assert.match(rows, /<th>Session<\/th><th>Host<\/th><th>Started<\/th>/);
+  // each host in its own hue, 60° apart: web-01 (first) at 200, web-02 at 260
+  assert.match(rows, /data-id="R-1@web-01"><strong><i class="source-mark source-codex"[^>]*><\/i>Remote one<\/strong>[\s\S]*?<\/button><\/td><td><span class="host-mark" style="--host-hue:200" title="Read on web-01 by its todobem agent">web-01<\/span><\/td>/);
+  assert.match(rows, /data-id="R-2@web-02"[\s\S]*?<td><span class="host-mark" style="--host-hue:260"[^>]*>web-02<\/span><\/td>/);
+  assert.match(rows, /data-id="L-1"><strong><i class="source-mark source-codex"[^>]*><\/i>Local one<\/strong>[\s\S]*?<\/button><\/td><td><\/td>/);
+  assert.match(rows, /<article class="session-tile"><button class="session-link" data-action="session" data-id="R-1@web-01"><strong><i class="source-mark source-codex"[^>]*><\/i><span class="host-mark"[^>]*>web-01<\/span>Remote one/);
+  // the footer names the paired servers
+  assert.match(main, /Local files and 2 paired servers\. Nothing leaves this machine except to them\./);
+  // narrowing to one host keeps its rows only; the project select follows
+  h.document.emit('change', { target: { id: 'fleetHost', value: 'web-01' } });
+  rows = h.node('fleetRows').innerHTML;
+  assert.match(rows, /data-id="R-1@web-01"/);
+  assert.doesNotMatch(rows, /data-id="L-1"|data-id="R-2@web-02"/);
+  assert.equal(h.node('fleetCount').textContent, '1 of 3 sessions');
+  assert.match(h.node('main').innerHTML, /web-01 · srv\/app \(1\)<\/option>/, 'one host in view: the project names it, no host count');
+  // this machine only
+  h.document.emit('change', { target: { id: 'fleetHost', value: '.' } });
+  rows = h.node('fleetRows').innerHTML;
+  assert.match(rows, /data-id="L-1"/);
+  assert.doesNotMatch(rows, /@web-0/);
+  // the search finds a session by its host
+  h.document.emit('change', { target: { id: 'fleetHost', value: '' } });
+  h.document.emit('input', { target: { id: 'sessionSearch', value: 'web-02' } });
+  assert.equal(h.node('fleetCount').textContent, '1 of 3 sessions');
+  // no remote rows: no Host select, the footer as before
+  h.document.emit('input', { target: { id: 'sessionSearch', value: '' } });
+  h.run("go('sessions')");
+  h.take('/api/sessions').resolve([list[0]]); await flush();
+  main = h.node('main').innerHTML;
+  assert.doesNotMatch(main, /id="fleetHost"/);
+  assert.match(main, /Local files only\. Nothing leaves this machine\./);
+});
+
+test('the drawn project list puts a host badge in its own column and the names under each other', async () => {
+  const h = await harness().ready();
+  const now = Date.now(), day = 24 * 3600e3;
+  const list = [
+    { id: 'L-1', source: 'codex', title: 'Local', cwd: '/srv/app', updated: now - day, started: now - day, bytes: 1, agents: 0 },
+    { id: 'R-2@web-02', host: 'web-02', source: 'claude', title: 'Remote', cwd: '/srv/other', updated: now - day, started: now - day, bytes: 1, agents: 0 },
+  ];
+  h.run("go('sessions')");
+  h.take('/api/sessions').resolve(list); await flush();
+  // the rows as dropdown.js reads them from the select's options (the harness has no DOM
+  // options: the same shape optionsOf produces)
+  h.run('var withHosts = [{ index: 0, label: "All projects", disabled: false, host: "", name: "" }, { index: 1, label: "web-02 · srv/other (1)", disabled: false, host: "web-02", name: "srv/other (1)" }, { index: 2, label: "srv/app (1)", disabled: false, host: "", name: "" }]');
+  const rows = h.run('Dropdown.render(withHosts, 0, 0)');
+  assert.match(rows, /<div class="dropdown-option active"[^>]*><span class="dropdown-host"><\/span><span class="dropdown-text">All projects<\/span><\/div>/);
+  assert.match(rows, /<span class="dropdown-host"><span class="host-mark" style="--host-hue:200"[^>]*>web-02<\/span><\/span><span class="dropdown-text">srv\/other \(1\)<\/span>/);
+  assert.match(rows, /<span class="dropdown-host"><\/span><span class="dropdown-text">srv\/app \(1\)<\/span>/);
+  assert.equal(h.run('Dropdown.hostColumn(withHosts)'), 'web-02'.length);
+  // type-ahead matches the name, not the badge
+  assert.equal(h.run('Dropdown.matchIndex(withHosts, 0, "s")'), 1);
+  // the filter: a fragment of the name or of the host keeps a row; the rest are hidden in the
+  // drawing and stepped over by the arrows
+  assert.equal(h.run('JSON.stringify(Dropdown.filtered(withHosts, "app").map(o => o.disabled))'), '[true,true,false]');
+  assert.equal(h.run('JSON.stringify(Dropdown.filtered(withHosts, "web-0").map(o => o.disabled))'), '[true,false,true]');
+  assert.equal(h.run('JSON.stringify(Dropdown.filtered(withHosts, "").map(o => o.disabled))'), '[false,false,false]');
+  const drawn = h.run('Dropdown.render(withHosts, 0, 0, "other")');
+  assert.match(drawn, /data-index="0" aria-selected="true" hidden>/);
+  assert.match(drawn, /data-index="1" aria-selected="false">/);
+  assert.equal(h.run('Dropdown.nextIndex(Dropdown.filtered(withHosts, "other"), -1, 1)'), 1);
+  // the project select asks for the search field; the period select does not
+  assert.match(h.node('main').innerHTML, /<select class="select" id="fleetProject" aria-label="Project" data-filter="Type to filter by name or host">/);
+  assert.match(h.node('main').innerHTML, /<select class="select" id="fleetPeriod" aria-label="Period">/);
+  // a list without hosts draws plain rows
+  h.run('var plain = [{ index: 0, label: "Last 7 days", disabled: false, host: "", name: "" }]');
+  assert.doesNotMatch(h.run('Dropdown.render(plain, 0, 0)'), /dropdown-host/);
+  assert.equal(h.run('Dropdown.hostColumn(plain)'), 0);
+});
+
+test('the Insights query names the host in scope, and the session page shows the host of a remote session', async () => {
+  const h = await harness().ready();
+  assert.equal(h.run("insightsQuery({ kind: '30d', cwd: '/srv/app', host: 'web-01', sources: {} })"), 'period=30d&cwd=%2Fsrv%2Fapp&hosts=web-01');
+  assert.equal(h.run("insightsQuery({ kind: '30d', cwd: '', host: '.', sources: {} })"), 'period=30d&hosts=.');
+  assert.equal(h.run("insightsQuery({ kind: 'session', session: 'x@web-01', host: 'web-01', sources: {} })"), 'period=session&session=x%40web-01');
+  const model = session('R-1@web-01');
+  model.host = 'web-01';
+  model.lanes[0].markers.push({ t: 5000, kind: 'user_message', lane: 'lane', text: 'Build the thing', src: { file: '/srv/app/rollout.jsonl', off: 10, len: 20 } });
+  await h.open('R-1@web-01', model);
+  assert.match(h.node('main').innerHTML, /<p class="subtitle"><span class="host-mark" style="--host-hue:\d+" title="Read on web-01 by its todobem agent">web-01<\/span>/);
+  // the inspector asks the hub for a marker's source with the session named, so a remote span is routed to its agent
+  h.run("inspectMarker('lane:5000:user_message')");
+  h.take('/api/event?session=R-1%40web-01&file=%2Fsrv%2Fapp%2Frollout.jsonl&off=10&len=20');
+});
+
+test('a remote session whose agent did not answer says so and offers a retry', async () => {
+  const h = await harness().ready();
+  h.run("go('session', 'R-1@web-01')");
+  h.take('/api/sessions/R-1%40web-01').resolve('agent web-01: Get "https://10.0.0.5:7789/agent/v1/sessions/R-1": read tcp: connection reset by peer', 502);
+  await flush();
+  const main = h.node('main').innerHTML;
+  assert.match(main, /<h3>The agent did not answer<\/h3>/);
+  assert.match(main, /connection reset by peer/);
+  assert.match(main, /data-action="retry-session"/);
+  // the retry asks for the same session again
+  h.action('retry-session');
+  h.take('/api/sessions/R-1%40web-01').resolve(session('R-1@web-01'));
+  await flush();
+  assert.equal(h.run('state.id'), 'R-1@web-01');
+  // any other failure keeps the plain message
+  h.run("go('session', 'gone')");
+  h.take('/api/sessions/gone').resolve('unknown session gone', 404);
+  await flush();
+  assert.match(h.node('main').innerHTML, /<h3>Could not load session<\/h3>/);
+  assert.doesNotMatch(h.node('main').innerHTML, /retry-session/);
+  assert.equal(h.errors.length, 2, 'each failed load is logged to the console, nothing else');
 });

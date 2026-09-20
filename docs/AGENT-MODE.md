@@ -1,12 +1,15 @@
 # Agent mode — design (v1)
 
-Status: draft for the owner's review, 2026-09-19, revised after a `pragmatic` review the same
-day (§12 records its verdicts). Written against `main` at `2f72db5` plus the uncommitted working
+Status: implemented 2026-09-19 (steps 1–4 of §11; `internal/fleet`, `server/agent.go`,
+`server/remote.go`, `cmd/todobem/agent.go`), verified against one Linux agent; the map is
+`docs/ARCHITECTURE.md` §7.4. Written first as a draft the same day and revised after a
+`pragmatic` review (§12 records its verdicts). Written against `main` at `2f72db5` plus the uncommitted working
 tree (`store.cacheVersion` 10, `insights.FactsVersion` 13). Inputs: the code in `cmd/todobem`,
 `internal/server`, `internal/auth`, `internal/source`, `internal/store`, `internal/settings`,
 `internal/insights`; sizes measured on the author's cache (482 models: 61 KB gzipped at the
 median, 393 KB at p90, 3.2 MB max; 256 facts sidecars: 4 KB median; a real `/api/sessions`
-list: 372 B per row gzipped). Nothing here is implemented yet.
+list: 372 B per row gzipped). Where the implementation differs from the text below, the
+difference is small and named in §12.
 
 **Decided by the owner, 2026-09-19:** transport is TCP with TLS and a bearer (decision 3; the
 ssh alternative is rejected — there will be no ssh connection to every machine); `upgrade` over
@@ -201,11 +204,11 @@ cache files, facts by id, two control routines.
 ### 5.1 Pairing and the agents file
 
 ```
-todobem hub add '<pairing string>' [-name web-01] [-addr 10.0.0.5:7789]
+todobem hub add [-name web-01] [-addr 10.0.0.5:7789] '<pairing string>'
 todobem hub list
-todobem hub remove web-01 [-revoke]
-todobem hub doctor web-01|--all
-todobem hub rotate web-01|--all
+todobem hub remove [-revoke] web-01
+todobem hub doctor web-01 | -all
+todobem hub rotate web-01 | -all
 ```
 
 Bulk onboarding is whatever runs commands on the hosts already — a provisioning tool, a
@@ -215,7 +218,8 @@ hub itself needs only TCP to the agents.
 The pairing string is `todobem-agent://<hostname>:<port>/#<fingerprint>.<token>`; `-addr`
 overrides the authority (the agent knows its hostname, not the address the hub can reach). `add`
 dials with the pin, redeems the token, and appends to `~/.todobem/agents.json` (0600 — it holds
-bearers): `[{name, addr, fingerprint, bearer, expires, added, version}]`. A running hub re-reads
+bearers): `[{name, addr, pin, bearer, expires}]`. Flags come before the name, as in every
+other subcommand. A running hub re-reads
 the file when its mtime changes, so every `hub` command takes effect without a restart; the
 commands talk to the agents directly (they need the file, not the hub), a bounded pool of 8 in
 parallel for `--all`. **The hub announces its fleet the way `-auth=off` is announced**, on the
@@ -517,14 +521,15 @@ table warns 30 days before a bearer expires.
 
 ## 8. UI changes, kept to display
 
-- `SessionSummary.host`, `Session.host` (`""` = this machine). List rows show a host chip after
-  the source mark when any remote row exists, with the row's age for a remote host; the session
-  header reads `web-01 · /srv/app`; the session page names the agent's file path as it names
-  local ones.
+- `SessionSummary.host`, `Session.host` (`""` = this machine). The list has a **Host** column
+  (second): the agent's name for a remote row, empty for this machine; the mobile tile carries
+  the same as a chip before the title. The session header reads `web-01 · /srv/app`; the session
+  page names the agent's file path as it names local ones.
 - `filter.js`: a **Host** select (All hosts · this machine · each agent) rendered when the list
-  holds more than one host; the Project select counts hosts per path ("· 3 hosts"); Insights
-  reuses it (`hosts=` parameter, like `sources=`). Host chips and the select live in `filter.js`
-  (or a new `fleet.js`), not in `app.js`.
+  holds more than one host. The Project select names paths without an ellipsis; a path seen on
+  exactly one agent is labelled with it (`ai4 · greg/app`), one seen on several says how many
+  ("· 3 hosts"). Insights reuse it (`hosts=` parameter, like `sources=`). The host chip and the
+  select live in `filter.js`, not in `app.js`.
 - `settings.js`: the Servers section (§5.1).
 - Remote rows of an unreachable agent are greyed with the agent's badge; a model that cannot be
   shown says why (build differs · unreachable) instead of a spinner.
@@ -603,6 +608,24 @@ rejected (no ssh connection to every machine will exist; the TCP/TLS design stan
 Verified by the reviewer: the size claims (within 25 %); that a plain `go build` embeds
 `vcs.revision`, `GOOS`, `GOARCH`; that `safeName` hashes `@` safely. Verified by the author
 after the review: Codex `session_meta.git` carries `repository_url` and `commit_hash`.
+
+### Implementation notes (where the code differs from the text above)
+
+- `hello` is fetched at pairing, at the first poll of a hub run whose snapshot has none, after
+  a failed poll, and after any full page on a known cursor (the agent restarted); the answer
+  also carries `digest.running`, and a facts page carries `unknown` (ids the index does not
+  know — the row is dropped) and the digest's progress.
+- The Servers table shows build, sessions, facts and bearer expiry; protocol and rules are in
+  `/api/fleet` and `hub list`, not columns. The list rows carry the host chip without a per-row
+  age; the last contact is the Servers table's status.
+- `Poll now` (the page) and `PollNow` (tests, pairing) run the poll synchronously and ask for
+  the pending facts again at once instead of waiting for the five-minute retry; the answer is
+  the fresh status.
+- The fleet never touches the cache: it fetches and hands over. The server owns every write —
+  models under composite ids through `remoteModel`, facts through the sink `SetFleet` wires —
+  and a Follow-mode poll that saw a newer version (`Fleet.Current`) makes the next open a
+  conditional fetch instead of a cache hit, so a live remote session never shows a stale model.
+  With `-cache off` on the hub every open of a remote session is a conditional fetch.
 
 ## Appendix A — upgrade over the wire (postponed; the sketch as reviewed)
 

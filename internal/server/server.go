@@ -21,6 +21,7 @@ import (
 	"github.com/extractumio/todobem/internal/classify"
 	"github.com/extractumio/todobem/internal/claude"
 	"github.com/extractumio/todobem/internal/codex"
+	"github.com/extractumio/todobem/internal/fleet"
 	"github.com/extractumio/todobem/internal/model"
 	"github.com/extractumio/todobem/internal/settings"
 	"github.com/extractumio/todobem/internal/source"
@@ -42,6 +43,8 @@ type Server struct {
 	maxCached int
 	insights  *insightsSvc // /api/insights/*: period reports over the project's sessions
 	settings  *settingsSvc // /api/settings: the session folders and the file they are saved in
+	fleet     *fleet.Fleet // the paired agents (hub); nil = local only
+	agent     *agentSvc    // agent mode (set by AgentHandler); nil = the viewer
 }
 
 // cachedEntry is a fingerprint-validated model served without a parser. Its model is immutable
@@ -127,6 +130,8 @@ func (s *Server) Handler(listenAddr ...string) http.Handler {
 	mux.HandleFunc("/api/rules", s.handleRules)
 	mux.HandleFunc("/api/insights/", s.insights.handle)
 	mux.HandleFunc("/api/settings", s.handleSettings)
+	mux.HandleFunc("/api/fleet", s.handleFleet)
+	mux.HandleFunc("/api/fleet/", s.handleFleet)
 	static := http.FileServer(http.FS(s.web))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
@@ -136,8 +141,7 @@ func (s *Server) Handler(listenAddr ...string) http.Handler {
 	if len(listenAddr) > 0 {
 		configuredHost = hostName(listenAddr[0])
 	}
-	next := gzipMiddleware(mux)
-	api := s.authGate(next) // API answers stay gzipped once the gate lets them through
+	api := s.authGate(gzipMiddleware(mux)) // API answers stay gzipped once the gate lets them through
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := hostName(r.Host)
 		if host == "" || (host != "localhost" && net.ParseIP(host) == nil && host != configuredHost) {
@@ -149,7 +153,7 @@ func (s *Server) Handler(listenAddr ...string) http.Handler {
 			api.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		mux.ServeHTTP(w, r)
 	})
 }
 
@@ -162,6 +166,9 @@ func hostName(authority string) string {
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	s.maybeScan(20 * time.Second)
+	if s.fleet != nil {
+		s.fleet.Touch()
+	}
 	writeJSON(w, s.summaries())
 }
 
@@ -196,6 +203,9 @@ func (s *Server) session(id string, refresh bool) (*source.Session, error) {
 // fingerprint describes a session's current inputs: its session files (sizes/mtimes from the
 // index) plus a hash of the effective classifier. A change to any file or rule flips it.
 func (s *Server) fingerprint(id string) store.Fingerprint {
+	if s.remote(id) {
+		return s.fleet.Fingerprint(id)
+	}
 	fp := store.Fingerprint{Rules: classify.RulesFingerprint()}
 	add := func(fm source.Meta) {
 		fp.Files = append(fp.Files, store.FileFP{Path: fm.Path, Size: fm.Size, Mod: fm.ModTime.UnixNano()})
@@ -236,8 +246,12 @@ func (s *Server) dropCached(id string) {
 // provably current: an open parser-backed session, or a cache entry whose fingerprint still
 // matches the files and rules; only on a miss or a fingerprint change does it parse. refresh=true
 // always re-parses (incremental for an open session, full otherwise) and refreshes the cache.
-// It never returns a stale model.
+// It never returns a stale model. A remote id is served by remoteModel (the hub's copy or the
+// agent's answer) under the same contract.
 func (s *Server) loadModel(id string, refresh bool) (view, error) {
+	if s.remote(id) {
+		return s.remoteModel(id, refresh)
+	}
 	if !refresh {
 		s.mu.Lock()
 		if sess, ok := s.opened[id]; ok {
@@ -310,25 +324,33 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		// button) forces a re-parse. Either way the model returned is never stale.
 		v, err := s.loadModel(id, r.URL.Query().Get("refresh") == "1")
 		if err != nil {
-			http.Error(w, err.Error(), 404)
+			http.Error(w, err.Error(), loadStatus(err))
 			return
 		}
 		v.View(func(m *model.Session) { writeJSON(w, m) })
 	case len(parts) == 2 && parts[1] == "version":
 		// Follow-mode polling: refresh an open (live) session incrementally so its version can
-		// advance, but never force a full parse just to answer a poll.
-		v, err := s.loadModel(id, true)
+		// advance, but never force a full parse just to answer a poll. A remote session's agent
+		// answers the poll itself; its model is re-fetched only when the page sees a change.
+		v, err := s.loadModel(id, !s.remote(id))
 		if err != nil {
-			http.Error(w, err.Error(), 404)
+			http.Error(w, err.Error(), loadStatus(err))
 			return
 		}
-		v.View(func(m *model.Session) {
-			writeJSON(w, map[string]any{"version": m.Version, "live": m.Live, "ended": m.Ended, "now": m.Now, "ops": m.Totals.Ops})
-		})
+		if p, ok := v.(poller); ok {
+			raw, err := p.Poll()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			writeRaw(w, raw)
+			return
+		}
+		v.View(func(m *model.Session) { writeJSON(w, versionPayload(m)) })
 	case len(parts) == 3 && parts[1] == "op":
 		v, err := s.loadModel(id, false)
 		if err != nil {
-			http.Error(w, err.Error(), 404)
+			http.Error(w, err.Error(), loadStatus(err))
 			return
 		}
 		var resp map[string]any
@@ -337,7 +359,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 				cp := *op
 				resp = map[string]any{"op": &cp, "detail": op.Detail}
 				if op.Src != nil {
-					if b, err := s.readSource(*op.Src); err == nil {
+					if b, err := s.span(v, *op.Src); err == nil {
 						resp["source"] = json.RawMessage(validJSON(b))
 					}
 				}
@@ -364,29 +386,72 @@ func findOp(m *model.Session, id string) *model.Operation {
 	return nil
 }
 
-// handleEvent returns an exact source span already exposed by an opened session.
+// handleEvent returns an exact source span already exposed by an opened session; `session`
+// names the session it belongs to, which for a remote one means its agent serves it.
 func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
-	file := r.URL.Query().Get("file")
-	off, offErr := strconv.ParseInt(r.URL.Query().Get("off"), 10, 64)
-	ln, lenErr := strconv.Atoi(r.URL.Query().Get("len"))
-	abs, err := filepath.Abs(file)
-	if err != nil || offErr != nil || lenErr != nil || off < 0 || ln <= 0 || ln > 32<<20 {
-		http.Error(w, "bad request", 400)
+	b, status, reason := s.readSpan(r)
+	if status != http.StatusOK {
+		http.Error(w, reason, status)
 		return
+	}
+	writeRaw(w, b)
+}
+
+// readSpan reads the span an event request names, on the surface that owns it: the agent of a
+// remote session, else this server's files (the span must be recorded by a loaded session and
+// lie under a current home). It answers the status and reason to send when it is not 200.
+func (s *Server) readSpan(r *http.Request) ([]byte, int, string) {
+	q := r.URL.Query()
+	off, offErr := strconv.ParseInt(q.Get("off"), 10, 64)
+	ln, lenErr := strconv.Atoi(q.Get("len"))
+	abs, err := filepath.Abs(q.Get("file"))
+	if err != nil || offErr != nil || lenErr != nil || off < 0 || ln <= 0 || ln > 32<<20 {
+		return nil, http.StatusBadRequest, "bad request"
+	}
+	if id := q.Get("session"); s.remote(id) {
+		v, err := s.loadModel(id, false)
+		if err != nil {
+			return nil, http.StatusNotFound, "source not found"
+		}
+		b, err := s.span(v, model.Src{File: q.Get("file"), Off: off, Len: ln})
+		if err != nil {
+			return nil, http.StatusNotFound, "source unavailable"
+		}
+		return b, http.StatusOK, ""
 	}
 	src := model.Src{File: abs, Off: off, Len: ln}
 	if !s.recordedSource(src) {
-		http.Error(w, "source not found", http.StatusNotFound)
-		return
+		return nil, http.StatusNotFound, "source not found"
 	}
 	b, err := s.readSource(src)
 	if err != nil {
-		http.Error(w, "source unavailable", http.StatusNotFound)
-		return
+		return nil, http.StatusNotFound, "source unavailable"
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Write(validJSON(b))
+	return b, http.StatusOK, ""
+}
+
+// span reads a source line the way the view's owner can: the agent for a remote view, this
+// server's files otherwise.
+func (s *Server) span(v view, src model.Src) ([]byte, error) {
+	if sp, ok := v.(spanner); ok {
+		return sp.Span(src)
+	}
+	return s.readSource(src)
+}
+
+// loadStatus is the status a failed load answers with: an agent that did not answer is a bad
+// gateway (the session exists; ask again), anything else an unknown session.
+func loadStatus(err error) int {
+	var ae *fleet.AgentError
+	if errors.As(err, &ae) {
+		return http.StatusBadGateway
+	}
+	return http.StatusNotFound
+}
+
+// versionPayload is the Follow-mode poll's answer, the same on the hub and on an agent.
+func versionPayload(m *model.Session) map[string]any {
+	return map[string]any{"version": m.Version, "live": m.Live, "ended": m.Ended, "now": m.Now, "ops": m.Totals.Ops}
 }
 
 func (s *Server) recordedSource(src model.Src) bool {
@@ -505,24 +570,60 @@ func writeJSON(w http.ResponseWriter, v any) {
 	}
 }
 
-type gzipWriter struct {
-	http.ResponseWriter
-	gz *gzip.Writer
+// writeRaw sends bytes that are already JSON (a source line, an answer relayed from an agent).
+func writeRaw(w http.ResponseWriter, b []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Write(validJSON(b))
 }
 
-func (g *gzipWriter) Write(b []byte) (int, error) { return g.gz.Write(b) }
+// gzipWriter compresses a response unless the handler already encoded it (an agent serving a
+// cache file as stored) or sends no body (204, 304): the decision is made on the first write.
+type gzipWriter struct {
+	http.ResponseWriter
+	gz      *gzip.Writer
+	decided bool
+}
 
+func (g *gzipWriter) WriteHeader(status int) {
+	if !g.decided {
+		g.decided = true
+		if g.Header().Get("Content-Encoding") == "" && status != http.StatusNoContent && status != http.StatusNotModified {
+			g.Header().Set("Content-Encoding", "gzip")
+			g.Header().Add("Vary", "Accept-Encoding")
+			g.Header().Del("Content-Length")
+			g.gz, _ = gzip.NewWriterLevel(g.ResponseWriter, gzip.BestSpeed)
+		}
+	}
+	g.ResponseWriter.WriteHeader(status)
+}
+
+func (g *gzipWriter) Write(b []byte) (int, error) {
+	if !g.decided {
+		g.WriteHeader(http.StatusOK)
+	}
+	if g.gz != nil {
+		return g.gz.Write(b)
+	}
+	return g.ResponseWriter.Write(b)
+}
+
+func (g *gzipWriter) close() {
+	if g.gz != nil {
+		g.gz.Close()
+	}
+}
+
+// gzipMiddleware compresses the answers of the JSON routes it wraps for a client that accepts it.
 func gzipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") || !strings.HasPrefix(r.URL.Path, "/api/") {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 			next.ServeHTTP(w, r)
 			return
 		}
-		w.Header().Set("Content-Encoding", "gzip")
-		w.Header().Add("Vary", "Accept-Encoding")
-		gz, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
-		defer gz.Close()
-		next.ServeHTTP(&gzipWriter{ResponseWriter: w, gz: gz}, r)
+		g := &gzipWriter{ResponseWriter: w}
+		defer g.close()
+		next.ServeHTTP(g, r)
 	})
 }
 

@@ -5,13 +5,15 @@
 // render, to update from a control, and to test sessions against. This file defines functions
 // and the text table only; $, esc, state, MONTHS, plural, shortPath, … are app.js globals.
 //
-// A filter value: { kind, from, to, cwd, sources } — kind one of FILTER_KINDS (a page may add
-// its own, Insights adds 'session'), from/to date-input values (YYYY-MM-DD) used when kind is
-// 'custom', cwd the project ('' = all), sources the session sources in view ({codex: true,
-// claude: false}; a source not named is in view). Control ids are <prefix>Period,
-// <prefix>Project, <prefix>From, <prefix>To and <prefix>Src<Source> (the source checkboxes,
-// rendered only when the list holds more than one source); the Apply button is
-// data-action="filter-apply" data-prefix="<prefix>".
+// A filter value: { kind, from, to, cwd, host, sources } — kind one of FILTER_KINDS (a page may
+// add its own, Insights adds 'session'), from/to date-input values (YYYY-MM-DD) used when kind
+// is 'custom', cwd the project ('' = all), host the machine ('' = all, LOCAL_HOST = this one,
+// else a paired agent's name), sources the session sources in view ({codex: true, claude:
+// false}; a source not named is in view). Control ids are <prefix>Period, <prefix>Project,
+// <prefix>Host, <prefix>From, <prefix>To and <prefix>Src<Source> (the source checkboxes,
+// rendered only when the list holds more than one source; the Host select likewise only when
+// the list holds more than one host); the Apply button is data-action="filter-apply"
+// data-prefix="<prefix>".
 //
 // A session is inside a period by its last update, the way the report selects sessions
 // (insights.Params.InPeriod), so the counts next to the projects match both pages.
@@ -30,10 +32,47 @@ const sourceName = s => SOURCES[sourceOf(s)].name;
 // sourceMark: the coloured square that marks a session's source, with its name as the tooltip.
 const sourceMark = s => `<i class="source-mark source-${sourceOf(s)}" title="${esc(sourceName(s))}" aria-label="${esc(sourceName(s))}"></i>`;
 
+// Hosts: a session read by a paired agent carries its name in `host` (and as the `@host` suffix
+// of its id); a session of this machine has none. LOCAL_HOST is the filter value that names
+// this machine (the server's insights.LocalHost).
+const LOCAL_HOST = '.';
+const hostOf = s => (s && s.host) || '';
+// hostsPresent lists the hosts the session list holds: '' (this machine) first when present,
+// then the agents by name.
+function hostsPresent(sessions) {
+  const seen = new Set(sessions.map(hostOf));
+  const names = [...seen].filter(Boolean).sort();
+  return seen.has('') ? ['', ...names] : names;
+}
+// hostOn: whether a filter keeps sessions of a host.
+function hostOn(f, host) {
+  if (!f.host) return true;
+  return f.host === LOCAL_HOST ? host === '' : f.host === host;
+}
+// hostHue: every paired agent gets its own hue, 60° apart around the colour wheel in the order
+// of the hosts present (alphabetical, so a host keeps its colour between renders); the wheel
+// starts away from red, which would read as an alarm. The seventh host wraps around.
+function hostHue(host) {
+  const hosts = hostsPresent(state.sessions || []).filter(Boolean);
+  const i = Math.max(0, hosts.indexOf(host));
+  return (200 + i * 60) % 360;
+}
+// hostBadge: the chip that names a paired agent, framed in its hue.
+const hostBadge = host => `<span class="host-mark" style="--host-hue:${hostHue(host)}" title="${esc(FILTER_TEXT.hostNote(host))}">${esc(host)}</span>`;
+// hostMark: the chip on a list row; nothing for this machine.
+const hostMark = s => hostOf(s) ? hostBadge(hostOf(s)) : '';
+
 const FILTER_TEXT = {
   period: 'Period',
   project: 'Project',
   allProjects: 'All projects',
+  host: 'Host',
+  allHosts: 'All hosts',
+  thisMachine: 'This machine',
+  hostsCount: n => `${n} hosts`,
+  hostNote: host => `Read on ${host} by its todobem agent`,
+  projectFilter: 'Type to filter by name or host',
+  noMatch: 'No project matches',
   sources: 'Sources',
   from: 'From',
   to: 'To',
@@ -52,7 +91,7 @@ const FILTER_DAYS = { '1d': 1, '7d': 7, '30d': 30, '90d': 90 };
 const DAY_MS = 24 * 3600e3;
 
 function newFilter(kind = '30d', cwd = '') {
-  return { kind, from: '', to: '', cwd, sources: {} };
+  return { kind, from: '', to: '', cwd, host: '', sources: {} };
 }
 
 // sourceOn: whether a filter keeps sessions of a source (on unless switched off).
@@ -96,37 +135,97 @@ function filterRange(f, now = Date.now()) {
   return { from: 0, to: now };
 }
 
-// filterKeeps: whether a session summary is inside the filter (source, project and period).
-function filterKeeps(f, s, now = Date.now()) {
-  if (!sourceOn(f, sourceOf(s))) return false;
-  if (f.cwd && s.cwd !== f.cwd) return false;
-  const { from, to } = filterRange(f, now);
-  return s.updated >= from && s.updated <= to;
+// inView: whether a session is inside the filter's facets — source, host, project and period —
+// leaving out the facet named by `except` (a facet's own counts are taken with that facet open,
+// so every option shows what choosing it would keep).
+function inView(f, s, now, except = '') {
+  if (except !== 'source' && !sourceOn(f, sourceOf(s))) return false;
+  if (except !== 'host' && !hostOn(f, hostOf(s))) return false;
+  if (except !== 'cwd' && f.cwd && s.cwd !== f.cwd) return false;
+  if (except !== 'period') {
+    const { from, to } = filterRange(f, now);
+    if (s.updated < from || s.updated > to) return false;
+  }
+  return true;
 }
 
-// filterProjects lists the projects of the sessions (of the sources in view) with their
-// counts, most sessions in the period first: [[cwd, { all, period }], …].
+// filterKeeps: whether a session summary is inside the filter.
+function filterKeeps(f, s, now = Date.now()) {
+  return inView(f, s, now);
+}
+
+// filterProjects lists the projects of the sessions (of the sources and hosts in view) with
+// their counts, most sessions in the period first: [[cwd, { all, period, hosts }], …]. hosts
+// holds the distinct hosts the path was seen on: the same path on several machines is one
+// project entry (the log records a path, not a repository), and the Host select tells them apart.
 function filterProjects(f, sessions, now = Date.now()) {
-  const { from, to } = filterRange(f, now);
   const counts = new Map();
+  const anyTime = { ...f, kind: 'all' }; // `all` counts the project's sessions of every period
   for (const s of sessions) {
-    if (!sourceOn(f, sourceOf(s))) continue;
-    if (!counts.has(s.cwd)) counts.set(s.cwd, { all: 0, period: 0 });
+    if (!inView(anyTime, s, now, 'cwd')) continue;
+    if (!counts.has(s.cwd)) counts.set(s.cwd, { all: 0, period: 0, hosts: new Set() });
     const c = counts.get(s.cwd);
     c.all++;
-    if (s.updated >= from && s.updated <= to) c.period++;
+    c.hosts.add(hostOf(s));
+    if (inView(f, s, now, 'cwd')) c.period++;
   }
   return [...counts.entries()].sort((a, b) => b[1].period - a[1].period || b[1].all - a[1].all || a[0].localeCompare(b[0]));
+}
+
+// filterHosts counts the sessions of each host inside the other facets: [[host, n], …] in
+// hostsPresent order ('' is this machine).
+function filterHosts(f, sessions, now = Date.now()) {
+  const counts = new Map(hostsPresent(sessions).map(h => [h, 0]));
+  for (const s of sessions) {
+    if (inView(f, s, now, 'host')) counts.set(hostOf(s), counts.get(hostOf(s)) + 1);
+  }
+  return [...counts.entries()];
+}
+
+// projectName is a project's label in the select: its last two path segments, no ellipsis and
+// no leading slash (every entry is a path, the cut needs no mark).
+function projectName(cwd) {
+  const parts = (cwd || '').split('/').filter(Boolean);
+  return parts.length ? parts.slice(-2).join('/') : cwd;
+}
+
+// projectHost names the host of a project seen on exactly one paired agent; '' for a project
+// of this machine or one seen on several hosts (the entry says how many).
+function projectHost(c) {
+  if (c.hosts.size !== 1) return '';
+  const [host] = c.hosts;
+  return host || '';
+}
+
+// selectHTML renders one labelled select of the filter bar: options are [value, label] pairs,
+// or [value, label, { host, name }] for an entry the page-drawn list shows as a host badge
+// (its own column, so names line up) before `name`; the native control keeps the full label.
+// filter, when given, is the placeholder of the search field the drawn list puts above the
+// rows; primary marks the control the bar leads with (a tint of its own).
+function selectHTML(id, label, options, selected, { filter = '', primary = false } = {}) {
+  const opts = options.map(([v, text, extra]) => {
+    const data = extra && extra.host ? ` data-host="${esc(extra.host)}" data-name="${esc(extra.name)}"` : '';
+    return `<option value="${esc(v)}" ${v === selected ? 'selected' : ''}${data}>${esc(text)}</option>`;
+  }).join('');
+  const search = filter ? ` data-filter="${esc(filter)}"` : '';
+  return `<label class="ctl${primary ? ' primary' : ''}">${esc(label)}<select class="select" id="${id}" aria-label="${esc(label)}"${search}>${opts}</select></label>`;
+}
+
+// hostSelectHTML renders the Host select when the list holds more than one host.
+function hostSelectHTML(prefix, f, sessions, now = Date.now()) {
+  const hosts = filterHosts(f, sessions, now);
+  if (hosts.length < 2) return '';
+  const T = FILTER_TEXT;
+  const options = [['', T.allHosts], ...hosts.map(([h, n]) => [h === '' ? LOCAL_HOST : h, `${h === '' ? T.thisMachine : h} (${n})`])];
+  return selectHTML(prefix + 'Host', T.host, options, f.host || '');
 }
 
 // filterSources counts the sessions of each source inside the period and the project (what a
 // source's checkbox adds to or removes from the view): { codex: n, claude: n }.
 function filterSources(f, sessions, now = Date.now()) {
-  const { from, to } = filterRange(f, now);
   const counts = {};
   for (const s of sessions) {
-    if (f.cwd && s.cwd !== f.cwd) continue;
-    if (s.updated < from || s.updated > to) continue;
+    if (!inView(f, s, now, 'source')) continue;
     const k = sourceOf(s);
     counts[k] = (counts[k] || 0) + 1;
   }
@@ -154,15 +253,24 @@ function sourceTogglesHTML(prefix, f, sessions, now = Date.now()) {
 function filterBarHTML(prefix, f, { extraPeriods = {}, between = '', project = true, projects = [], sessions = [] } = {}) {
   const T = FILTER_TEXT;
   const kinds = [...FILTER_KINDS.map(k => [k, T.periods[k]]), ...Object.entries(extraPeriods)];
-  const periodSelect = `<label class="ctl">${esc(T.period)}<select class="select" id="${prefix}Period" aria-label="${esc(T.period)}">${kinds.map(([k, label]) => `<option value="${esc(k)}" ${k === f.kind ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></label>`;
+  const periodSelect = selectHTML(prefix + 'Period', T.period, kinds, f.kind);
   const dates = f.kind === 'custom'
     ? `<label class="ctl">${esc(T.from)}<input type="date" id="${prefix}From" value="${esc(f.from)}"></label><label class="ctl">${esc(T.to)}<input type="date" id="${prefix}To" value="${esc(f.to)}"></label><button class="btn small" data-action="filter-apply" data-prefix="${prefix}">${esc(T.apply)}</button>`
     : '';
-  const shown = projects.filter(([cwd, c]) => c.period > 0 || cwd === f.cwd);
+  // the select lists the projects by name (filterProjects orders them by sessions, which the
+  // pages that pick a default keep), so a project is found where the eye expects it
+  const shown = projects.filter(([cwd, c]) => c.period > 0 || cwd === f.cwd).sort((a, b) => projectName(a[0]).localeCompare(projectName(b[0]), undefined, { sensitivity: 'base' }) || a[0].localeCompare(b[0]));
+  const projectName_ = ([cwd, c]) => `${projectName(cwd)} (${c.period})${c.hosts.size > 1 ? ' · ' + T.hostsCount(c.hosts.size) : ''}`;
+  const projectOption = entry => {
+    const host = projectHost(entry[1]);
+    const name = projectName_(entry);
+    return [entry[0], host ? `${host} · ${name}` : name, { host, name }];
+  };
   const projectSelect = project
-    ? `<label class="ctl">${esc(T.project)}<select class="select" id="${prefix}Project" aria-label="${esc(T.project)}"><option value="" ${f.cwd ? '' : 'selected'}>${esc(T.allProjects)}</option>${shown.map(([cwd, c]) => `<option value="${esc(cwd)}" ${cwd === f.cwd ? 'selected' : ''}>${esc(shortPath(cwd))} (${c.period})</option>`).join('')}</select></label>`
+    ? selectHTML(prefix + 'Project', T.project, [['', T.allProjects], ...shown.map(projectOption)], f.cwd || '', { filter: T.projectFilter, primary: true })
     : '';
-  return periodSelect + dates + between + projectSelect + sourceTogglesHTML(prefix, f, sessions);
+  const hostSelect = project ? hostSelectHTML(prefix, f, sessions) : '';
+  return periodSelect + dates + between + projectSelect + hostSelect + sourceTogglesHTML(prefix, f, sessions);
 }
 
 // filterChange updates f from a control (field: Period | Project | From | To) and says whether
@@ -180,6 +288,10 @@ function filterChange(f, field, value) {
   }
   if (field === 'Project') {
     f.cwd = value;
+    return true;
+  }
+  if (field === 'Host') {
+    f.host = value;
     return true;
   }
   const source = SOURCE_ORDER.find(k => SOURCES[k].field === field);
@@ -209,6 +321,56 @@ function filterApply(prefix, f) {
 function filterField(prefix, id) {
   if (!id || !id.startsWith(prefix)) return '';
   const field = id.slice(prefix.length);
-  const fields = ['Period', 'Project', 'From', 'To', ...SOURCE_ORDER.map(k => SOURCES[k].field)];
+  const fields = ['Period', 'Project', 'Host', 'From', 'To', ...SOURCE_ORDER.map(k => SOURCES[k].field)];
   return fields.includes(field) ? field : '';
+}
+
+// A filter as an address. filterToLink writes a filter value as one base64url word for a URL
+// (#insights?f=…, #sessions?f=…), so a set of filters opens by its address; the payload is
+// compact JSON of the fields that are not the default (kind, custom dates, project, host, the
+// sources switched off) and a page's own extras when set (Insights' session, the list's search
+// and sort). filterFromLink reads one back: every field validated, an unknown or malformed field
+// dropped, an extra handed back as text for the page to validate, null when the word is not a
+// filter at all. kinds names the periods the reading page accepts.
+const LINK_KINDS = kinds => kinds || FILTER_KINDS;
+function filterToLink(f) {
+  const payload = { kind: f.kind };
+  if (f.kind === 'custom') {
+    payload.from = f.from || '';
+    payload.to = f.to || '';
+  }
+  if (f.cwd) payload.cwd = f.cwd;
+  if (f.host) payload.host = f.host;
+  const off = SOURCE_ORDER.filter(k => !sourceOn(f, k));
+  if (off.length) payload.off = off;
+  if (f.kind === 'session' && f.session) payload.session = f.session; // the session is that period's parameter, nothing else's
+  if (f.search) payload.search = f.search;
+  if (f.sort) payload.sort = f.sort;
+  const bytes = new TextEncoder().encode(JSON.stringify(payload));
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function filterFromLink(word, kinds) {
+  let payload;
+  try {
+    const b64 = String(word || '').replace(/-/g, '+').replace(/_/g, '/');
+    const binary = atob(b64 + '='.repeat((4 - b64.length % 4) % 4));
+    const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+    payload = JSON.parse(new TextDecoder().decode(bytes));
+  } catch (e) {
+    return null;
+  }
+  if (!payload || typeof payload !== 'object' || !LINK_KINDS(kinds).includes(payload.kind)) return null;
+  const date = v => /^\d{4}-\d{2}-\d{2}$/.test(v || '') ? v : '';
+  const text = v => typeof v === 'string' ? v : '';
+  const f = newFilter(payload.kind, text(payload.cwd));
+  f.from = date(payload.from);
+  f.to = date(payload.to);
+  f.host = text(payload.host);
+  for (const k of Array.isArray(payload.off) ? payload.off : []) if (SOURCES[k]) f.sources[k] = false;
+  if (text(payload.session)) f.session = payload.session;
+  if (text(payload.search)) f.search = payload.search;
+  if (text(payload.sort)) f.sort = payload.sort;
+  return f;
 }

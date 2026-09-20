@@ -22,7 +22,10 @@ operations, finds retry cycles, long waits and background processes, and attribu
 millisecond of the main thread to exactly one operation *and* to exactly one SDLC stage.
 
 Stack: Go 1.22, standard library only; a vanilla JS + SVG single-page app embedded in the
-binary; no build step, no npm. Everything runs on loopback; nothing leaves the machine.
+binary; no build step, no npm. Everything runs on loopback and nothing leaves the machine —
+with one exception the owner sets up: **agent mode** (§7.4, `docs/AGENT-MODE.md`), where a
+headless todobem on another machine answers the hub it was paired with, and the hub dials
+those agents and nothing else.
 
 ### 1.1 Pipeline
 
@@ -55,17 +58,20 @@ built from; Insights reads the derived model and never a log line.
 
 | path | responsibility |
 |---|---|
-| `cmd/todobem/main.go` | entry point, flags (`-addr`, `-codex`, `-claude`, `-settings`, `-open`, `-rules`, `-cache`, `-auth`), subcommands `token`, `cache`, `unknown`; embeds `web/` |
+| `cmd/todobem/main.go` | entry point, flags (`-addr`, `-codex`, `-claude`, `-settings`, `-open`, `-rules`, `-cache`, `-auth`, `-agent`, `-agent-key`, `-version`), subcommands `token`, `cache`, `unknown`, `agent`, `hub`; embeds `web/`; `runAgent` is agent mode, the hub's `fleet.Fleet` is attached here |
+| `cmd/todobem/agent.go` | `todobem agent pair` (a pairing string from the agent key) and `todobem hub add / list / remove / doctor / rotate` (the agents file; a running hub picks it up) |
 | `cmd/todobem/unknown.go` | `todobem unknown`: unmatched commands and telemetry gaps across sessions, the loop the `resolve-unknown` skill runs |
-| `cmd/todobem/web/` | `index.html`, `app.js` (session list, timeline, breakdown, inspector), `inspector.js`, `filter.js` (period + project + source filter), `settings.js`, `insights.js`, `dropdown.js` (the list of every `select.select`, drawn by the page over the native control, which keeps its value and its `change` event), `markdown.js` (the rendered view of a recorded message: a small GFM-subset renderer that escapes everything and links only http/https/mailto, plus the Show raw / Show rendered switch every prose panel carries), `app.css` (the surface finish: `grain.svg` is the one texture tile it lays over the page; `grain.js` re-lays it on a dense screen as rasters scaled to the screen, so a speck stays one CSS pixel), `build.js` (the reload onto a new server build, §8), `fonts/` (Fira Sans, self-hosted); `cmd/todobem/app_test.js` runs the SPA under `node --test` |
+| `cmd/todobem/web/` | `index.html`, `app.js` (session list, timeline, breakdown, inspector), `inspector.js`, `filter.js` (period + project + host + source filter; the host chip), `settings.js`, `insights.js`, `dropdown.js` (the list of every `select.select`, drawn by the page over the native control, which keeps its value and its `change` event), `markdown.js` (the rendered view of a recorded message: a small GFM-subset renderer that escapes everything and links only http/https/mailto, plus the Show raw / Show rendered switch every prose panel carries), `app.css` (the surface finish: `grain.svg` is the one texture tile it lays over the page; `grain.js` re-lays it on a dense screen as rasters scaled to the screen, so a speck stays one CSS pixel), `build.js` (the reload onto a new server build, §8), `fonts/` (Fira Sans, self-hosted); `cmd/todobem/app_test.js` runs the SPA under `node --test` |
 | `cmd/dump/` | developer tool: totals, per-lane partition checks, stage runs, groups, longest and unknown ops, `-ops` TSV, `-insights` facts and findings |
 | `internal/source/` | the seam: `Meta`, `Source`, `Session` (joiner), `LaneParser`, `Multi`, `Summaries`, `TailReader`, text helpers |
 | `internal/codex/` | Codex adapter: `index.go`, `reader.go` (line typing by prefix), `lane.go` (turns, ops, markers), `tokens.go` |
 | `internal/claude/` | Claude Code adapter: `index.go`, `lane.go` (turn state machine), `tools.go` (tool name → operation) |
 | `internal/classify/` | `classify.go` (the rule table `Rules`, priority, segments, heredocs), `head.go` (head unwrapping: wrappers, runners, option prefixes), `make.go` (make / ninja targets), `shell.go` (tokenizer, `Identity`), `lifecycle.go` (stages, change kinds, pins, matchers, fingerprint), `subgroup.go`, `userconfig.go` (overlay) |
 | `internal/model/` | `model.go` (schema), `derive.go` (partition, groups, totals), `lifecycle.go` (the second partition) |
-| `internal/server/` | JSON API, auth gate, session pools, `/api/settings`, `/api/insights/*` |
-| `internal/auth/` | key file, one-time tokens, HMAC sessions |
+| `internal/server/` | JSON API, auth gate, session pools, `/api/settings`, `/api/insights/*`; `agent.go` is agent mode (the `/agent/v1/*` handlers, the digest), `remote.go` the hub side (composite ids routed to the fleet, `/api/fleet*`) |
+| `internal/fleet/` | agent mode's protocol and hub side: `wire.go` (the v1 types), `ids.go` (`<uuid>@<host>`), `pairing.go`, `tls.go` (self-signed certificate, pinned transport), `cursor.go` (the delta tracker), `agents.go` (`~/.todobem/agents.json`), `snapshot.go`, `client.go`, `fleet.go` (pollers, conditional model fetches, facts to a sink, control), `version.go` |
+| `internal/atomicfile/` | the one atomic file write (temp file + rename) behind settings, cache entries, sidecars, the agents file and the snapshots |
+| `internal/auth/` | key file, one-time tokens, HMAC sessions, the staged key of a two-phase rotation |
 | `internal/settings/` | `~/.todobem/settings.json`: the session folders per source |
 | `internal/store/` | the derived-session cache and the facts sidecar |
 | `internal/insights/` | `facts.go`, `detect*.go`, `report.go`, `scan.go` |
@@ -209,7 +215,7 @@ a 151 MB Codex sample (286 MB with sub-agents): 40 % of bytes decoded, 1.5 s wal
 All times are Unix milliseconds. Both adapters emit the same structures.
 
 ```
-Session  { id, source, title, cwd, branch, model, version, cli, started, ended, live, now,
+Session  { id, source, host?, title, cwd, branch, model, version, cli, started, ended, live, now,
            lanes: Lane[] (lanes[0] is the root), groups: Group[], totals: Totals,
            parallel: {agent_ms, wall_ms, agents}, bytes }
 Lane     { id, path ("/root", "/root/design_review"), parent, role, nickname, model, depth, file,
@@ -231,7 +237,7 @@ Totals   { elapsed_ms, in_turn_ms, raw_ops_ms, by_phase, raw_by_phase, by_lifecy
            ops, turns, user_messages, system_messages, questions, compactions, failed_ops,
            query_misses, background_ms, background_ops, tokens, compaction_ms, reviews }
 TokenUsage { input, cached, cache_write, output, reasoning, total }
-SessionSummary (the list) { id, source, title, cwd, branch, started, updated, bytes, agents, live,
+SessionSummary (the list) { id, source, host?, title, cwd, branch, started, updated, bytes, agents, live,
            cli, model, last_answer, question, totals? }
 ```
 
@@ -715,6 +721,49 @@ CORS); a browser-declared `Sec-Fetch-Site: cross-site` is 403; the host check cl
 rebinding. `-auth=off` is an explicit choice the server announces. `deploy.sh` prints the login
 link to the terminal, never to the log.
 
+### 7.4 Agent mode and the hub (`-agent`, `internal/fleet`, `server/agent.go`, `server/remote.go`)
+
+The design and the normative protocol are `docs/AGENT-MODE.md` (§6 is the wire reference); this
+is the map. `todobem -agent` is the same server — index, cache, classifier, incremental parsers
+— with `AgentHandler` on a TLS listener (`:7789`, every interface) instead of the UI: nine
+routes under `/agent/v1/` (`pair`, `hello`, `sessions`, `sessions/{id}`, `sessions/{id}/version`,
+`facts`, `event`, `doctor`, `rotate`), a bearer on every request but `pair`, and nothing else
+served. The agent never opens a connection. Its identity is a self-signed ECDSA certificate
+(`~/.todobem/agent.crt`, pinned by SHA-256 at pairing) and its root of trust
+`~/.todobem/agent.key` (the UI's `auth.key` is never touched): a pairing token is
+`auth.MintToken` under that key (one use, five minutes, not before boot), a bearer is
+`auth.MintSession` with a year's TTL, and `rotate` is two-phase — `auth.StageKey` writes
+`agent.key.next`, `KeySource.All` accepts both keys, and the first session verified under the
+staged key promotes it. The session list is a delta (`fleet.Tracker`: a boot nonce, a scan
+generation, `changed[id]`, count and `ids_hash`; no tombstones); a model is the cache file
+itself (`store.Encode`, `ETag`/`If-None-Match` on `model.Version`); facts come by id from the
+sidecar the **digest** fills (every five minutes the Insights scanner parses, on its private
+path, the closed roots that have none yet); `event` serves a span only after loading that
+session's model (the viewer's guard applies).
+
+The **hub** is an ordinary todobem with `~/.todobem/agents.json` (0600; the bearers are in it).
+`fleet.Fleet` re-reads the file when its mtime changes, runs one poller per agent (60 s while
+a browser is looking, 10 minutes idle, phases spread by a hash of the name, a list request
+after idle kicks a round), keeps a snapshot per agent (`~/.todobem/fleet/<name>.json.gz`: hello,
+cursor, rows, last contact — an unreachable agent keeps its last rows), reconciles the rows
+against `count`/`ids_hash` with one full fetch on a mismatch, and fetches facts for the rows
+that changed in batches of 100 (pending ones again after five minutes). Remote sessions carry
+the id `<uuid>@<name>` and `host`; the server's `summaries()` merges them, and `loadModel`,
+`fingerprint` (the row's `(bytes, updated)` under the agent's rules), the `version` case, the
+op's source span, `/api/event` (its `session` parameter) and `factsFor` hand a remote id to the
+fleet — `loadModel` through `remoteModel`, which answers a `remoteView` that polls and fetches
+spans from its agent, so the handlers ask the view what it can do; the server owns every cache
+write and the fleet only fetches, and a poll that saw a newer version makes the next open a
+conditional fetch (`Fleet.Current`). The model's and the facts' `id` are rewritten to the composite id on ingestion; models
+are shown only from agents whose `cache_version` equals the hub's, facts only from equal
+`facts_version`. `/api/fleet` (status), `/api/fleet/add | remove | rotate | poll` (JSON
+POSTs) and `/api/fleet/doctor?name=` are the Servers section of the Settings page;
+`todobem hub …` does the same from the command line without the server. Insights take a
+`hosts=` parameter (`.` is this machine); `todobem cache -prune` keeps the ids the snapshots
+list. Verified 2026-09-19 against one Linux agent (160 sessions of both sources): a model
+opens in ~0.16 s from the agent and ~3 ms from the hub's cache, an idle poll is a few hundred
+bytes, and the rotation, the reconciliation and the source spans behaved as the tests say.
+
 ---
 
 ## 8. Server API (`internal/server`, loopback, gzip, behind the gate)
@@ -725,11 +774,12 @@ link to the terminal, never to the log.
 | `GET /api/sessions/{id}` (`?refresh=1`) | the derived `Session`; served from the cache when its fingerprint matches, else parsed (and re-cached); `refresh` forces a full re-parse |
 | `GET /api/sessions/{id}/version` | ≈ 200 B; the client polls it (Follow mode, default 30 s) and re-fetches the model only when it changed |
 | `GET /api/sessions/{id}/op/{opId}` | the op's detail (the full command / file list) |
-| `GET /api/event?…` | the exact source line of an op or marker, read by `(file, off, len)` from a file under a current home |
+| `GET /api/event?…` | the exact source line of an op or marker, read by `(file, off, len)` from a file under a current home; with `session=<uuid>@<host>` the span is fetched from that agent |
 | `GET /api/rules` | the rule table (built-in and user rows flagged), priority, lifecycle stages, defaults, pins, matchers, subgroups |
 | `GET /api/auth`, `POST /api/login`, `POST /api/logout` | the gate |
 | `GET/POST /api/settings` | the homes per source as typed and what the index found; POST saves and applies |
-| `/api/insights/report`, `scan`, `status`, `rules` | §10 |
+| `GET /api/fleet`, `POST /api/fleet/add`, `remove`, `rotate`, `poll`, `GET /api/fleet/doctor?name=` | the paired agents (§7.4): status, pairing, control |
+| `/api/insights/report`, `scan`, `status`, `rules` | §10; `hosts=` narrows a report to agents by name, `.` being this machine |
 
 Every response carries `X-Todobem-Build`, a 12-hex fingerprint of the embedded `web/` tree
 (`build.go`). The page (`build.js`) keeps the first value it sees and reloads itself when a
@@ -952,6 +1002,19 @@ and measurements never in a total; three top lists (time, tokens, checks); keeps
 evidence rows per card. Cross-session cards need three closed sessions in the project; below
 that the page shows what each session has and says why.
 
+The report has an address. `#session/<id>/insights` opens one session's report (the `session`
+period with that id; the session page's Insights card links to it); every other report is
+`#insights?f=<word>`, the filter in force as one base64url word (`filterToLink` /
+`filterFromLink` in `filter.js`: compact JSON of the non-default fields — period, custom dates,
+project, host, the sources switched off — read back field by field, an unknown or malformed
+field dropped, a word that is no filter refused with a note and the page shown as it stands).
+The address bar follows every change of the filters (`insightsHash`, replaced, never a history
+entry), so whatever is on screen can be copied as a link; the plain `#insights` stands only
+until the project has been resolved. The session list has the same address, `#sessions?f=<word>`
+(`fleetHash` / `applyFleetLink` in `app.js`): the word carries the list's search and sort as
+well (the default sort left out), the plain `#sessions` is the defaults, and a link applies
+over the defaults — an address describes the whole view, not a change to it.
+
 `Scanner` parses the sessions of a report that have no facts yet — only on an explicit
 **Analyze** — on a dedicated path (`Loader`): a private session, one refresh, the model cache
 written, the facts sidecar written, the model dropped; a bounded pool, cancellable, progress
@@ -1026,6 +1089,18 @@ simulation (the three Claude Code sessions matched to the second).
 ---
 
 ## 13. Decision record (what shaped the design, with dates)
+
+- **2026-09-19, agent mode (reviewed by the `pragmatic` agent; `docs/AGENT-MODE.md`).** The
+  hub pulls, the agent only answers; TCP with a pinned self-signed certificate and a bearer
+  (the ssh-transport alternative rejected: no ssh to every machine); the existing `auth`
+  primitives on a second key file; a delta list by scan generation reconciled by an id hash
+  rather than mtimes or tombstones; the cache file as the transfer unit, so a version mismatch
+  is a miss and nothing migrates; composite ids `<uuid>@<host>` with the model and facts ids
+  rewritten on ingestion (the review caught that the inspector and the evidence links read
+  `m.id`); two-phase key rotation instead of a documented lockout; upgrade over the wire
+  postponed to its own feature (nothing uploaded is ever executed to be judged; the sketch kept
+  in the design's appendix); product rule 8 amended to name both roles and the testing
+  allowance.
 
 - **2026-09-12, first review.** Prefix-scan `call_id` instead of decoding tool outputs; discard
   long skipped lines without buffering; cwd in the retry identity; trailing cosmetic pipes
@@ -1195,8 +1270,14 @@ simulation (the three Claude Code sessions matched to the second).
   the white ink before it was under 2:1 on the pale stages), the ring's percentage keeps a
   halo in the surface colour because the waterline can cross it, the skill marker takes its
   own literal instead of the review stage's colour, and the legend draws the stages as the
-  pipeline (eight steps on their hues) rather than a second grid of swatches beside the
-  activity one. The owner's follow-up the same day: a stage filter listing yellow test runs
+  pipeline (steps on their hues, in lifecycle order) rather than a second grid of swatches
+  beside the activity one. Since 2026-09-20 the legend is the session's, not the palette's:
+  it lists only the activities and stages some lane spent time in (`by_phase` /
+  `by_lifecycle` of every lane, a sub-agent's included), a live update adds an entry with the
+  first segment that needs it, and a session that served no stage says so in place of the
+  pipeline. The marks legend under the chart follows the same rule: a row only for a glyph
+  some lane draws (a marker of that kind, a turn end of that status, a background bar, a red
+  × — `toolFailure`, the one predicate the lane and the legend share — a stage band). The owner's follow-up the same day: a stage filter listing yellow test runs
   under blue Implementation read as a contradiction; the stage is a property of the run, not
   of the activity (a test between two edits is the loop, after the last edit the check), so
   the square is never recoloured by the stage; a glow of the stage's hue around the square was

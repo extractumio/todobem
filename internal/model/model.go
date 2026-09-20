@@ -334,8 +334,11 @@ type Parallel struct {
 }
 
 type Session struct {
-	ID       string   `json:"id"`
-	Source   string   `json:"source"` // "codex" | "claude"
+	ID     string `json:"id"`
+	Source string `json:"source"` // "codex" | "claude"
+	// Host names the paired agent this session was read from (its name on the hub, also the
+	// suffix of the id: `<uuid>@<host>`); "" = this machine. Set by the hub, never by a source.
+	Host     string   `json:"host,omitempty"`
 	Title    string   `json:"title"`
 	CWD      string   `json:"cwd"`
 	Branch   string   `json:"branch,omitempty"`
@@ -356,7 +359,8 @@ type Session struct {
 // SessionSummary is the list-view row.
 type SessionSummary struct {
 	ID      string `json:"id"`
-	Source  string `json:"source"` // "codex" | "claude"
+	Source  string `json:"source"`         // "codex" | "claude"
+	Host    string `json:"host,omitempty"` // the paired agent the row came from; "" = this machine
 	Title   string `json:"title"`
 	CWD     string `json:"cwd"`
 	Branch  string `json:"branch,omitempty"`

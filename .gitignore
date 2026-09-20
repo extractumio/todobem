@@ -32,7 +32,9 @@ coverage.*
 
 # deploy.sh runtime artifacts and the derived session cache (safe to delete)
 /todobem.pid
+/todobem-agent.pid
 /todobem.out
+/todobem-agent.out
 /.todobem
 
 # Local idea notes (never committed): the TODO file and the Insights brainstorm folder — expert

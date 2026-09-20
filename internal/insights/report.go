@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -44,21 +45,25 @@ func (p Period) Resolve(now int64) Period {
 type Params struct {
 	CWD         string   `json:"cwd"`
 	Sources     []string `json:"sources,omitempty"` // session sources in scope ("codex", "claude"); empty = all
+	Hosts       []string `json:"hosts,omitempty"`   // hosts in scope: agent names, "." for this machine; empty = all
 	Period      Period   `json:"period"`
 	IncludeLive bool     `json:"include_live,omitempty"`
 }
 
+// LocalHost is the Hosts entry that names this machine (a session with no host).
+const LocalHost = "."
+
+// HasHost reports whether sessions of this host (an agent name, "" = this machine) are in scope.
+func (p Params) HasHost(host string) bool {
+	if host == "" {
+		host = LocalHost
+	}
+	return len(p.Hosts) == 0 || slices.Contains(p.Hosts, host)
+}
+
 // HasSource reports whether sessions of this source are in the report's scope.
 func (p Params) HasSource(name string) bool {
-	if len(p.Sources) == 0 {
-		return true
-	}
-	for _, s := range p.Sources {
-		if s == name {
-			return true
-		}
-	}
-	return false
+	return len(p.Sources) == 0 || slices.Contains(p.Sources, name)
 }
 
 // Source is one session a report was built from; the fingerprint lets the server tell when the

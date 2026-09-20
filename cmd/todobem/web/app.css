@@ -86,6 +86,23 @@ p{margin:0}
 .source-mark{display:inline-block;width:10px;height:10px;border-radius:1px;flex:none;vertical-align:0;margin-right:8px;box-shadow:var(--enamel)}
 .source-mark.source-codex{background:var(--src-codex)}.source-mark.source-claude{background:var(--src-claude)}
 .session-link strong .source-mark{vertical-align:1px}
+/* a paired agent's badge: framed and lettered in the host's own hue (filter.js hostHue: 60°
+   steps around the wheel), so the same host reads the same in the list, the header and the
+   project select */
+.host-mark{--host-hue:200;display:inline-block;font:600 11px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.4px;color:hsl(var(--host-hue) 70% 74%);border:1px solid hsl(var(--host-hue) 55% 48%);border-radius:3px;padding:3px 5px;margin-right:8px;vertical-align:2px;white-space:nowrap}
+.subtitle .host-mark{vertical-align:0}
+/* the project select's list with hosts in it: a badge column of one width, names aligned, every
+   row the same height whether or not it carries a badge */
+.dropdown.with-hosts .dropdown-option{display:grid;grid-template-columns:var(--host-col) minmax(0,1fr);align-items:center;column-gap:8px;min-height:32px;padding-top:4px;padding-bottom:4px}
+.dropdown-host{display:flex;align-items:center}
+.dropdown-host .host-mark{margin-right:0;padding:2px 5px;vertical-align:0}
+.dropdown-text{overflow:hidden;text-overflow:ellipsis}
+/* the search field above a filterable list, and the line shown when nothing matches */
+.dropdown-filter{position:sticky;top:-4px;z-index:1;margin:-4px -4px 4px;padding:6px;background:var(--raised);border-bottom:1px solid var(--line-soft)}
+.dropdown-search{width:100%;box-sizing:border-box;font:inherit;font-size:13px;color:var(--text);background:var(--raised);box-shadow:var(--well);border:1px solid transparent;border-radius:var(--radius-tag);padding:6px 9px;outline:none}
+.dropdown-search:focus{border-color:var(--focus)}
+.dropdown-search::-webkit-search-cancel-button{-webkit-appearance:none}
+.dropdown-empty{padding:8px 12px;color:var(--subtle);font-size:13px}
 /* a chip is a plate: information, never pressed — a flat fill with only the surface's edges, so
    it cannot be taken for a key. A control (.btn, .select, .chip.toggle, the zoom and axis keys)
    is a matte key: a colour, the top-lit falloff over it and the control edges. State variants
@@ -106,12 +123,19 @@ button.chip,.chip.toggle{background-image:var(--matte);box-shadow:var(--edge-ctl
 .btn.icon-only{padding:8px;min-width:38px;justify-content:center}
 .btn.small{min-height:30px;padding:4px 10px;font-size:13px}
 .text-btn{color:#b9d4e6;font-size:14px;font-weight:600;display:inline-flex;align-items:center;gap:4px}
+a.text-btn{text-decoration:none}
+a.text-btn:hover{text-decoration:underline}
+/* the session card's two ways into the report, side by side */
+.si-links{display:flex;flex-wrap:wrap;gap:6px 18px}
 .ico{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
 /* an icon slot (filled at boot) is exactly its icon: as a line box it would hold the SVG on a
    baseline, 3px above the centre of the label beside it */
 [data-icon]{display:inline-flex}
 .small-ico{width:14px;height:14px}
 /* a select is a key with its own chevron (the platform's is hidden); its list is drawn by dropdown.js */
+/* the control a bar leads with (Project: the filter used most) wears a tint of its own */
+.ctl.primary{color:var(--accent)}
+.ctl.primary .select{background-color:var(--accent-soft);box-shadow:var(--edge-ctl),inset 0 0 0 1px rgba(165,197,223,.22)}
 .select{appearance:none;-webkit-appearance:none;background:var(--raised);background-image:var(--matte),var(--chevron);background-repeat:repeat,no-repeat;background-position:0 0,right 10px center;background-size:auto,10px 6px;box-shadow:var(--edge-ctl);color:var(--text);border:0;border-radius:var(--radius-ctl);padding:8px 28px 8px 10px;font:inherit;font-size:14px;min-height:38px}
 .select.compact{min-height:26px;padding:2px 22px 2px 6px;font-size:13px;background-position:0 0,right 7px center}
 /* the list (dropdown.js): a matte plate under its select, one row per option, the value the
@@ -379,14 +403,19 @@ kbd{background:#243543;box-shadow:var(--edge);clip-path:var(--chamfer);padding:1
 .operation-tools .select{flex:1 1 136px;min-width:0;max-width:240px;font-size:13px;overflow:hidden;text-overflow:ellipsis}
 .operation-list{display:flex;flex-direction:column;flex:1;min-height:120px;overflow-y:auto}
 /* side by side, the operations card takes the breakdown card's row height (size containment keeps
-   its own list out of the row's sizing) and the list scrolls inside it; stacked, the list caps itself */
-.card.fill{display:flex;flex-direction:column;contain:size}
+   its own list out of the row's sizing) and the list scrolls inside it; stacked, the list caps itself.
+   The card keeps an inset under the scroll box, so the row the box clips is not cut on the card's edge */
+.card.fill{display:flex;flex-direction:column;contain:size;padding-bottom:12px}
 .operation.run .run-count{color:#b9d4e6;font-weight:700;margin-left:4px}
 .run-fold{color:#b9d4e6;cursor:pointer}
 .list-more{padding:12px 22px;font-size:13px;color:var(--subtle);text-align:center;border-top:1px solid var(--line-soft)}
 .operation{display:grid;grid-template-columns:28px 10px 1fr auto 16px;gap:10px;align-items:center;padding:11px 22px;text-align:left;border-top:1px solid var(--line-soft);width:100%}
 .operation:hover{background:#243543}
+/* the number and the swatch belong to the title, so they sit on its line (14px × 1.55 = 21.7px
+   tall), not between the title and the meta line; the time and the chevron stay on the row's axis */
+.operation .color-square{align-self:start;margin-top:6px}
 .op-number{font-size:12px;color:var(--subtle);font-family:ui-monospace,Menlo,monospace}
+.operation .op-number{align-self:start;margin-top:1.5px}
 .operation-copy{min-width:0}
 .operation-copy strong{display:block;font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .operation-copy small{display:block;font-size:12px;color:var(--subtle);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -406,6 +435,9 @@ kbd{background:#243543;box-shadow:var(--edge);clip-path:var(--chamfer);padding:1
 .agents-table{width:100%;border-collapse:collapse;font-size:14px}
 .agents-table th{font-size:12px;letter-spacing:.8px;text-transform:uppercase;color:var(--subtle);text-align:left;padding:8px 10px;border-top:1px solid var(--line-soft);vertical-align:bottom}
 .agents-table td{padding:9px 10px;border-top:1px solid var(--line-soft);vertical-align:top}
+/* the outer cells carry the card's inset (22px, 14px narrow), so the table's text lines up with the card head */
+.agents-table th:first-child,.agents-table td:first-child{padding-left:22px}
+.agents-table th:last-child,.agents-table td:last-child{padding-right:22px}
 .agents-table th:nth-child(n+3),.agents-table td:nth-child(n+3){text-align:right}
 .lane-meta{font-size:12px;color:var(--subtle)}
 .agents-table tr.lane-row{cursor:pointer}.agents-table tr.lane-row:hover td{background:#243543}
@@ -418,7 +450,7 @@ kbd{background:#243543;box-shadow:var(--edge);clip-path:var(--chamfer);padding:1
 .fleet-summary div{background:var(--surface);box-shadow:var(--edge);border-radius:var(--radius);padding:14px 16px}
 .fleet-summary strong{display:block;font-size:24px;font-weight:600;letter-spacing:-.3px}
 .fleet-summary span{font-size:13px;color:var(--subtle)}
-.search-box{display:flex;align-items:center;gap:8px;background:var(--raised);box-shadow:var(--well);border-radius:var(--radius-ctl);padding:0 10px;flex:1 1 220px;min-height:38px}
+.search-box{display:flex;align-items:center;gap:8px;background:var(--raised);box-shadow:var(--well);border-radius:var(--radius-ctl);padding:0 10px;flex:1 1 160px;min-height:38px}
 .search-box input{background:none;border:0;color:var(--text);font:inherit;font-size:14px;width:100%;outline:none}
 .fleet-table{width:100%;border-collapse:collapse;font-size:14px}
 .fleet-table th{font-size:12px;letter-spacing:.8px;text-transform:uppercase;color:var(--subtle);text-align:left;padding:10px 14px;border-top:1px solid var(--line-soft)}
@@ -430,7 +462,9 @@ kbd{background:#243543;box-shadow:var(--edge);clip-path:var(--chamfer);padding:1
 .fleet-table td:first-child{width:100%;max-width:0;min-width:260px}
 .fleet-table th:nth-child(n+2),.fleet-table td:nth-child(n+2){white-space:nowrap}
 /* numbers (elapsed, sub-agents, log size) align right so magnitudes compare down the column */
-.fleet-table th:nth-child(n+4),.fleet-table td:nth-child(n+4){text-align:right}
+.fleet-table th:nth-child(n+5),.fleet-table td:nth-child(n+5){text-align:right}
+/* the Host column: the paired agent's name, empty for this machine */
+.fleet-table td:nth-child(2) .host-mark{margin-right:0}
 .session-link{text-align:left;display:flex;flex-direction:column;gap:3px;width:100%;max-width:520px}
 .session-link strong{font-size:14px;font-weight:600;line-height:1.4}
 .session-link span{font-size:13px;color:var(--subtle);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
@@ -515,6 +549,7 @@ dialog::backdrop{background:rgba(8,13,18,.7)}
   .card-head,.operation-tools,.overview-section,.timeline-toolbar,.range-bar,.chart-footer{padding-left:14px;padding-right:14px}.legend-marks{margin-left:14px;margin-right:14px}
   .legend-phases{grid-template-columns:minmax(0,1fr);gap:6px}.legend-caption{padding-top:6px}.legend-caption b{display:inline;margin-right:6px}
   .operation,.conv-item,.list-more,.panel-foot,.empty{padding-left:14px;padding-right:14px}
+  .agents-table th:first-child,.agents-table td:first-child{padding-left:14px}.agents-table th:last-child,.agents-table td:last-child{padding-right:14px}
   .conv-item{grid-template-columns:72px 1fr}
   .timeline-plot{margin:0 4px}
   .request-card{padding:14px}
@@ -538,6 +573,16 @@ dialog::backdrop{background:rgba(8,13,18,.7)}
 .settings-foot{padding-top:20px}
 .settings-body .muted-note .ico{vertical-align:-3px;margin-right:6px}
 .home-rows{display:flex;flex-direction:column;gap:10px}
+.servers-table td:first-child{width:auto;max-width:none;min-width:0}
+.servers-table th:nth-child(n+4),.servers-table td:nth-child(n+4){text-align:left}
+.servers-table th:nth-child(n+2),.servers-table td:nth-child(n+2){white-space:normal}
+.servers-table td.server-actions{display:flex;flex-wrap:wrap;gap:4px;border-top:0;padding-top:0}
+.servers-table tbody tr{display:grid;grid-template-columns:repeat(7,auto);align-items:start}
+.servers-table thead tr{display:grid;grid-template-columns:repeat(7,auto)}
+.servers-table thead th:last-child{display:none}
+.servers-table tbody td.server-actions{grid-column:1/-1}
+.server-add{margin-top:14px}
+.server-add .home-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
 .home-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 8px;align-items:center}
 .home-row .lock-input{min-height:38px}
 .home-row .lock-input:disabled{opacity:.6}
@@ -572,7 +617,12 @@ dialog::backdrop{background:rgba(8,13,18,.7)}
 .report-bar input[type=date]{background:var(--raised);box-shadow:var(--well);color:var(--text);border:0;border-radius:var(--radius-ctl);padding:6px 8px;font:inherit;font-size:13px;min-height:38px;color-scheme:dark}
 /* the bar's right side (Insights: axis + Regenerate; Sessions: search + sort); the status is its own full-width row */
 .bar-actions{display:flex;gap:10px;align-items:center;margin-left:auto;flex-wrap:wrap}
-.bar-actions.bar-fill{flex:1 1 320px;min-width:0}
+/* the fill variant (the list page: search, sort, Clear) takes the rest of the filter's line when
+   its content fits there (the basis is that content: search 160 + sort 150 + Clear 38 + gaps),
+   else the whole line under it; the sort and Clear are one tail pinned to the right edge, so
+   Clear never lands alone under the search */
+.bar-actions.bar-fill{flex:1 1 370px;min-width:0}
+.bar-tail{display:flex;gap:10px;align-items:center;flex:none;margin-left:auto}
 .report-status{display:flex;flex-wrap:wrap;gap:8px;align-items:center;flex-basis:100%;min-width:0}
 .report-status:empty{display:none}
 .report-chip{white-space:normal;line-height:1.4}

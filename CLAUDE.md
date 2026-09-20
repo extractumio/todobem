@@ -23,7 +23,10 @@ Stack: Go 1.22, standard library only; vanilla JS + SVG embedded into the binary
 step, no npm. Module `github.com/extractumio/todobem`; AGPL-3.0 (`LICENSE`) with a commercial
 option from Extractum (`LICENSING.md`). Run `go run ./cmd/todobem -open=false` →
 `http://127.0.0.1:7788` (flags `-addr`, `-codex`, `-claude`, `-settings`, `-open`, `-rules`,
-`-cache`, `-auth`); the UI is locked until a link from `todobem token` is used. The folders it
+`-cache`, `-auth`); the UI is locked until a link from `todobem token` is used. `todobem -agent`
+is the same binary headless on another machine, answering a hub over pinned TLS with a bearer
+(`docs/AGENT-MODE.md`; the hub is any todobem with `~/.todobem/agents.json`, `todobem hub add`
+pairs one). The folders it
 reads come from `~/.todobem/settings.json` (`{"codex_homes": [...], "claude_homes": [...]}`,
 written by the Settings page, applied live; a key absent → that source's default `~/.codex` /
 `~/.claude`, `[]` → the source is off; `-codex`/`-claude` pin this run to exactly the folders
@@ -37,12 +40,15 @@ disable). `make`/`scripts/deploy.sh` build and run it.
 
 Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `source.Session.Refresh`
 (the shared joiner: one `LaneParser` per file) → `model.Derive` → `server` JSON → `app.js`.
-- `cmd/todobem/main.go` — entry point, flags, subcommands (`token`, `cache`), embeds `web/`;
+- `cmd/todobem/main.go` — entry point, flags, subcommands (`token`, `cache`, `agent`, `hub`),
+  agent mode (`runAgent`) and the hub's fleet, embeds `web/`; `agent.go` — `todobem agent pair`
+  and `todobem hub add|list|remove|doctor|rotate` (the agents file; a running hub reloads it);
   `unknown.go` — `todobem unknown`: unmatched commands and telemetry gaps across sessions, the
   loop the `resolve-unknown` skill runs (`.claude/skills/resolve-unknown/`, symlinked from
   `.codex/skills/`) to grow the user overlay. `cmd/todobem/web/` — the SPA
   (`index.html`, `app.js` timeline/breakdown/inspector, `app.css`, `filter.js` the period +
-  project + source filter shared by the session list and the Insights report, `markdown.js` the
+  project + host + source filter shared by the session list and the Insights report (and the
+  host chip of a remote row), `settings.js` the folders and the Servers section, `markdown.js` the
   renderer of recorded messages (a GFM subset, escapes everything, web links only) and the Show
   raw switch, `grain.js` the surface grain rasterized for a dense screen, `build.js` the reload onto a new
   server build, and `SOURCES` — the source names and marks); `cmd/todobem/app_test.js` — its
@@ -83,10 +89,29 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
   parser-backed sessions plus a separate pool of cache-served models. `auth.go` is the gate:
   `/api/auth`, `POST /api/login` (one-time token → HttpOnly SameSite=Strict cookie, Path=/api),
   `POST /api/logout`; static files stay open, every other `/api/*` answers 401 without a session.
+  `agent.go` is agent mode: `AgentHandler` serves `/agent/v1/*` (pair, hello, the sessions
+  delta, a model as its cache file, version, facts, event, doctor, two-phase rotate) with a
+  route table (method, JSON body) and a bearer on every request, plus the digest that parses
+  closed sessions for facts; `remote.go` is the hub side: `loadModel` hands a composite id
+  `<uuid>@<host>` to `remoteModel`, which answers a `remoteView` — a cached model that also
+  polls its version and fetches a source span from its agent — so the handlers ask the view,
+  not the id; the server owns every cache write, the fleet only fetches; `/api/fleet*` is the
+  Servers section.
+- `internal/fleet/` — the protocol (`wire.go`, v1: `docs/AGENT-MODE.md` §6) and the hub:
+  `ids.go` (`Join`/`Split`, agent names), `pairing.go` (the pairing string), `tls.go` (the
+  agent's self-signed certificate, the hub's pinned transport), `cursor.go` (the agent's delta
+  tracker: boot nonce, generation, `ids_hash`), `agents.go` (`~/.todobem/agents.json`, 0600),
+  `snapshot.go` (`~/.todobem/fleet/<name>.json.gz`), `client.go`, `fleet.go` (one poller per
+  agent, reconciliation, conditional model fetches, facts to the server's sink, pair / remove /
+  rotate / doctor), `version.go` (`-version` from the build info).
+- `internal/atomicfile/` — the one atomic file write (temp file + rename) every durable file
+  goes through: settings, cache entries and sidecars, the agents file, the snapshots.
 - `internal/auth/` — the lite authentication: key file (0600, refused when group/world-readable,
   re-read on change so `todobem token -revoke` kills every session live), 52-char one-time tokens
   (5-minute window, single use, refused when minted before the server booted), stateless
-  HMAC-signed sessions; token and session MACs are domain-separated. `todobem token` lives in
+  HMAC-signed sessions; token and session MACs are domain-separated; a staged key
+  (`<key>.next`, `StageKey`) is accepted next to the current one and promoted by the first
+  session verified under it (the agent's two-phase rotation). `todobem token` lives in
   `cmd/todobem/main.go`.
 - `internal/insights/` — the Insights report (`docs/ARCHITECTURE.md` §10): `facts.go` extracts a
   compact per-session `Facts` from the model (pure; never reads a rollout); `detect_*.go` hold the
@@ -104,7 +129,8 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
   page (a draft per source, add/remove/save, read-only when pinned); `resolveHomes` in
   `cmd/todobem/main.go` is the one precedence rule (flags > file > defaults) the server, `cache`
   and `unknown` share.
-- `internal/store/` — the derived-session cache (gzipped JSON per session). A default open serves
+- `internal/store/` — the derived-session cache (gzipped JSON per session; `Encode`/`Decode` are
+  the one codec of that shape, also the unit an agent sends a hub). A default open serves
   the cache when its fingerprint (source files + a hash of the effective classifier) still matches;
   a grown file or a rule change auto-invalidates it; the Refresh button forces a full re-parse.
   Cache is derived, local, gitignored, safe to delete; `todobem cache -prune` drops the entries

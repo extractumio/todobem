@@ -1,8 +1,6 @@
 package store
 
 import (
-	"bytes"
-	"compress/gzip"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -33,13 +31,8 @@ func (s *Store) LoadSidecar(kind, id string, version int, v any) (Fingerprint, b
 	if err != nil {
 		return Fingerprint{}, false
 	}
-	gz, err := gzip.NewReader(bytes.NewReader(b))
-	if err != nil {
-		return Fingerprint{}, false
-	}
-	defer gz.Close()
 	var sf sidecarFile
-	if json.NewDecoder(gz).Decode(&sf) != nil || sf.Version != version || len(sf.Data) == 0 {
+	if GunzipJSON(b, &sf) != nil || sf.Version != version || len(sf.Data) == 0 {
 		return Fingerprint{}, false
 	}
 	if json.Unmarshal(sf.Data, v) != nil {
@@ -57,17 +50,9 @@ func (s *Store) SaveSidecar(kind, id string, version int, fp Fingerprint, v any)
 	if err != nil {
 		return err
 	}
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	if err := json.NewEncoder(gz).Encode(sidecarFile{Version: version, FP: fp, Data: data}); err != nil {
+	b, err := GzipJSON(sidecarFile{Version: version, FP: fp, Data: data})
+	if err != nil {
 		return err
 	}
-	if err := gz.Close(); err != nil {
-		return err
-	}
-	tmp := s.sidecarPath(kind, id) + ".tmp"
-	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.sidecarPath(kind, id))
+	return s.write(s.sidecarPath(kind, id), b)
 }

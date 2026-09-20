@@ -22,6 +22,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/extractumio/todobem/internal/atomicfile"
 )
 
 // Settings is the file's content: the homes of each source, as typed. Both lists are always
@@ -39,16 +41,25 @@ type Homes struct {
 	Claude []string
 }
 
+// Dir is todobem's own folder, ~/.todobem: the settings, the auth and agent keys, the cache, the
+// agents file and the fleet snapshots live under it. "" when the home directory is unknown.
+func Dir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".todobem")
+}
+
 // DefaultPath is where the settings live: $TODOBEM_SETTINGS, else ~/.todobem/settings.json.
 func DefaultPath() string {
 	if env := os.Getenv("TODOBEM_SETTINGS"); env != "" {
 		return env
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
+	if d := Dir(); d != "" {
+		return filepath.Join(d, "settings.json")
 	}
-	return filepath.Join(home, ".todobem", "settings.json")
+	return ""
 }
 
 // The folders read when no settings file exists (or a key is absent), as typed.
@@ -118,30 +129,7 @@ func Save(path string, s Settings) error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".settings-*.json")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := tmp.Chmod(0600); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	return nil
+	return atomicfile.Write(path, append(data, '\n'), 0600)
 }
 
 // Resolve normalizes both lists (Normalize) and requires at least one folder overall: a source

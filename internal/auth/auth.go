@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/extractumio/todobem/internal/settings"
 )
 
 const (
@@ -41,11 +43,23 @@ func DefaultKeyPath() string {
 	if p := os.Getenv("TODOBEM_AUTH"); p != "" {
 		return p
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+	if d := settings.Dir(); d != "" {
+		return filepath.Join(d, "auth.key")
 	}
-	return filepath.Join(home, ".todobem", "auth.key")
+	return ""
+}
+
+// CheckPrivate refuses a file readable by other users: a key they could mint from, an agents
+// file with bearers in it.
+func CheckPrivate(path string) error {
+	st, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if st.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("%s is readable by other users (mode %o); run: chmod 600 %s", path, st.Mode().Perm(), path)
+	}
+	return nil
 }
 
 // LoadOrCreateKey reads the key file, creating it (0600, parent 0700) when absent. A key file
@@ -72,12 +86,8 @@ func LoadKey(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	st, err := os.Stat(path)
-	if err != nil {
+	if err := CheckPrivate(path); err != nil {
 		return nil, err
-	}
-	if st.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("%s is readable by other users (mode %o); run: chmod 600 %s", path, st.Mode().Perm(), path)
 	}
 	if len(key) != KeyBytes {
 		return nil, fmt.Errorf("%s: expected %d bytes, found %d (delete it to generate a new key)", path, KeyBytes, len(key))
@@ -85,12 +95,32 @@ func LoadKey(path string) ([]byte, error) {
 	return key, nil
 }
 
-// RotateKey replaces the key file with fresh bytes: every token and every browser session dies.
+// RotateKey replaces the key file with fresh bytes: every token and every session dies, a
+// staged key (StageKey) with them.
 func RotateKey(path string) ([]byte, error) {
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+	for _, p := range []string{path, NextPath(path)} {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
 	}
 	return createKey(path)
+}
+
+// MintFromFile mints a one-time token under the key file at path, creating the key when absent
+// and rotating it first when revoke is set: what `todobem token`, `todobem agent pair` and an
+// agent's startup line do. Being able to read the file is what authorises minting.
+func MintFromFile(path string, revoke bool, ttl time.Duration, now time.Time) (string, error) {
+	var key []byte
+	var err error
+	if revoke {
+		key, err = RotateKey(path)
+	} else {
+		key, err = LoadOrCreateKey(path)
+	}
+	if err != nil {
+		return "", fmt.Errorf("auth key: %w", err)
+	}
+	return MintToken(key, ttl, now)
 }
 
 func createKey(path string) ([]byte, error) {
@@ -138,57 +168,119 @@ func MintToken(key []byte, ttl time.Duration, now time.Time) (string, error) {
 	return tokenEnc.EncodeToString(buf), nil
 }
 
-// Verifier checks tokens and sessions against a key and remembers used token nonces. The key
-// comes from a KeySource so a rotated key file takes effect on the next request.
+// Verifier checks tokens and sessions against a key and remembers used token nonces. The keys
+// come from a KeySource so a rotated key file takes effect on the next request; a staged key
+// (StageKey, the two-phase rotation of an agent) is accepted next to the current one until a
+// session signed by it is first verified, which promotes it.
 type Verifier struct {
-	key  func() []byte
-	boot time.Time
-	mu   sync.Mutex
-	used map[[8]byte]time.Time // nonce -> issued; entries older than TokenWindow are pruned
+	keys    func() [][]byte // the current key first, a staged key second; nil = deny everything
+	promote func()          // called when a session verified under the staged key (nil = never)
+	boot    time.Time
+	mu      sync.Mutex
+	used    map[[8]byte]time.Time // nonce -> issued; entries older than TokenWindow are pruned
 }
 
 // NewVerifier verifies against a fixed key; boot is the server start (tokens minted before it
 // are refused).
 func NewVerifier(key []byte, boot time.Time) *Verifier {
-	return &Verifier{key: func() []byte { return key }, boot: boot, used: map[[8]byte]time.Time{}}
+	return &Verifier{keys: func() [][]byte { return [][]byte{key} }, boot: boot, used: map[[8]byte]time.Time{}}
 }
 
 // NewFileVerifier verifies against the key file at path, re-read whenever it changes, so
 // `todobem token -revoke` (rotate) invalidates every session and token of a running server
-// at once. A missing or unreadable file denies everything.
+// at once. A missing or unreadable file denies everything. A staged key file (`<path>.next`)
+// is accepted too, and promoted to the key file by the first session verified under it.
 func NewFileVerifier(path string, boot time.Time) *Verifier {
-	src := &KeySource{path: path}
-	return &Verifier{key: src.Current, boot: boot, used: map[[8]byte]time.Time{}}
+	src := &keySource{path: path}
+	return &Verifier{keys: src.All, promote: func() { _ = Promote(path) }, boot: boot, used: map[[8]byte]time.Time{}}
 }
 
-// KeySource caches a key file and reloads it when its size or mtime changes.
-type KeySource struct {
+// key is the current (first) key, for minting; nil when there is none.
+func (v *Verifier) key() []byte {
+	if keys := v.keys(); len(keys) > 0 {
+		return keys[0]
+	}
+	return nil
+}
+
+// verifyAny reports which key (index) verifies the MAC of data, or -1.
+func (v *Verifier) verifyAny(tag byte, data, sum []byte, n int) int {
+	for i, key := range v.keys() {
+		if key != nil && hmac.Equal(sum, mac(key, tag, data)[:n]) {
+			return i
+		}
+	}
+	return -1
+}
+
+// keySource caches a key file and reloads it when its size or mtime changes. Next to it, a
+// staged key file (`<path>.next`) is read the same way; All returns both while it exists.
+type keySource struct {
 	path string
 	mu   sync.Mutex
+	cur  cachedKey
+	next cachedKey
+}
+
+type cachedKey struct {
 	key  []byte
 	size int64
 	mod  time.Time
 }
 
-// Current returns the key as of now; nil when the file is missing, malformed or too open.
-func (k *KeySource) Current() []byte {
+// NextPath is the staged key file of a key file.
+func NextPath(path string) string { return path + ".next" }
+
+// All returns the current key and, while a staged key file exists, the staged key after it.
+func (k *keySource) All() [][]byte {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	st, err := os.Stat(k.path)
+	keys := [][]byte{k.cur.load(k.path)}
+	if next := k.next.load(NextPath(k.path)); next != nil {
+		keys = append(keys, next)
+	}
+	return keys
+}
+
+// load returns the file's key, re-reading it when its size or mtime changed; nil when the file is
+// missing, malformed or too open.
+func (c *cachedKey) load(path string) []byte {
+	st, err := os.Stat(path)
 	if err != nil {
-		k.key = nil
+		c.key = nil
 		return nil
 	}
-	if k.key != nil && st.Size() == k.size && st.ModTime().Equal(k.mod) {
-		return k.key
+	if c.key != nil && st.Size() == c.size && st.ModTime().Equal(c.mod) {
+		return c.key
 	}
-	key, err := LoadKey(k.path)
+	key, err := LoadKey(path)
 	if err != nil {
-		k.key = nil
+		c.key = nil
 		return nil
 	}
-	k.key, k.size, k.mod = key, st.Size(), st.ModTime()
+	c.key, c.size, c.mod = key, st.Size(), st.ModTime()
 	return key
+}
+
+// StageKey writes fresh key bytes to `<path>.next` (0600), replacing a previous staged key, and
+// returns them: the first half of a two-phase rotation. The current key stays valid until a
+// session signed by the staged key is verified (Verifier promotes it) or Promote is called.
+func StageKey(path string) ([]byte, error) {
+	next := NextPath(path)
+	if err := os.Remove(next); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	return createKey(next)
+}
+
+// Promote makes the staged key the key: `<path>.next` replaces `<path>` (rename, atomic). Every
+// session signed by the old key is refused from the next request on. No staged key: no-op.
+func Promote(path string) error {
+	err := os.Rename(NextPath(path), path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 // RedeemToken validates a token (signature, age, single use) and returns the session TTL it
@@ -198,7 +290,7 @@ func (v *Verifier) RedeemToken(token string, now time.Time) (time.Duration, erro
 	if err != nil || len(raw) != 32 {
 		return 0, ErrBadToken
 	}
-	if !hmac.Equal(raw[16:], mac(v.key(), tagToken, raw[:16])[:tokenMACLen]) {
+	if v.verifyAny(tagToken, raw[:16], raw[16:], tokenMACLen) < 0 {
 		return 0, ErrBadToken
 	}
 	issued := time.Unix(int64(binary.BigEndian.Uint32(raw[8:12])), 0)
@@ -254,19 +346,34 @@ func (v *Verifier) MintSession(ttl time.Duration, now time.Time) (string, time.T
 	return MintSession(key, ttl, now)
 }
 
-// VerifySession checks a session value's signature and expiry.
+// VerifySession checks a session value's signature and expiry. A session signed by the staged
+// key promotes it: from this request on, the old key is gone.
 func (v *Verifier) VerifySession(value string, now time.Time) error {
 	raw, err := sessionEnc.DecodeString(value)
 	if err != nil || len(raw) != 56 {
 		return ErrBadSession
 	}
-	if !hmac.Equal(raw[24:], mac(v.key(), tagSession, raw[:24])) {
+	i := v.verifyAny(tagSession, raw[:24], raw[24:], sha256.Size)
+	if i < 0 {
 		return ErrBadSession
 	}
 	if now.Unix() >= int64(binary.BigEndian.Uint64(raw[:8])) {
 		return ErrBadSession
 	}
+	if i > 0 && v.promote != nil {
+		v.promote()
+	}
 	return nil
+}
+
+// SessionExpiry reads the expiry (ms) a session value carries without verifying it — for a
+// report that names when the caller's own credential ends; 0 when the value is malformed.
+func SessionExpiry(value string) int64 {
+	raw, err := sessionEnc.DecodeString(value)
+	if err != nil || len(raw) != 56 {
+		return 0
+	}
+	return int64(binary.BigEndian.Uint64(raw[:8])) * 1000
 }
 
 // mac domain-separates the two uses of the key with a type byte, so a token can never be

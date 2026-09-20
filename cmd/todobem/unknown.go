@@ -70,7 +70,6 @@ type unknownReport struct {
 
 func runUnknown(args []string) int {
 	fs := flag.NewFlagSet("todobem unknown", flag.ContinueOnError)
-	home, _ := os.UserHomeDir()
 	codexHome := fs.String("codex", "", codexFlagHelp)
 	claudeHome := fs.String("claude", "", claudeFlagHelp)
 	settingsPath := fs.String("settings", settings.DefaultPath(), settingsFlagHelp)
@@ -111,7 +110,7 @@ func runUnknown(args []string) int {
 		fmt.Fprintln(os.Stderr, "session folders:", err)
 		return 2
 	}
-	srv := server.NewWithCache(homes.Homes, nil, resolveCacheDir(*cacheDir, home))
+	srv := server.NewWithCache(homes.Homes, nil, resolveCacheDir(*cacheDir))
 	srv.Scan()
 	roots := srv.Roots()
 	var ids []string

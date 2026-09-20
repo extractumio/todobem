@@ -84,6 +84,7 @@ const INSIGHT_TEXT = {
     few: n => `Only ${plural(n, 'closed session')} in this period. Findings across sessions need 3 or more. The report shows what each session has.`,
     emptyGroup: 'Nothing found in this period.',
     error: 'Could not build the report.',
+    badLink: 'The link carried a filter this page could not read; showing the report as it stands.',
     noData: (n, reason) => `No data in ${plural(n, 'session')}${reason ? ` (${reason})` : ''}.`,
     noDataItems: n => `${plural(n, 'item')} had no usage record.`,
     inSessions: (n, of) => `In ${n} of ${of} sessions.`,
@@ -115,6 +116,7 @@ const INSIGHT_TEXT = {
     subtitle: 'The biggest findings of this session.',
     none: 'No findings in this session.',
     project: 'See the report for this project',
+    session: 'Open the full report for this session',
   },
   guide: {
     title: 'How insights are computed',
@@ -547,7 +549,42 @@ function insightsQuery(p) {
   // a source switched off narrows the report's scope; all on is the server's default
   const on = SOURCE_ORDER.filter(k => sourceOn(p, k));
   if (p.kind !== 'session' && on.length < SOURCE_ORDER.length) parts.push('sources=' + on.join(','));
+  // one host narrows it too ('.' is this machine, the server's insights.LocalHost)
+  if (p.kind !== 'session' && p.host) parts.push('hosts=' + encodeURIComponent(p.host));
   return parts.join('&');
+}
+
+// insightsHash is the report's address: one session's report is #session/<id>/insights, every
+// other period is #insights?f=<filter> (filterToLink — a set of filters opens by its address),
+// and the plain #insights until the project has been resolved or a session picked.
+function insightsHash(p) {
+  if (p.kind === 'session') return p.session ? '#session/' + encodeURIComponent(p.session) + '/insights' : '#insights';
+  if (p.cwd === null) return '#insights';
+  return '#insights?f=' + filterToLink(p);
+}
+const SESSION_INSIGHTS_HASH = /^#session\/([^/?]+)\/insights$/;
+// applyInsightsLink reads a report address into the params — the session form, or the filter
+// form — and says whether it carried one; an unreadable filter word is said so and applies
+// nothing, so the page opens as it stands.
+function applyInsightsLink(hash) {
+  const ins = insightsState();
+  const session = SESSION_INSIGHTS_HASH.exec(hash);
+  if (session) {
+    let id;
+    try { id = decodeURIComponent(session[1]); } catch (e) { return false; }
+    ins.params.kind = 'session';
+    ins.params.session = id;
+    return true;
+  }
+  const word = /(?:^|&)f=([^&]*)/.exec(hash.startsWith('#insights?') ? hash.slice('#insights?'.length) : '');
+  if (!word) return false;
+  const f = filterFromLink(word[1]);
+  if (!f) {
+    toast(INSIGHT_TEXT.states.badLink);
+    return false;
+  }
+  Object.assign(ins.params, f, { session: ins.params.session });
+  return true;
 }
 
 // periodLabel names the period a report was built for (the server's resolved dates).
@@ -581,6 +618,7 @@ async function loadInsights() {
     await loadSessions();
     if (!owns()) return;
     if (ins.params.cwd === null && ins.params.kind !== 'session') ins.params.cwd = defaultProject(ins) || null; // no project yet: keep waiting for one
+    replaceHash(insightsHash(ins.params)); // the address names the report as it is now
     const rep = await api('/api/insights/report?' + insightsQuery(ins.params));
     if (!owns()) return;
     ins.report = rep;
@@ -961,7 +999,8 @@ function sessionInsightsHTML(rep, m) {
   }
   // the session's biggest findings by the main thread's time; measurements and checks are not findings
   const ranked = cards.filter(c => !isInfo(c) && !isCheck(c)).sort((a, b) => b.exposure.main_ms - a.exposure.main_ms);
-  const link = `<button class="text-btn" data-action="ins-project" data-cwd="${esc(m.cwd || '')}">${esc(T.sessionCard.project)}</button>`;
+  // the session's own report is an address (#session/<id>/insights), so it can be copied and opened as one
+  const link = `<div class="si-links"><a class="text-btn" href="${esc(insightsHash({ kind: 'session', session: m.id }))}">${esc(T.sessionCard.session)}</a><button class="text-btn" data-action="ins-project" data-cwd="${esc(m.cwd || '')}">${esc(T.sessionCard.project)}</button></div>`;
   if (!ranked.length) return `<p class="muted-note">${esc(T.sessionCard.none)}</p>${link}`;
   return ranked.slice(0, 3).map(c => {
     const r = T.rules[c.rule] || { title: c.title, happened: () => '' };

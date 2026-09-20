@@ -25,11 +25,17 @@
 #
 # The UI is locked until a one-time token is used. `start` prints a login link (one use, 5 min);
 # later: ./todobem token   (or ./todobem token -revoke to end every session).
+#
+# AGENT=1 runs agent mode instead (docs/AGENT-MODE.md): headless, TLS on ADDR (default :7789,
+# every interface), answering a paired hub. `start` then prints a pairing string (one use, 5 min)
+# for `todobem hub add` on the hub; later: ./todobem agent pair.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 BINARY=${BINARY:-todobem}
+AGENT=${AGENT:-}
+if [ -n "$AGENT" ]; then ADDR=${ADDR:-:7789}; PIDFILE=${PIDFILE:-$ROOT/todobem-agent.pid}; LOGFILE=${LOGFILE:-$ROOT/todobem-agent.out}; fi
 ADDR=${ADDR:-127.0.0.1:7788}
 CODEX=${CODEX:-}
 CLAUDE=${CLAUDE:-}
@@ -89,7 +95,30 @@ stop() {
 
 build() { need_go; echo "building $BINARY"; go build -o "$BINARY" ./cmd/todobem; }
 
+# launch runs todobem with this run's arguments — the mode and the address, the caller's extra
+# flags, then the folders, rules and auth the environment names — in the foreground (fg: exec)
+# or the background (bg: nohup, pidfile). `run` and `start` share it.
+launch() {
+  how=$1; shift
+  if [ -n "$AGENT" ]; then set -- -agent -addr "$ADDR" "$@"; else set -- -addr "$ADDR" -open=false "$@"; fi
+  [ -n "$CODEX" ] && set -- "$@" -codex "$CODEX"
+  [ -n "$CLAUDE" ] && set -- "$@" -claude "$CLAUDE"
+  [ -n "$RULES" ] && set -- "$@" -rules "$RULES"
+  [ -n "$AUTH" ] && [ -z "$AGENT" ] && set -- "$@" -auth "$AUTH"
+  case "$how" in
+    fg)
+      echo "running in foreground: ./$BINARY $*"
+      if [ -n "$AGENT" ]; then echo "pairing string: run  ./$BINARY agent pair  in another terminal"; else echo "login link: run  ./$BINARY token  in another terminal"; fi
+      exec "./$BINARY" "$@" ;;
+    bg)
+      : >"$LOGFILE"; chmod 600 "$LOGFILE"   # the log names sessions; keep it to this user
+      nohup "./$BINARY" "$@" >>"$LOGFILE" 2>&1 &
+      echo $! >"$PIDFILE" ;;
+  esac
+}
+
 warn_addr() {
+  [ -n "$AGENT" ] && return 0   # an agent listens outward by design: TLS, a bearer on every request
   case "$ADDR" in
     127.0.0.1:*|localhost:*|"[::1]:"*) : ;;
     *) echo "WARNING: ADDR=$ADDR is not loopback  this exposes the local session viewer on the network. Prefer an ssh -L tunnel instead." >&2 ;;
@@ -98,12 +127,14 @@ warn_addr() {
 
 url_hint() {
   host=${ADDR%:*}; port=${ADDR##*:}
+  if [ -n "$AGENT" ]; then echo "todobem agent: TLS on $ADDR (no UI); the hub pairs with the string below"; return; fi
   echo "todobem: http://$ADDR/"
   case "$host" in 127.0.0.1|localhost|"[::1]") echo "remote host? tunnel it:  ssh -L $port:127.0.0.1:$port <this-host>  then open http://127.0.0.1:$port/" ;; esac
 }
 
 # login_hint prints a one-time login link to THIS terminal only — never into the log file.
 login_hint() {
+  if [ -n "$AGENT" ]; then "./$BINARY" agent pair -port "${ADDR##*:}" || echo "could not mint a pairing string; run: ./$BINARY agent pair" >&2; return; fi
   if [ "$AUTH" = off ]; then echo "auth: OFF"; return; fi
   set -- -addr "$ADDR"
   [ -n "$AUTH" ] && set -- "$@" -auth "$AUTH"
@@ -119,26 +150,12 @@ case "$CMD" in
     strays ;;
   run)
     build; warn_addr
-    set -- -addr "$ADDR" -open=false "$@"
-    [ -n "$CODEX" ] && set -- "$@" -codex "$CODEX"
-    [ -n "$CLAUDE" ] && set -- "$@" -claude "$CLAUDE"
-    [ -n "$RULES" ] && set -- "$@" -rules "$RULES"
-    [ -n "$AUTH" ] && set -- "$@" -auth "$AUTH"
-    echo "running in foreground: ./$BINARY $*"
-    echo "login link: run  ./$BINARY token  in another terminal"
-    exec "./$BINARY" "$@" ;;
+    launch fg "$@" ;;
   start|"")
     build; warn_addr
     running && stop
     if other=$(busy); then echo "error: $ADDR is taken by another program: $other" >&2; exit 1; fi
-    set -- -addr "$ADDR" -open=false "$@"
-    [ -n "$CODEX" ] && set -- "$@" -codex "$CODEX"
-    [ -n "$CLAUDE" ] && set -- "$@" -claude "$CLAUDE"
-    [ -n "$RULES" ] && set -- "$@" -rules "$RULES"
-    [ -n "$AUTH" ] && set -- "$@" -auth "$AUTH"
-    : >"$LOGFILE"; chmod 600 "$LOGFILE"   # the log names sessions; keep it to this user
-    nohup "./$BINARY" "$@" >>"$LOGFILE" 2>&1 &
-    echo $! >"$PIDFILE"
+    launch bg "$@"
     sleep 1
     if running; then url_hint; login_hint; echo "logs: $LOGFILE  stop: ./scripts/deploy.sh stop"; strays; else echo "failed to start; see $LOGFILE" >&2; tail -n 20 "$LOGFILE" >&2 || true; exit 1; fi ;;
   *) echo "usage: $0 [start|run|stop|status] [-- extra todobem flags]" >&2; exit 2 ;;

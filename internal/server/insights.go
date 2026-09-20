@@ -136,13 +136,8 @@ func (svc *insightsSvc) factsFor(id string) (insights.Facts, bool) {
 func paramsFrom(r *http.Request, now int64) insights.Params {
 	q := r.URL.Query()
 	p := insights.Params{CWD: q.Get("cwd"), IncludeLive: q.Get("include_live") == "1"}
-	if v := q.Get("sources"); v != "" {
-		for _, name := range strings.Split(v, ",") {
-			if name = strings.TrimSpace(name); name != "" {
-				p.Sources = append(p.Sources, name)
-			}
-		}
-	}
+	p.Sources = csvParam(q.Get("sources"))
+	p.Hosts = csvParam(q.Get("hosts")) // agent names; "." is this machine; absent = every host
 	p.Period = insights.Period{Kind: q.Get("period"), Session: q.Get("session")}
 	if p.Period.Kind == "custom" {
 		p.Period.From, _ = strconv.ParseInt(q.Get("from"), 10, 64)
@@ -168,9 +163,12 @@ type selection struct {
 func (svc *insightsSvc) selectSessions(p insights.Params) selection {
 	s := svc.srv
 	s.maybeScan(20 * time.Second)
+	if s.fleet != nil {
+		s.fleet.Touch()
+	}
 	var sel selection
 	for _, sum := range s.summaries() {
-		if p.Period.Kind != "session" && (p.CWD != "" && sum.CWD != p.CWD || !p.HasSource(sum.Source)) {
+		if p.Period.Kind != "session" && (p.CWD != "" && sum.CWD != p.CWD || !p.HasSource(sum.Source) || !p.HasHost(sum.Host)) {
 			continue
 		}
 		if !p.InPeriod(sum.ID, sum.Updated, sum.Live) {
@@ -263,6 +261,9 @@ func (svc *insightsSvc) handleScan(w http.ResponseWriter, r *http.Request) {
 		sel := svc.selectSessions(p)
 		ids := make([]string, 0, len(sel.pending))
 		for _, src := range sel.pending {
+			if svc.srv.remote(src.ID) {
+				continue // the agent's digest parses it; the hub never opens remote files
+			}
 			ids = append(ids, src.ID)
 		}
 		started := svc.scanner.Start(ids)
@@ -307,5 +308,26 @@ func (s *Server) summaries() []model.SessionSummary {
 		opened[k] = v
 	}
 	s.mu.Unlock()
-	return s.src.Summaries(opened)
+	local := s.src.Summaries(opened)
+	if s.fleet == nil {
+		return local
+	}
+	remote := s.fleet.Summaries()
+	if len(remote) == 0 {
+		return local
+	}
+	all := append(local, remote...)
+	source.SortSummaries(all)
+	return all
+}
+
+// csvParam splits a comma-separated query value into its non-empty, trimmed names.
+func csvParam(v string) []string {
+	var out []string
+	for _, name := range strings.Split(v, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
 }

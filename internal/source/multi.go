@@ -109,11 +109,17 @@ func (m *Multi) Summaries(opened map[string]*Session) []model.SessionSummary {
 	for _, s := range m.sources {
 		out = append(out, Summaries(s, opened)...)
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Updated != out[j].Updated {
-			return out[i].Updated > out[j].Updated
-		}
-		return out[i].ID < out[j].ID
-	})
+	SortSummaries(out)
 	return out
+}
+
+// SortSummaries orders list rows newest first, ties by id: the one order of the session list,
+// whatever sources and hosts the rows came from.
+func SortSummaries(rows []model.SessionSummary) {
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Updated != rows[j].Updated {
+			return rows[i].Updated > rows[j].Updated
+		}
+		return rows[i].ID < rows[j].ID
+	})
 }
