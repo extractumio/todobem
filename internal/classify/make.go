@@ -139,6 +139,17 @@ func matchTargets(tool string, fields []string) (Rule, string, bool) {
 			r, ok = wordRules[tool], true
 		}
 		if !ok {
+			// a verb-first target (`test-one`, `deploy-prod`, `build-ios`, `ci-e2e`) is the listed
+			// verb's row — the dispatcher-verb convention, read left to right like an npm script
+			// variant; a verb anywhere else (`ios-test`, `clean-all`) is not read, the overlay
+			// pins it
+			if verb, ok2 := targetVerb(target); ok2 {
+				if vr, ok3 := wordRules[tool+" "+verb]; ok3 {
+					r, ok = vr, true
+				}
+			}
+		}
+		if !ok {
 			return Rule{Match: tool + " " + target, Phase: Unknown, Kind: tool + " " + target, Note: "an unlisted target"}, tool + " " + target + " (unlisted target)", true
 		}
 		if !found || Priority[r.Phase] > Priority[best.Phase] {
@@ -146,4 +157,22 @@ func matchTargets(tool string, fields []string) (Rule, string, bool) {
 		}
 	}
 	return best, label, true
+}
+
+// targetVerb reads the first word of a hyphenated / underscored / dotted target when it is a
+// dispatcher verb (`test-one` → test, `ci-deploy-prod` → deploy); false for anything else.
+func targetVerb(target string) (string, bool) {
+	w := strings.ToLower(target)
+	w = strings.TrimPrefix(w, "ci-")
+	w = strings.TrimPrefix(w, "ci_")
+	if i := strings.IndexAny(w, "-_:."); i > 0 {
+		w = w[:i]
+	}
+	if w == strings.ToLower(target) {
+		return "", false // a single word was already looked up as a listed target
+	}
+	if _, ok := dispatcherVerbs[w]; !ok {
+		return "", false
+	}
+	return w, true
 }

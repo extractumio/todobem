@@ -26,7 +26,7 @@ func Subgroup(phase Phase, kind string) string {
 			return "edit"
 		case strings.HasPrefix(k, "git") || k == "vcs-script" || k == "vcs-subcommand":
 			return "vcs"
-		case k == "gh" || k == "gh api" || k == "glab" || k == "glab mr" || k == "glab ci" || k == "glab api":
+		case k == "gh" || k == "gh api" || k == "glab" || k == "glab mr" || k == "glab ci" || k == "glab api" || k == "linear" || k == "linear query" || k == "jira":
 			return "hosting"
 		case k == "http" || k == "dns" || k == "net" || k == "web_search":
 			return "network"
@@ -44,7 +44,7 @@ func Subgroup(phase Phase, kind string) string {
 		return "polling"
 	case Unknown:
 		switch {
-		case k == "python" || k == "node" || k == "ruby" || k == "perl" || k == "npm run" || k == "run" || k == "swift run" || k == "go run" || k == "cargo run" || k == "bazel run" || k == "dotnet run" || k == "deno run" || k == "exec-script-error":
+		case k == "python" || k == "node" || k == "ruby" || k == "perl" || k == "luau" || k == "lua" || k == "Rscript" || k == "php" || k == "npm run" || k == "run" || k == "swift run" || k == "go run" || k == "cargo run" || k == "bazel run" || k == "dotnet run" || k == "deno run" || k == "app run" || k == "eval" || k == "exec-script" || k == "exec-script-error":
 			return "script"
 		case strings.HasPrefix(k, "tool:"):
 			return "tool"
@@ -65,7 +65,7 @@ var DepsKinds = map[string]bool{
 	"go mod": true, "go get": true, "go install tool": true,
 	"cargo deps": true, "cargo install": true, "bundle install": true,
 	"pod install": true, "carthage": true, "mint install": true, "swift package resolve": true,
-	"make deps": true,
+	"make deps": true, "venv": true, "rokit": true, "playwright install": true,
 }
 
 // SubgroupRow is one line of the guide's subgroup table.
@@ -81,18 +81,18 @@ func Subgroups() []SubgroupRow {
 	return []SubgroupRow{
 		{Code, "read", "read, image"},
 		{Code, "search", "search, list, list_files"},
-		{Code, "edit", "edit, sed -i, write-file, script-write, format, mkdir, cp, mv, touch, ln, git rm, git mv, git apply, git cherry-pick"},
+		{Code, "edit", "edit, sed -i, perl -i, write-file, script-write, format, mkdir, cp, mv, touch, ln, git rm, git mv, git apply, git cherry-pick"},
 		{Code, "vcs", "git status/diff/log/show/blame/commit/add/… (local), vcs-script, vcs-subcommand"},
-		{Code, "hosting", "gh, gh api, glab, glab mr, glab ci, glab api (queries)"},
+		{Code, "hosting", "gh, gh api, glab, glab mr, glab ci, glab api, linear, linear query, jira"},
 		{Code, "network", "http, dns, net, web_search"},
 		{Code, "mcp", "mcp"},
-		{Code, "shell", "inspect, shell, probe, process, system, version, script-read, sqlite, sql, go env/list/doc, npm, cargo, rm, docker/kubectl queries, devicectl, simulator, xcode, codesign, everything else in the code phase"},
+		{Code, "shell", "inspect, shell, probe, process, system, version, help, script-read, sqlite, sql, archive, keychain, ssh-agent, pip, artifact, review findings, harness cli, go env/list/doc, npm, npm init, cargo, rm, docker/kubectl queries, devicectl, simulator, xcode, codesign, everything else in the code phase"},
 		{Build, "compile", "cargo build/check, go build/generate/install, swift build, xcodebuild, cc, link, configure, rustc, tsc, vite, esbuild, webpack, next build, npm/pnpm/yarn/bun build, make and its build targets, cmake, ninja, meson, bazel, gradle, mvn, docker build, everything else in the build phase"},
-		{Build, "deps", "npm/pnpm/yarn/bun install, pip install, uv, poetry, pipenv, go mod/get, go install pkg@version, cargo add/fetch/update/vendor/install, bundle, pod, carthage, mint, swift package resolve/update, make deps/vendor"},
+		{Build, "deps", "npm/pnpm/yarn/bun install, pip install, uv, venv, poetry, pipenv, go mod/get, go install pkg@version, cargo add/fetch/update/vendor/install, bundle, pod, carthage, mint, rokit, playwright install, swift package resolve/update, make deps/vendor"},
 		{WaitWorker, "agents", "agent"},
 		{WaitWorker, "polling", "sleep, poll-loop, tail-f, process, ci, wait"},
 		{WaitWorker, "hooks", "hook"},
-		{Unknown, "script", "python, node, ruby, perl, npm run, run, swift run, go run, cargo run, bazel run, dotnet run, deno run, exec-script-error"},
+		{Unknown, "script", "python, node, ruby, perl, luau, lua, Rscript, php, npm run, run, swift run, go run, cargo run, bazel run, dotnet run, deno run, app run, eval, exec-script, exec-script-error"},
 		{Unknown, "tool", "tool:<name> (a Claude Code tool without a mapping)"},
 		{Unknown, "command", "unknown (no rule matched)"},
 	}

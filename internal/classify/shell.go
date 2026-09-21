@@ -155,7 +155,7 @@ func heredocInterpreter(tokens []shellToken) string {
 			}
 			return ""
 		}
-		if len(words) == 0 && reEnvPrefix.MatchString(t.text+" ") {
+		if len(words) == 0 && isEnvAssignment(t.text) {
 			continue
 		}
 		fields := shellFields(t.text)
@@ -278,7 +278,7 @@ func unwrapStdinWrappers(words []string) []string {
 					return nil
 				}
 			}
-			for len(words) > 0 && reEnvPrefix.MatchString(words[0]+" ") {
+			for len(words) > 0 && reAssignment.MatchString(words[0]) { // fields: quotes already removed
 				words = words[1:]
 			}
 		default:
@@ -309,32 +309,4 @@ func pipedHeredocInterpreter(tokens []shellToken, lo, hi int) string {
 		end++
 	}
 	return heredocInterpreter(tokens[hi+1 : end])
-}
-
-// Inline Python can also write a script that a later shell segment executes.
-// Read only the literal -c argument, never stdin data or arguments to a script file.
-func inlinePythonSource(seg string) string {
-	tokens, ok := shellTokens(strings.TrimSpace(reEnvPrefix.ReplaceAllString(strings.TrimSpace(seg), "")))
-	if !ok || len(tokens) < 3 || tokens[0].op {
-		return ""
-	}
-	head := shellFields(tokens[0].text)
-	if len(head) != 1 || (head[0] != "python" && head[0] != "python3") {
-		return ""
-	}
-	for i := 1; i+1 < len(tokens); i++ {
-		if tokens[i].op {
-			return ""
-		}
-		arg := shellFields(tokens[i].text)
-		if len(arg) != 1 || arg[0] == "-" {
-			return ""
-		}
-		if arg[0] == "-c" && !tokens[i+1].op && heredocInterpreter(tokens[:i]) == "script" {
-			if source := shellFields(tokens[i+1].text); len(source) == 1 {
-				return source[0]
-			}
-		}
-	}
-	return ""
 }

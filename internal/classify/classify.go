@@ -95,6 +95,9 @@ func partText(seg string) string {
 		return seg
 	}
 	if i := strings.Index(seg, fields[0]); i > 0 && len(fields) < len(shellFields(seg)) {
+		if seg[i-1] == '"' || seg[i-1] == '\'' {
+			i-- // a quoted head keeps its quote: `"/Applications/X.app/Contents/MacOS/X" --flag`
+		}
 		return seg[i:]
 	}
 	return seg
@@ -121,206 +124,6 @@ type Rule struct {
 	Phase Phase  `json:"phase"`
 	Kind  string `json:"kind"`
 	Note  string `json:"note,omitempty"`
-}
-
-// Rules is the single source of truth. Order matters only among regex rules; word rules
-// are looked up exactly (two-word first, then one-word).
-var Rules = []Rule{
-	// ---- waiting for workers / CI / leases
-	{"gh run watch", WaitWorker, "ci", "waits for a GitHub Actions run"},
-	{"gh pr checks", WaitWorker, "ci", "usually --watch; treated as CI wait"},
-	{"gh workflow view", Code, "gh", ""},
-	{"sleep", WaitWorker, "sleep", ""},
-	{"re:(?s)\\bwhile\\b.*\\bsleep\\b", WaitWorker, "poll-loop", "shell polling loop"},
-	{"re:(?s)\\buntil\\b.*\\bsleep\\b", WaitWorker, "poll-loop", ""},
-	{"seg:^tail\\s+-[fF]\\b", WaitWorker, "tail-f", ""},
-
-	// ---- release / deploy
-	{"git push", Release, "git push", ""},
-	{"gh pr create", Release, "pr create", ""},
-	{"gh pr merge", Release, "pr merge", ""},
-	{"gh pr ready", Release, "pr ready", ""},
-	{"gh pr edit", Release, "pr edit", ""},
-	{"gh pr comment", Release, "pr comment", ""},
-	{"gh pr review", Release, "pr review", ""},
-	{"gh pr close", Release, "pr close", ""},
-	{"gh release", Release, "gh release", ""},
-	{"gh run rerun", Release, "ci rerun", ""},
-	{"gh run cancel", Release, "ci cancel", ""},
-	{"glab mr create", Release, "glab mr", ""}, {"glab mr merge", Release, "glab mr", ""}, {"glab mr approve", Release, "mr approve", ""}, {"glab mr close", Release, "glab mr", ""}, {"glab mr update", Release, "glab mr", ""}, {"glab mr note", Release, "mr note", ""}, {"glab mr rebase", Release, "glab mr", ""},
-	{"glab mr", Release, "glab mr", "create/merge/… ; reads split off below"},
-	{"glab ci", Release, "glab ci", ""},
-	{"glab release", Release, "glab release", ""},
-	{"docker push", Release, "docker push", ""},
-	{"kubectl apply", Release, "kubectl apply", ""},
-	{"kubectl rollout", Release, "kubectl rollout", ""},
-	{"helm upgrade", Release, "helm", ""},
-	{"helm install", Release, "helm", ""},
-	{"npm publish", Release, "publish", ""},
-	{"cargo publish", Release, "publish", ""},
-	{"xcrun devicectl device install", Release, "device install", ""},
-	{"xcrun altool", Release, "app store upload", ""},
-	{"xcrun notarytool", Release, "notarize", ""},
-	{"fastlane", Release, "fastlane", ""},
-	{"flyctl", Release, "fly", ""}, {"fly", Release, "fly", ""},
-	{"vercel", Release, "vercel", ""}, {"netlify", Release, "netlify", ""},
-	{"head:(^|[-_])(deploy|release|ship|publish|rollout)([-_.]|$)", Release, "deploy-script", "executable whose name contains deploy/release/ship/publish/rollout as a word"},
-	{"head:(^|[-_])(build|compile|bundle)([-_.]|$)", Build, "build-script", "executable whose name contains build/compile/bundle as a word"},
-	{"headpath:(^|/)(deploy|release|ship)[\\w.-]*/[^/]+$", Release, "deploy-script", "script located in a deploy*/release*/ship* directory"},
-	{"head:(^|[-_])(worktree|checkout|branch)([-_.]|$)", Code, "vcs-script", "executable whose name says it manages worktrees/branches"},
-
-	// ---- test
-	{"swift test", Test, "swift test", ""},
-	{"xcodebuild test", Test, "xcodebuild test", ""},
-	{"xcodebuild test-without-building", Test, "xcodebuild test", ""},
-	{"seg:^xcodebuild\\b.*\\s(test|test-without-building)(\\s|$)", Test, "xcodebuild test", "xcodebuild … test action"},
-	{"pytest", Test, "pytest", ""},
-	{"python -m pytest", Test, "pytest", ""}, {"python3 -m pytest", Test, "pytest", ""}, {"python -m unittest", Test, "unittest", ""}, {"python3 -m unittest", Test, "unittest", ""},
-	{"python3 -m http.server", Infra, "http server", ""}, {"python -m http.server", Infra, "http server", ""},
-	{"python3", Unknown, "python", "python without a recognizable script"}, {"python", Unknown, "python", ""}, {"node", Unknown, "node", ""}, {"ruby", Unknown, "ruby", ""}, {"perl", Unknown, "perl", ""},
-	{"npm test", Test, "npm test", ""},
-	{"npm run test", Test, "npm test", "also npm run test:<variant> (unwrapHead)"},
-	{"npm run lint", Test, "lint", ""}, {"npm run typecheck", Test, "typecheck", ""}, {"npm run check", Test, "check", ""}, {"npm run verify", Test, "check", ""},
-	{"pnpm lint", Test, "lint", ""}, {"pnpm typecheck", Test, "typecheck", ""}, {"yarn lint", Test, "lint", ""}, {"yarn typecheck", Test, "typecheck", ""},
-	{"oxlint", Test, "lint", ""}, {"biome check", Test, "lint", ""}, {"biome lint", Test, "lint", ""}, {"stylelint", Test, "lint", ""}, {"mypy", Test, "typecheck", ""}, {"pyright", Test, "typecheck", ""},
-	{"shellcheck", Test, "lint", ""}, {"golangci-lint", Test, "lint", ""}, {"staticcheck", Test, "lint", ""}, {"shfmt", Code, "format", ""},
-	{"pnpm test", Test, "pnpm test", ""}, {"pnpm run test", Test, "pnpm test", ""}, {"yarn test", Test, "yarn test", ""}, {"yarn run test", Test, "yarn test", ""},
-	{"bun test", Test, "bun test", ""}, {"bun run test", Test, "bun test", ""}, {"bun run dev", Infra, "service", ""}, {"bun run start", Infra, "service", ""},
-	{"deno test", Test, "deno test", ""}, {"deno bench", Test, "deno test", ""}, {"deno lint", Test, "lint", ""}, {"deno check", Test, "typecheck", ""}, {"deno fmt", Code, "format", ""}, {"deno run", Unknown, "deno run", "runs the product"},
-	{"playwright", Test, "playwright", "also npx / pnpm dlx / bunx playwright (unwrapHead)"},
-	{"playwright-cli", Test, "browser automation", ""},
-	{"agent-browser", Test, "browser automation", ""},
-	{"jest", Test, "jest", ""},
-	{"vitest", Test, "vitest", ""},
-	{"cargo test", Test, "cargo test", ""},
-	{"go test", Test, "go test", ""},
-	{"mvn test", Test, "mvn test", ""}, {"gradle test", Test, "gradle test", ""},
-	{"ctest", Test, "ctest", "CMake's test runner"}, {"meson test", Test, "meson test", ""},
-	{"seg:^cmake\\s+--build\\b.*\\s(--target|-t)\\s+(test|check)\\b", Test, "cmake test", "cmake --build … --target test / check"},
-	{"bazel test", Test, "bazel test", ""}, {"bazelisk test", Test, "bazel test", ""}, {"buck2 test", Test, "buck2 test", ""},
-	{"zig test", Test, "zig test", ""}, {"zig build test", Test, "zig test", ""},
-	{"xcrun simctl", Test, "simulator", ""},
-	{"xcrun devicectl device process launch", Test, "device run", "launches the app under test on a physical device (with --console it stays attached)"},
-	{"xcrun xctrace", Test, "xctrace", ""},
-	{"head:(^|[-_.])(test|tests|spec|e2e|smoke|qa)([-_.]|$)", Test, "test-script", "executable whose name contains test/spec/e2e/smoke/qa"},
-	{"head:(^|[-_.])(preflight|precheck|check|checks|verify|verification|validate|validation|lint|audit|doctor|healthcheck|sanity)([-_.]|$)", Test, "check-script", "executable whose name says it verifies something (preflight/check/verify/validate/lint/audit)"},
-	{"headpath:(^|/)(qa|tests?|e2e|spec)/", Test, "test-script", "executable located under qa/ or tests/"},
-	{"seg:^node\\s+--test\\b", Test, "node test", ""},
-	{"seg:^(bash|sh|zsh)\\s+-n\\b", Test, "syntax-check", "shell syntax check"},
-
-	// ---- build
-	{"swift build", Build, "swift build", ""}, {"swift package", Build, "swift package", ""}, {"xcodegen", Build, "xcodegen", ""},
-	{"swiftc", Build, "swiftc", "compiler invoked directly (also -typecheck)"}, {"xcrun swiftc", Build, "swiftc", ""}, {"swift run", Unknown, "swift run", "runs the built product"},
-	{"xcodebuild", Build, "xcodebuild", "any xcodebuild not matched as test"},
-	{"cargo build", Build, "cargo build", ""}, {"cargo check", Build, "cargo check", ""}, {"cargo clippy", Test, "lint", ""}, {"wasm-pack", Build, "wasm-pack", ""}, {"rustup", Infra, "rustup", "toolchain management"},
-	{"rustc", Build, "rustc", "compiler invoked directly"},
-	{"go run", Unknown, "go run", "runs the product (a -serve flag or a script name may say more)"}, {"cargo run", Unknown, "cargo run", ""}, {"bazel run", Unknown, "bazel run", ""}, {"bazelisk run", Unknown, "bazel run", ""}, {"dotnet run", Unknown, "dotnet run", ""},
-	{"go build", Build, "go build", ""}, {"go vet", Test, "lint", ""}, {"go generate", Build, "go generate", ""}, {"go install", Build, "go install", "builds and installs the project's own packages (a module@version is a tool install, below)"},
-	{"npm run build", Build, "npm build", "also npm run build:<variant> (unwrapHead)"}, {"pnpm build", Build, "pnpm build", ""}, {"pnpm run build", Build, "pnpm build", ""}, {"yarn build", Build, "yarn build", ""}, {"yarn run build", Build, "yarn build", ""},
-	{"bun build", Build, "bun build", "bun's bundler"}, {"bun run build", Build, "bun build", ""}, {"deno compile", Build, "deno compile", ""}, {"deno task build", Build, "deno build", ""},
-	{"next build", Build, "next build", ""}, {"webpack", Build, "webpack", "a bare webpack bundles (webpack serve is a service)"}, {"rollup", Build, "rollup", ""}, {"parcel build", Build, "parcel", ""},
-	{"turbo build", Build, "turbo", ""}, {"turbo run build", Build, "turbo", ""}, {"nx build", Build, "nx", ""},
-	{"npm pack", Build, "npm pack", ""},
-	{"make", Build, "make", "make with no target, an unlisted target or a listed build target (matchMake); a dry run is `make -n` below"}, {"make build", Build, "make", ""}, {"make all", Build, "make", ""}, {"make compile", Build, "make", ""}, {"make install", Build, "make", ""},
-	{"make dist", Build, "make", ""}, {"make package", Build, "make", ""}, {"make image", Build, "make", "a container image"}, {"make generate", Build, "make", ""}, {"make gen", Build, "make", ""}, {"make proto", Build, "make", ""}, {"make docs", Build, "make", "documentation build"},
-	{"make -n", Code, "make query", "a dry run, a question, --version / --help: nothing is built"}, {"--version", Code, "version", "any tool with --version as its only argument"}, {"make help", Code, "make help", ""}, {"make logs", Code, "make logs", ""},
-	{"make test", Test, "make test", ""}, {"make check", Test, "make test", ""}, {"make unit", Test, "make test", ""}, {"make integration", Test, "make test", ""}, {"make e2e", Test, "make test", ""}, {"make ci", Test, "make test", "the CI target: lint, test and build in one"},
-	{"make bench", Test, "make test", ""}, {"make benchmark", Test, "make test", ""}, {"make coverage", Test, "make test", ""}, {"make cover", Test, "make test", ""}, {"make verify", Test, "make test", ""}, {"make validate", Test, "make test", ""},
-	{"make lint", Test, "lint", ""}, {"make vet", Test, "lint", ""}, {"make typecheck", Test, "typecheck", ""}, {"make fmt", Code, "format", ""}, {"make format", Code, "format", ""},
-	{"make run", Infra, "service", ""}, {"make serve", Infra, "service", ""}, {"make dev", Infra, "service", ""}, {"make start", Infra, "service", ""}, {"make up", Infra, "service", ""}, {"make watch", Infra, "service", ""}, {"make restart", Infra, "service", ""}, {"make down", Infra, "service", ""}, {"make stop", Infra, "service", ""},
-	{"make clean", Infra, "cleanup", ""}, {"make distclean", Infra, "cleanup", ""}, {"make mrproper", Infra, "cleanup", ""}, {"make clobber", Infra, "cleanup", ""}, {"make deploy", Release, "deploy", ""}, {"make release", Release, "deploy", ""},
-	{"cmake", Build, "cmake", "configure or --build"}, {"cmake -E", Code, "cmake -E", "cmake's command-line tool mode (copy, remove, echo)"}, {"meson", Build, "meson", "setup / compile"}, {"scons", Build, "scons", ""},
-	{"ninja", Build, "ninja", "no target, the default goal, or a listed build target (matchTargets)"}, {"ninja all", Build, "ninja", ""}, {"ninja install", Build, "ninja", ""}, {"ninja test", Test, "ninja test", ""}, {"ninja check", Test, "ninja test", ""},
-	{"ninja clean", Infra, "cleanup", ""}, {"ninja -t clean", Infra, "cleanup", ""}, {"ninja -t", Code, "ninja query", "a sub-tool: targets, query, deps, graph, browse"}, {"ninja -n", Code, "ninja query", "a dry run, --version / --help"},
-	{"bazel build", Build, "bazel", ""}, {"bazelisk build", Build, "bazel", ""}, {"bazel query", Code, "bazel", ""}, {"bazelisk query", Code, "bazel", ""}, {"buck2 build", Build, "buck2", ""},
-	{"gcc", Build, "cc", "C / C++ compiler invoked directly"}, {"g++", Build, "cc", ""}, {"cc", Build, "cc", ""}, {"c++", Build, "cc", ""}, {"clang", Build, "cc", ""}, {"clang++", Build, "cc", ""}, {"nvcc", Build, "cc", ""}, {"emcc", Build, "cc", ""},
-	{"ld", Build, "link", "linker / archiver invoked directly"}, {"ar", Build, "link", ""},
-	{"configure", Build, "configure", "./configure and the autotools that write it"}, {"autoreconf", Build, "configure", ""}, {"autoconf", Build, "configure", ""}, {"automake", Build, "configure", ""}, {"libtoolize", Build, "configure", ""},
-	{"zig build", Build, "zig build", ""},
-	{"tsc", Build, "tsc", "emits JavaScript"}, {"seg:^(npx\\s+)?tsc\\b.*\\s--noEmit\\b", Test, "typecheck", "tsc --noEmit: a type check, nothing is emitted (test outranks the build word rule)"}, {"vite build", Build, "vite", ""}, {"esbuild", Build, "esbuild", ""},
-	{"docker build", Build, "docker build", ""}, {"docker compose build", Build, "docker build", ""}, {"docker buildx", Build, "docker build", ""},
-	{"gradle", Build, "gradle", ""}, {"mvn", Build, "mvn", ""},
-
-	// ---- build: dependency installation (the deps sub-row; every kind here is in DepsKinds)
-	{"npm ci", Build, "npm install", ""}, {"npm install", Build, "npm install", ""}, {"npm i", Build, "npm install", ""}, {"npm add", Build, "npm install", ""},
-	{"pnpm install", Build, "pnpm install", ""}, {"pnpm i", Build, "pnpm install", ""}, {"pnpm add", Build, "pnpm install", ""},
-	{"yarn", Build, "yarn install", "a bare yarn installs"}, {"yarn install", Build, "yarn install", ""}, {"yarn add", Build, "yarn install", ""},
-	{"bun install", Build, "bun install", ""}, {"bun add", Build, "bun install", ""},
-	{"pip install", Build, "pip install", ""}, {"pip3 install", Build, "pip install", ""}, {"uv sync", Build, "uv", ""}, {"uv add", Build, "uv", ""}, {"uv pip install", Build, "uv", ""}, {"uv lock", Build, "uv", ""},
-	{"poetry install", Build, "poetry install", ""}, {"poetry add", Build, "poetry install", ""}, {"poetry lock", Build, "poetry install", ""}, {"pipenv install", Build, "pipenv install", ""},
-	{"go mod", Build, "go mod", ""}, {"go get", Build, "go get", ""}, {"seg:^go install\\b.*\\S@\\S", Build, "go install tool", "go install pkg@version: a tool from a module, not the project"},
-	{"cargo add", Build, "cargo deps", ""}, {"cargo fetch", Build, "cargo deps", ""}, {"cargo update", Build, "cargo deps", ""}, {"cargo vendor", Build, "cargo deps", ""}, {"cargo install", Build, "cargo install", "a crate's binary, compiled locally"},
-	{"bundle", Build, "bundle install", "Ruby's bundler: install / update / outdated (its name would otherwise read as a build script)"},
-	{"pod install", Build, "pod install", ""}, {"pod update", Build, "pod install", ""}, {"carthage bootstrap", Build, "carthage", ""}, {"carthage update", Build, "carthage", ""}, {"mint install", Build, "mint install", ""},
-	{"swift package resolve", Build, "swift package resolve", ""}, {"swift package update", Build, "swift package resolve", ""},
-	{"make deps", Build, "make deps", ""}, {"make vendor", Build, "make deps", ""}, {"make setup", Infra, "setup-script", "like ./setup.sh: environment setup"}, {"make bootstrap", Infra, "setup-script", ""},
-
-	// ---- infrastructure: long-running local services
-	{"npm start", Infra, "service", "dev server / app process"}, {"npm run dev", Infra, "service", ""}, {"npm run serve", Infra, "service", ""}, {"npm run start", Infra, "service", ""}, {"npm run preview", Infra, "service", ""},
-	{"pnpm dev", Infra, "service", ""}, {"yarn dev", Infra, "service", ""}, {"pnpm start", Infra, "service", ""}, {"yarn start", Infra, "service", ""},
-	{"vite", Infra, "service", "vite dev server"}, {"vite dev", Infra, "service", ""}, {"vite serve", Infra, "service", ""}, {"vite preview", Infra, "service", ""},
-	{"vinext dev", Infra, "service", ""}, {"next dev", Infra, "service", ""}, {"next start", Infra, "service", ""}, {"nuxt dev", Infra, "service", ""}, {"astro dev", Infra, "service", ""}, {"webpack serve", Infra, "service", ""}, {"nodemon", Infra, "service", ""}, {"http-server", Infra, "service", ""}, {"serve", Infra, "service", ""},
-	{"flask run", Infra, "service", ""}, {"uvicorn", Infra, "service", ""}, {"gunicorn", Infra, "service", ""}, {"rails server", Infra, "service", ""}, {"php -S", Infra, "service", ""},
-	{"docker", Infra, "docker", "any other docker subcommand"},
-	{"docker compose", Infra, "docker compose", ""},
-	{"kubectl", Infra, "kubectl", ""},
-	{"ssh", Infra, "ssh", ""},
-	{"scp", Infra, "scp", ""}, {"rsync", Infra, "rsync", ""},
-	{"kill", Infra, "kill", ""}, {"pkill", Infra, "kill", ""}, {"killall", Infra, "kill", ""},
-	{"brew", Infra, "brew", ""}, {"apt", Infra, "apt", ""}, {"apt-get", Infra, "apt", ""},
-	{"systemctl", Infra, "systemctl", ""}, {"launchctl", Infra, "launchctl", ""}, {"journalctl", Infra, "journalctl", ""},
-	{"chmod", Infra, "chmod", ""}, {"chown", Infra, "chown", ""},
-	{"open", Infra, "open", "macOS open"}, {"osascript", Infra, "osascript", ""},
-	{"xcrun devicectl", Infra, "devicectl", ""},
-	{"xcrun", Infra, "xcrun", ""},
-	{"caffeinate", Infra, "caffeinate", ""},
-	{"log", Infra, "diagnostics", "macOS unified log"}, {"sample", Infra, "diagnostics", ""}, {"spindump", Infra, "diagnostics", ""}, {"dtrace", Infra, "diagnostics", ""},
-	{"ffmpeg", Infra, "media", ""}, {"qlmanage", Infra, "media", ""}, {"pdftotext", Infra, "media", ""}, {"pdfinfo", Infra, "media", ""}, {"cairosvg", Infra, "media", ""}, {"ffprobe", Infra, "media", ""}, {"sips", Infra, "media", ""}, {"magick", Infra, "media", ""}, {"convert", Infra, "media", ""},
-	{"head:(^|[-_])(install|setup|bootstrap|provision)([-_.]|$)", Infra, "setup-script", "executable whose name says it installs/sets up something"},
-	{"seg:^rm\\s+(?:--?\\S+\\s+)*(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive)(?:\\s|$)", Infra, "cleanup", "recursive delete"}, {"rm", Code, "rm", "a file delete: a lookup-grade step, not a change of the sources (a recursive rm is cleanup)"},
-	{"head:^(cleanup|clean|teardown|reset)[\\w.-]*\\.(sh|py)$", Infra, "cleanup-script", ""},
-
-	// ---- develop (edits, local VCS, formatting)
-	{"git add", Code, "git add", ""}, {"git commit", Code, "git commit", ""},
-	{"git switch", Code, "git switch", ""}, {"git checkout", Code, "git checkout", ""},
-	{"git stash", Code, "git stash", ""}, {"git rebase", Code, "git rebase", ""},
-	{"git merge", Code, "git merge", ""}, {"git restore", Code, "git restore", ""},
-	{"git reset", Code, "git reset", ""}, {"git rm", Code, "git rm", ""}, {"git mv", Code, "git mv", ""},
-	{"git worktree", Code, "git worktree", ""}, {"git fetch", Code, "git fetch", ""}, {"git pull", Code, "git pull", ""},
-	{"git cherry-pick", Code, "git cherry-pick", ""}, {"git apply", Code, "git apply", ""}, {"git tag", Code, "git tag", ""},
-	{"git clone", Code, "git clone", ""}, {"git init", Code, "git init", ""}, {"git submodule", Code, "git submodule", ""},
-	{"gofmt", Code, "format", ""}, {"prettier", Code, "format", ""},
-	{"oxfmt", Code, "format", ""}, {"black", Code, "format", ""}, {"ruff format", Code, "format", ""}, {"ruff", Test, "lint", "static verification"}, {"eslint", Test, "lint", ""},
-	{"swiftformat", Code, "format", ""}, {"swiftlint", Test, "lint", ""}, {"cargo fmt", Code, "format", ""},
-	{"mkdir", Code, "mkdir", ""}, {"cp", Code, "cp", ""}, {"mv", Code, "mv", ""}, {"touch", Code, "touch", ""}, {"ln", Code, "ln", ""},
-	{"seg:^sed\\s+-i\\b", Code, "sed -i", "in-place edit"},
-	{"seg:^cat\\s*>{1,2}\\s*\\S", Code, "write-file", "cat > file <<EOF"},
-	{"seg:^tee\\s+(-a\\s+)?\\S", Code, "write-file", ""},
-
-	// ---- explore (read / search / inspect)
-	{"cat", Code, "read", ""}, {"sed", Code, "read", "sed -n …p"}, {"head", Code, "read", ""}, {"tail", Code, "read", ""},
-	{"less", Code, "read", ""}, {"more", Code, "read", ""}, {"nl", Code, "read", ""}, {"bat", Code, "read", ""},
-	{"rg", Code, "search", ""}, {"grep", Code, "search", ""}, {"egrep", Code, "search", ""}, {"fgrep", Code, "search", ""}, {"ag", Code, "search", ""}, {"ack", Code, "search", ""},
-	{"find", Code, "list", ""}, {"fd", Code, "list", ""}, {"ls", Code, "list", ""}, {"tree", Code, "list", ""}, {"stat", Code, "list", ""}, {"file", Code, "list", ""},
-	{"wc", Code, "inspect", ""}, {"jq", Code, "inspect", ""}, {"yq", Code, "inspect", ""}, {"sort", Code, "inspect", ""}, {"uniq", Code, "inspect", ""}, {"cut", Code, "inspect", ""}, {"awk", Code, "inspect", ""}, {"tr", Code, "inspect", ""}, {"diff", Code, "inspect", ""}, {"cmp", Code, "inspect", ""}, {"strings", Code, "inspect", ""}, {"od", Code, "inspect", ""}, {"xxd", Code, "inspect", ""}, {"md5", Code, "inspect", ""}, {"shasum", Code, "inspect", ""}, {"sha256sum", Code, "inspect", ""},
-	{"echo", Code, "shell", ""}, {"printf", Code, "shell", ""}, {"true", Code, "shell", ""}, {"test", Code, "probe", "exit 1 = the condition is false"}, {"[", Code, "probe", ""}, {"pwd", Code, "shell", ""}, {"cd", Code, "shell", ""}, {"which", Code, "probe", "exit 1 = not installed"}, {"type", Code, "probe", ""}, {"command -v", Code, "probe", "the builtin form of which"}, {"env", Code, "shell", ""}, {"date", Code, "shell", ""}, {"export", Code, "shell", ""}, {"set", Code, "shell", ""}, {"uname", Code, "shell", ""}, {"whoami", Code, "shell", ""}, {"hostname", Code, "shell", ""}, {"id", Code, "shell", ""}, {"basename", Code, "shell", ""}, {"dirname", Code, "shell", ""}, {"realpath", Code, "shell", ""}, {"read", Code, "shell", ""}, {"exit", Code, "shell", ""}, {"local", Code, "shell", ""}, {"declare", Code, "shell", ""}, {"shift", Code, "shell", ""}, {"return", Code, "shell", ""}, {"break", Code, "shell", ""}, {"continue", Code, "shell", ""}, {"trap", Code, "shell", ""}, {"wait", WaitWorker, "wait", "shell wait for background jobs"},
-	{"ps", Code, "process", ""}, {"lsof", Code, "process", ""}, {"pgrep", Code, "process", ""}, {"top", Code, "process", ""}, {"df", Code, "system", ""}, {"du", Code, "system", ""}, {"uptime", Code, "system", ""}, {"sw_vers", Code, "system", ""}, {"system_profiler", Code, "system", ""}, {"defaults", Code, "system", ""}, {"plutil", Code, "inspect", ""}, {"mdls", Code, "inspect", ""},
-	{"git status", Code, "git status", ""}, {"git diff", Code, "git diff", ""}, {"git log", Code, "git log", ""}, {"git show", Code, "git show", ""}, {"git blame", Code, "git blame", ""},
-	{"git rev-parse", Code, "git", ""}, {"git branch", Code, "git branch", ""}, {"git remote", Code, "git", ""}, {"git ls-files", Code, "git", ""}, {"git grep", Code, "search", ""}, {"git describe", Code, "git", ""}, {"git config", Code, "git", ""}, {"git rev-list", Code, "git", ""}, {"git shortlog", Code, "git", ""}, {"git cat-file", Code, "git", ""}, {"git ls-remote", Code, "git", ""}, {"git name-rev", Code, "git", ""}, {"git stash list", Code, "git", ""}, {"git worktree list", Code, "git", ""}, {"git -C", Code, "git", "resolved by next word"}, {"git", Code, "git", "any other git subcommand (local)"}, {"git merge-base", Code, "git", ""}, {"git check-ignore", Code, "git", ""},
-	{"gh pr view", Code, "gh", ""}, {"gh pr list", Code, "gh", ""}, {"gh pr diff", Code, "gh", ""}, {"gh pr status", Code, "gh", ""}, {"gh api", Code, "gh api", ""}, {"gh run view", Code, "gh", ""}, {"gh run list", Code, "gh", ""}, {"gh issue", Code, "gh", ""}, {"gh repo view", Code, "gh", ""}, {"gh auth", Code, "gh", ""}, {"gh", Code, "gh", "other gh"},
-	{"glab mr view", Code, "glab mr", ""}, {"glab mr list", Code, "glab mr", ""}, {"glab mr diff", Code, "glab mr", ""}, {"glab mr checkout", Code, "glab mr", ""}, {"glab mr todo", Code, "glab mr", ""},
-	{"glab api", Code, "glab api", "GitLab REST call (read or write); like gh api it stays code — an MR comment/resolve is review work, not release"}, {"glab ci view", Code, "glab ci", ""}, {"glab ci status", Code, "glab ci", ""}, {"glab ci get", Code, "glab ci", ""}, {"glab ci list", Code, "glab ci", ""}, {"glab ci trace", Code, "glab ci", ""}, {"glab auth", Code, "glab", ""}, {"glab config", Code, "glab", ""}, {"glab alias", Code, "glab", ""}, {"glab repo", Code, "glab", ""}, {"glab", Code, "glab", "any other glab subcommand (local/read)"},
-	{"on-cli", Infra, "remote vm", "imunify VM/runner management"}, {"onevm", Infra, "remote vm", ""},
-	{"sqlite3", Code, "sqlite", ""}, {"psql", Code, "sql", ""}, {"mysql", Code, "sql", ""},
-	{"curl", Code, "http", ""}, {"wget", Code, "http", ""}, {"http", Code, "http", ""}, {"dig", Code, "dns", ""}, {"nslookup", Code, "dns", ""}, {"ping", Code, "net", ""}, {"nc", Code, "net", ""},
-	{"node --version", Code, "version", ""}, {"python3 --version", Code, "version", ""}, {"go version", Code, "version", ""}, {"swift --version", Code, "version", ""},
-	{"go env", Code, "go env", ""}, {"go list", Code, "go list", ""}, {"go doc", Code, "go doc", ""}, {"cargo metadata", Code, "cargo", ""}, {"npm ls", Code, "npm", ""}, {"npm view", Code, "npm", ""}, {"npm run", Unknown, "npm run", "arbitrary script (build / test variants are their base script, unwrapHead)"},
-	{"xcrun devicectl device info", Code, "devicectl", ""}, {"xcrun devicectl list", Code, "devicectl", ""}, {"xcrun simctl list", Code, "simulator", ""},
-	{"xcode-select", Code, "xcode", ""}, {"xcodebuild -list", Code, "xcode", ""}, {"xcodebuild -showsdks", Code, "xcode", ""}, {"xcodebuild -version", Code, "xcode", ""},
-	{"docker ps", Code, "docker", ""}, {"docker info", Code, "docker", ""}, {"docker version", Code, "docker", ""}, {"docker events", Code, "docker", ""}, {"docker images", Code, "docker", ""}, {"docker image ls", Code, "docker", ""}, {"docker image list", Code, "docker", ""}, {"docker image inspect", Code, "docker", ""}, {"docker container ls", Code, "docker", ""}, {"docker container list", Code, "docker", ""}, {"docker container inspect", Code, "docker", ""}, {"docker volume inspect", Code, "docker", ""}, {"docker network inspect", Code, "docker", ""}, {"docker compose ls", Code, "docker", ""}, {"docker logs", Code, "docker logs", ""}, {"docker inspect", Code, "docker", ""}, {"docker compose ps", Code, "docker", ""}, {"docker compose logs", Code, "docker logs", ""}, {"docker network ls", Code, "docker", ""}, {"docker volume ls", Code, "docker", ""}, {"docker system df", Code, "docker", ""},
-	{"kubectl get", Code, "kubectl", ""}, {"kubectl describe", Code, "kubectl describe", ""}, {"kubectl logs", Code, "kubectl logs", ""},
-	{"security find-identity", Code, "codesign", ""}, {"codesign", Code, "codesign", ""}, {"spctl", Code, "codesign", ""},
-	{"base64", Code, "inspect", ""},
 }
 
 type reRule struct {
@@ -372,14 +175,12 @@ func compileRules() {
 }
 
 var (
-	reEnvPrefix   = regexp.MustCompile(`^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)+`)
 	reWS          = regexp.MustCompile(`\s+`)
 	reHeredoc     = regexp.MustCompile(`<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?`)
 	reRemote      = regexp.MustCompile(`(^|\s)(ssh|scp|rsync)\s|\b\w*REMOTE_HOST=|--remote\b|run-remote`)
 	reScriptWrite = regexp.MustCompile(`write_text\(|write_bytes\(|open\([^)]*['"][wa]b?['"]|fs\.writeFile|writeFileSync|json\.dump\(|shutil\.|os\.rename|os\.remove|Path\([^)]*\)\.unlink`)
-	reSubst       = regexp.MustCompile(`\$\([^)]*\)|` + "`[^`]*`")
 	reNodePkgCLI  = regexp.MustCompile(`node_modules/(?:@[\w.-]+/)?([\w.-]+)/(?:dist/|bin/|lib/)?[\w.-]*(?:cli|bin|index)[\w.-]*\.(?:m?js|cjs)$`)
-	reScriptRead  = regexp.MustCompile(`read_text\(|read_bytes\(|json\.load\(|open\([^)]*\)|sqlite3\.connect\(|\.glob\(|os\.listdir|os\.walk|readFileSync|readdirSync|\breadFile\(|\.execute\(|\bfetch\(|new WebSocket\(|https?\.get\(|urlopen\(|requests\.get\(`)
+	reScriptRead  = regexp.MustCompile(`read_text\(|read_bytes\(|json\.load\(|open\([^)]*\)|sqlite3\.connect\(|\.glob\(|os\.listdir|os\.walk|readFileSync|readdirSync|\breadFile\(|\.execute\(|\bfetch\(|new WebSocket\(|https?\.get\(|urlopen\(|requests\.get\(|YAML\.(?:load|parse|safe_load)_file\(|Psych\.(?:load|safe_load)_file\(|File\.read(?:lines)?\(|JSON\.parse\(File|Dir\[|Dir\.glob\(|importlib\.metadata|\.__version__`)
 	reScriptTest  = regexp.MustCompile(`(?m)^\s*assert\b|\bassert\.(?:ok|equal|strictEqual|deepEqual|deepStrictEqual|match|throws)\(|\bassert\(|\bexpect\(|from ['"][^'"]*(?:playwright|puppeteer)[^'"]*['"]|require\(['"](?:playwright|puppeteer)|import pytest|import unittest`)
 	reScriptDML   = regexp.MustCompile(`(?i)\b(insert\s+into|update\s+\w+\s+set|delete\s+from|drop\s+table|alter\s+table|create\s+table|replace\s+into)\b|\.commit\(`)
 	reSubprocList = regexp.MustCompile(`(?:subprocess\.(?:run|call|check_call|check_output|Popen)|spawnSync|spawn|execFileSync|execFile)\(\s*\[([^\]]*)\]`)
@@ -437,7 +238,7 @@ func writtenScripts(sources []heredocSource) map[string]string {
 
 // executedPath returns the script path a segment executes (bash f, sh f, ./f, f), or "".
 func executedPath(seg string) string {
-	f := strings.Fields(strings.TrimSpace(reEnvPrefix.ReplaceAllString(strings.TrimSpace(seg), "")))
+	f := strings.Fields(strings.TrimSpace(stripEnvPrefix(strings.TrimSpace(seg))))
 	if len(f) == 0 {
 		return ""
 	}
@@ -506,6 +307,62 @@ func scriptCommands(body string) []string {
 	return out
 }
 
+// bodyVerdict is one thing a script body says: a rule to consider, the label the inspector
+// shows, the segment it names (a literal inner command), the parts it adds and whether a
+// poll loop precedes the work.
+type bodyVerdict struct {
+	rule    Rule
+	label   string
+	segment string
+	parts   []Part
+	queued  bool
+}
+
+// judgeBody reads a heredoc body or an inline program (`-c` / `-e`) for its literal signals,
+// one level deep: a shell body is the compound command it is; a script's literal commands
+// (subprocess argv, os.system, execSync) are classified with the same table; an assertion or
+// a browser driver makes it a check, a file write a write, reads only a read. Anything else
+// says nothing (an empty result), and the body stays whatever the line says.
+func judgeBody(source heredocSource, depth int) []bodyVerdict {
+	if source.interpreter == "" {
+		return nil
+	}
+	b := source.body
+	origin := "heredoc"
+	if source.inline {
+		origin = "inline program"
+	}
+	var out []bodyVerdict
+	if source.interpreter == "shell" {
+		r := command(b, "", depth+1)
+		if r.Phase != Unknown {
+			v := bodyVerdict{rule: Rule{Phase: r.Phase, Kind: "script→" + r.Kind}, label: "shell " + origin, queued: r.Queued}
+			for _, pt := range r.Parts {
+				v.parts = append(v.parts, Part{Phase: pt.Phase, Kind: "script→" + pt.Kind, Segment: pt.Segment, Ms: pt.Ms})
+			}
+			out = append(out, v)
+		}
+		return out
+	}
+	inner := scriptCommands(b)
+	for _, ic := range inner {
+		r := command(ic, "", depth+1)
+		if r.Phase != Unknown {
+			out = append(out, bodyVerdict{rule: Rule{Phase: r.Phase, Kind: "script→" + r.Kind}, label: origin + " runs: " + shortTitle(ic), segment: ic, queued: r.Queued,
+				parts: []Part{{Phase: r.Phase, Kind: "script→" + r.Kind, Segment: shortTitle(ic)}}})
+		}
+	}
+	if reScriptTest.MatchString(b) {
+		out = append(out, bodyVerdict{rule: Rule{Phase: Test, Kind: "script-check"}, label: origin + " asserts / drives a browser"})
+	}
+	if reScriptWrite.MatchString(b) {
+		out = append(out, bodyVerdict{rule: Rule{Phase: Code, Kind: "script-write"}, label: origin + " writes files"})
+	} else if len(inner) == 0 && reScriptRead.MatchString(b) && !reScriptDML.MatchString(b) {
+		out = append(out, bodyVerdict{rule: Rule{Phase: Code, Kind: "script-read"}, label: origin + " only reads/queries/probes"})
+	}
+	return out
+}
+
 // Command classifies a shell command string. codexKind is Codex's own parsed_cmd type
 // ("read", "search", "list_files") when present; it short-circuits to Code.
 func Command(cmd string, codexKind string) Result { return command(cmd, codexKind, 0) }
@@ -550,6 +407,7 @@ func command(cmd string, codexKind string, depth int) Result {
 		}
 	}
 	segs, seps := segmentsWithSeparators(masked)
+	segs = resolveVars(segs) // `CLI=…/app; "$CLI" health`: the head named by this very command
 	// Every segment gets its own verdict (the op's is the best over all of them); the parts are
 	// then read per pipeline and per loop block: `a | b | c` is one job named by its strongest
 	// stage, `for … done` / `while … done` is one job named by its body (a body of sleeps is a
@@ -565,7 +423,7 @@ func command(cmd string, codexKind string, depth int) Result {
 	}
 	verdicts := make([]verdict, len(segs))
 	for i, seg := range segs {
-		seg = strings.TrimSpace(reEnvPrefix.ReplaceAllString(strings.TrimSpace(seg), ""))
+		seg = strings.TrimSpace(stripEnvPrefix(strings.TrimSpace(seg)))
 		v := verdict{rule: Rule{Phase: Unknown, Kind: "unknown"}, text: seg}
 		// a seg rule matches the segment as written or as unwrapped (`npx -y tsc --noEmit` and
 		// `./node_modules/.bin/tsc --noEmit` are `tsc --noEmit`), so a runner or a path never
@@ -581,15 +439,26 @@ func command(cmd string, codexKind string, depth int) Result {
 				segBest, v.rule = p, r
 			}
 		}
+		ruled := false // a seg rule named this segment: the fallback tier has no say
 		for _, rr := range segRules {
 			if rr.re.MatchString(seg) || norm != "" && rr.re.MatchString(norm) {
 				consider(rr.r, rr.r.Match, seg)
 				segConsider(rr.r)
+				ruled = ruled || rr.r.Phase != Unknown
 			}
 		}
-		if r, label, ok := matchHead(seg); ok {
+		if r, label, ok := matchHeadOpt(seg, !ruled); ok {
 			consider(r, label, seg)
 			segConsider(r)
+		}
+		if depth <= 1 {
+			// an inline program on this segment (`python3 -c '…'`) is judged here for the
+			// segment's own verdict (the op-level pass below reads the same sources)
+			for _, src := range inlineSources([]string{seg}) {
+				for _, v := range judgeBody(src, depth) {
+					segConsider(v.rule)
+				}
+			}
 		}
 		if v.rule.Kind == "sleep" && len(v.fields) > 1 {
 			v.sleepMs = sleepMs(v.fields[1])
@@ -631,18 +500,20 @@ func command(cmd string, codexKind string, depth int) Result {
 					}
 				}
 			}
-			best, bestP, found := Rule{}, -1, false
+			// the part is named by the body segment that decided, not by the header: `for e in
+			// a b c` says nothing about what ran, `./sim $e` does
+			best, bestP, found, bestText := Rule{}, -1, false, ""
 			for j := i + 1; j < end; j++ {
 				v := verdicts[j]
 				if v.rule.Kind == "sleep" || v.loopHeader || v.loopEnd {
 					continue
 				}
 				if r, ok := partOf(v, seps[j] == '|'); ok && Priority[r.Phase] > bestP {
-					best, bestP, found = r, Priority[r.Phase], true
+					best, bestP, found, bestText = r, Priority[r.Phase], true, partText(v.text)
 				}
 			}
 			if found {
-				addPart(best.Phase, best.Kind, partText(segs[i]), 0)
+				addPart(best.Phase, best.Kind, bestText, 0)
 			} else {
 				addPart(WaitWorker, "poll-loop", partText(segs[i]), 0)
 			}
@@ -674,52 +545,23 @@ func command(cmd string, codexKind string, depth int) Result {
 	//  - anything else stays unknown.
 	if depth > 1 {
 		bodies = nil
+	} else {
+		bodies = append(bodies, inlineSources(segs)...) // `python3 -c '…'`, `bash -c '…'`: the same signals
 	}
 	for _, source := range bodies {
-		if source.interpreter == "" {
-			continue
-		}
-		b := source.body
-		if source.interpreter == "shell" {
-			r := command(b, "", depth+1)
-			if r.Phase != Unknown {
-				consider(Rule{Phase: r.Phase, Kind: "script→" + r.Kind}, "shell heredoc", "")
-				loop = loop || r.Queued
-				for _, pt := range r.Parts {
-					addPart(pt.Phase, "script→"+pt.Kind, pt.Segment, pt.Ms)
-				}
+		for _, v := range judgeBody(source, depth) {
+			consider(v.rule, v.label, v.segment)
+			loop = loop || v.queued
+			for _, pt := range v.parts {
+				addPart(pt.Phase, pt.Kind, pt.Segment, pt.Ms)
 			}
-			continue
-		}
-		inner := scriptCommands(b)
-		for _, ic := range inner {
-			r := command(ic, "", depth+1)
-			if r.Phase != Unknown {
-				consider(Rule{Phase: r.Phase, Kind: "script→" + r.Kind}, "heredoc runs: "+shortTitle(ic), ic)
-				loop = loop || r.Queued
-				addPart(r.Phase, "script→"+r.Kind, ic, 0)
-			}
-		}
-		if reScriptTest.MatchString(b) {
-			consider(Rule{Phase: Test, Kind: "script-check"}, "heredoc asserts / drives a browser", "")
-		}
-		if reScriptWrite.MatchString(b) {
-			consider(Rule{Phase: Code, Kind: "script-write"}, "heredoc writes files", "")
-		} else if len(inner) == 0 && reScriptRead.MatchString(b) && !reScriptDML.MatchString(b) {
-			consider(Rule{Phase: Code, Kind: "script-read"}, "heredoc only reads/queries/probes", "")
 		}
 	}
 	// A file written in this command with a literal body (Path(f).write_text('''…''') or
 	// cat > f <<EOF) and executed by a later segment (bash f / ./f) is classified by the
 	// content that was written — the text is right there in the command.
 	if depth <= 1 {
-		writtenSources := bodies
-		for _, seg := range segments(masked) {
-			if source := inlinePythonSource(seg); source != "" {
-				writtenSources = append(writtenSources, heredocSource{body: source, interpreter: "script"})
-			}
-		}
-		if written := writtenScripts(writtenSources); len(written) > 0 {
+		if written := writtenScripts(bodies); len(written) > 0 { // the inline programs are in bodies too
 			for _, seg := range segments(masked) {
 				path := executedPath(seg)
 				if path == "" {
@@ -784,6 +626,7 @@ var queryKinds = map[string]bool{
 	"docker": true, "docker logs": true, "kubectl": true, "kubectl describe": true, "kubectl logs": true,
 	"gh": true, "glab": true, "glab mr": true, "glab ci": true, "go list": true, "go doc": true, "go env": true, "npm": true, "cargo": true,
 	"devicectl": true, "simulator": true, "xcode": true, "codesign": true, "dns": true, "net": true,
+	"help": true, "keychain": true, "ssh-agent": true, "pip": true, "linear query": true,
 }
 
 // QueryKind reports whether a non-zero exit of an op of this phase and kind is an answer rather
@@ -891,7 +734,13 @@ func segmentsWithSeparators(cmd string) ([]string, []byte) {
 			return
 		}
 		// a subshell `(cd x && node y) 2>&1` is its inner commands; what follows the closing
-		// paren (a redirection) rides on the last of them
+		// paren (a redirection) rides on the last of them; a keyword or `time` before the paren
+		// (`do (nc -z h $p)`, `time (node x; tail y)`) introduces the same commands
+		for _, kw := range []string{"do ", "then ", "else ", "time ", "! "} {
+			if strings.HasPrefix(s, kw) && strings.HasPrefix(strings.TrimSpace(s[len(kw):]), "(") {
+				s = strings.TrimSpace(s[len(kw):])
+			}
+		}
 		if inner, rest, ok := subshell(s); ok {
 			segs, innerSeps := segmentsWithSeparators(inner)
 			for i, sg := range segs {
@@ -913,6 +762,18 @@ func segmentsWithSeparators(cmd string) ([]string, []byte) {
 	for i := 0; i < len(cmd); i++ {
 		c := cmd[i]
 		switch {
+		case c == '#' && !inS && !inD && depth == 0 && (i == 0 || cmd[i-1] == ' ' || cmd[i-1] == '\t' || cmd[i-1] == '\n' || cmd[i-1] == ';'):
+			// a comment runs to the end of its line and is not a command: an apostrophe in it
+			// (`# the build's seed`) must not open a quote over the lines that follow
+			for i < len(cmd) && cmd[i] != '\n' {
+				i++
+			}
+			i--
+			continue
+		case c == '\\' && i+1 < len(cmd) && cmd[i+1] == '\n' && !inS:
+			cur.WriteByte(' ') // a line continuation joins the lines
+			i++
+			continue
 		case c == '\\' && i+1 < len(cmd):
 			cur.WriteByte(c)
 			i++
@@ -922,6 +783,13 @@ func segmentsWithSeparators(cmd string) ([]string, []byte) {
 			if c == '\'' {
 				inS = false
 			}
+		case c == '$' && i+1 < len(cmd) && cmd[i+1] == '(':
+			// a $(…) substitution is copied whole, its own quotes and parentheses balanced
+			// (scanParens): `X="$(python -c "print(1)")"` must not close the outer quote early
+			end := scanParens(cmd, i+2)
+			cur.WriteString(cmd[i:end])
+			i = end - 1
+			continue
 		case inD:
 			if c == '"' {
 				inD = false
@@ -964,16 +832,92 @@ func segmentsWithSeparators(cmd string) ([]string, []byte) {
 
 var shellKeywords = map[string]bool{"if": true, "then": true, "else": true, "elif": true, "fi": true, "for": true, "while": true, "until": true, "do": true, "done": true, "case": true, "esac": true, "in": true, "function": true, "select": true, "time": true, "!": true, "{": true, "}": true}
 
-var readOnlySub = map[string]bool{"status": true, "list": true, "show": true, "info": true, "help": true, "--help": true, "-h": true, "--version": true, "version": true, "describe": true, "check": true, "validate": true, "plan": true, "diff": true}
+var readOnlySub = map[string]bool{"status": true, "list": true, "show": true, "info": true, "help": true, "--help": true, "-h": true, "--version": true, "version": true, "describe": true, "check": true, "validate": true, "plan": true, "diff": true, "doctor": true, "env": true, "config": true, "ps": true, "print": true}
 
-var interpreters = map[string]bool{"python": true, "python3": true, "node": true, "ruby": true, "perl": true, "bash": true, "sh": true, "zsh": true, "deno": true, "bun": true, "swift": true}
+// interpreters run a script named by their first positional argument (matchHead judges the
+// script name); `pythonX.Y` and `python3.Y` are `python3` (interpreterAlias).
+var interpreters = map[string]bool{"python": true, "python3": true, "node": true, "ruby": true, "perl": true, "bash": true, "sh": true, "zsh": true, "deno": true, "bun": true, "swift": true, "luau": true, "lua": true, "Rscript": true, "php": true}
 
-// matchHead finds the rule for a simple command by its executable and optional subcommand.
-func matchHead(seg string) (Rule, string, bool) {
+// rePythonVersion is a versioned python executable name (python3.12, python2.7, python3).
+var rePythonVersion = regexp.MustCompile(`^python([23])(?:\.\d+)?$`)
+
+// interpreterAlias maps a versioned interpreter name to the name the rule table lists.
+func interpreterAlias(base string) string {
+	if m := rePythonVersion.FindStringSubmatch(base); m != nil {
+		if m[1] == "3" {
+			return "python3"
+		}
+		return "python"
+	}
+	return base
+}
+
+// matchHead finds the rule for a simple command by its executable and optional subcommand:
+// the rule chain (matchHeadRules), then — only while the phase is still Unknown after every
+// rule, the `go run` / `python3` / app-bundle rows included — the literal signals of the
+// fallback tier (unknownFallback).
+func matchHead(seg string) (Rule, string, bool) { return matchHeadOpt(seg, true) }
+
+// matchHeadOpt is matchHead with the fallback tier switched off when a `seg:` rule (an
+// overlay's, typically) already named the segment: "after every rule" includes those.
+func matchHeadOpt(seg string, fallback bool) (Rule, string, bool) {
 	fields, head, base, ok := unwrapHead(seg)
 	if !ok {
 		return Rule{}, "", false
 	}
+	r, label, found := matchHeadRules(fields, head, base)
+	if fallback && (!found || r.Phase == Unknown) {
+		if fr, flabel, ok := unknownFallback(fields); ok {
+			return fr, flabel, true
+		}
+	}
+	return r, label, found
+}
+
+// withoutRedirections drops the redirection words of an argument list (`2>&1`, `> log`).
+func withoutRedirections(args []string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if isRedirection(args[i]) {
+			op := strings.TrimLeft(args[i], "0123456789")
+			if (op == ">" || op == ">>" || op == "<") && i+1 < len(args) {
+				i++ // the target of a bare `>` / `>>` / `<`
+			}
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return out
+}
+
+// unknownFallback reads the literal signals an otherwise-unknown command carries: a server-only
+// listen flag (`--listen`, `--bind`, `--addr`; a `--port` is on both sides of a socket and is
+// not one) makes it a service; an SQL statement as an argument (`"$DB" "SELECT …"`) makes it a
+// query of the code phase. Nothing else is inferred.
+func unknownFallback(fields []string) (Rule, string, bool) {
+	for _, a := range fields[1:] {
+		w := strings.ToLower(a)
+		if i := strings.IndexByte(w, '='); i >= 0 {
+			w = w[:i]
+		}
+		switch w {
+		case "--listen", "--bind", "--addr", "-addr", "-listen", "-bind":
+			return Rule{Match: "flag:" + w, Phase: Infra, Kind: "service"}, "flag " + w, true
+		}
+	}
+	for _, a := range fields[1:] {
+		if reSQLStatement.MatchString(a) {
+			return Rule{Match: "arg:sql", Phase: Code, Kind: "sql"}, "an SQL statement as an argument", true
+		}
+	}
+	return Rule{}, "", false
+}
+
+// reSQLStatement is a literal SQL statement passed as one argument.
+var reSQLStatement = regexp.MustCompile(`(?is)^\s*(select|with|pragma|insert\s+into|update|delete\s+from|create\s+table|alter\s+table|drop\s+table|explain)\s`)
+
+// matchHeadRules is the rule chain for one simple command.
+func matchHeadRules(fields []string, head, base string) (Rule, string, bool) {
 	if base == "command" && len(fields) > 1 && (fields[1] == "-v" || fields[1] == "-V") {
 		return wordRules["command -v"], "command -v", true
 	}
@@ -1001,9 +945,16 @@ func matchHead(seg string) (Rule, string, bool) {
 	if base == "make" || base == "ninja" {
 		return matchTargets(base, fields)
 	}
-	// `<tool> --version` alone prints and exits: a lookup, whatever the tool builds
-	if len(fields) == 2 && (fields[1] == "--version" || fields[1] == "-version") {
+	// `<tool> --version` alone prints and exits: a lookup, whatever the tool builds; so does
+	// `--help` as the last argument (`gh pr create --help` creates nothing) and a lone `-h` on a
+	// tool the table does not know (`df -h` is a listing). Redirections do not count (`cargo
+	// --version 2>&1`).
+	args := withoutRedirections(fields[1:])
+	if len(args) == 1 && (args[0] == "--version" || args[0] == "-version" || args[0] == "-V" || args[0] == "version") {
 		return wordRules["--version"], "--version", true
+	}
+	if len(args) > 0 && args[len(args)-1] == "--help" || len(args) == 1 && args[0] == "-h" && wordRules[base].Match == "" {
+		return wordRules["--help"], "--help", true
 	}
 	// exact word rules first: four-word (xcrun devicectl device install) … down to one-word
 	for n := 5; n >= 2; n-- {
@@ -1039,6 +990,12 @@ func matchHead(seg string) (Rule, string, bool) {
 			args = args[1:]
 		}
 		if len(args) > 1 && args[0] == "-m" {
+			// `python3 -m ruff format` before `python3 -m ruff`: the module's own subcommand first
+			if len(args) > 2 && !strings.HasPrefix(args[2], "-") {
+				if r, ok := wordRules[base+" -m "+args[1]+" "+args[2]]; ok {
+					return r, base + " -m " + args[1] + " " + args[2], true
+				}
+			}
 			key := base + " -m " + args[1]
 			if r, ok := wordRules[key]; ok {
 				return r, key, true
@@ -1057,6 +1014,23 @@ func matchHead(seg string) (Rule, string, bool) {
 			return r, base, true
 		}
 		return Rule{}, "", false
+	}
+	// `source x.sh` / `. x.sh` run the file in this shell: judged by its name like `bash x.sh`
+	// (`source ./deploy.sh` is the deploy); a venv activation or an env file is shell glue.
+	if (base == "source" || base == ".") && len(fields) > 1 {
+		if r, label, ok := matchScript(fields[1]); ok {
+			return r, label, true
+		}
+		return wordRules["source"], "source", true
+	}
+	// `eval '<literal command>'` is that command; `eval "$(…)"` runs text this call never shows
+	if base == "eval" && len(fields) > 1 {
+		if inner := strings.Join(fields[1:], " "); !strings.ContainsAny(inner, "$`") {
+			if r, label, ok := matchHead(inner); ok {
+				return r, label, true
+			}
+		}
+		return Rule{Match: "eval", Phase: Unknown, Kind: "eval"}, "eval (opaque)", true
 	}
 	if r, ok := wordRules[base]; ok {
 		return r, base, true
@@ -1234,6 +1208,7 @@ func isNumberish(s string) bool {
 
 type heredocSource struct {
 	body, interpreter, writePath string
+	inline                       bool // a `-c` / `-e` program on the line rather than a heredoc
 }
 
 // maskHeredocs keeps all heredoc data opaque. Only stdin consumed as interpreter
@@ -1285,7 +1260,7 @@ func maskHeredocs(cmd string) (string, []heredocSource) {
 					if interpreter == "" {
 						interpreter = pipedHeredocInterpreter(tokens, lo, hi)
 					}
-					header := reEnvPrefix.ReplaceAllString(joinShellTokens(tokens[lo:hi]), "")
+					header := stripEnvPrefix(joinShellTokens(tokens[lo:hi]))
 					if m := reCatHead.FindStringSubmatch(header); m != nil {
 						writePath = m[1]
 					}
@@ -1306,7 +1281,7 @@ func maskHeredocs(cmd string) (string, []heredocSource) {
 				}
 				body = append(body, line)
 			}
-			bodies = append(bodies, heredocSource{strings.Join(body, "\n"), decl.interpreter, decl.writePath})
+			bodies = append(bodies, heredocSource{body: strings.Join(body, "\n"), interpreter: decl.interpreter, writePath: decl.writePath})
 			out = append(out, "<<heredoc>>")
 			i = j
 		}
@@ -1314,33 +1289,17 @@ func maskHeredocs(cmd string) (string, []heredocSource) {
 	return strings.Join(out, "\n"), bodies
 }
 
-// Head names the command a rollout line ran, for grouping unmatched commands: the first word
-// of the first top-level segment, env assignments and wrapper words (env, sudo, nohup, timeout,
-// time, exec, command, nice) stripped. A heredoc script is named by its interpreter.
+// Head names the command a rollout line ran, for grouping unmatched commands: the executable of
+// the first top-level segment that runs one — env assignments, wrapper words (env, sudo, nohup,
+// timeout, time, exec, command, nice) and package runners stripped, the same way the rules see
+// it (unwrapHead), a variable assigned by the command itself resolved (resolveVars). Segments
+// that run nothing (an assignment, a comment, a `for …` header, a function definition) are
+// skipped, so a loop is named by its body. A heredoc script is named by its interpreter.
 func Head(cmd string) string {
 	masked, _ := maskHeredocs(cmd)
-	for _, seg := range segments(masked) {
-		fields := shellFields(strings.TrimSpace(seg))
-		for len(fields) > 0 && reAssignment.MatchString(fields[0]) {
-			fields = fields[1:] // env assignments before the command; a bare `x=$(…)` segment has none
-		}
-		for len(fields) > 1 {
-			switch fields[0] {
-			case "env", "sudo", "nohup", "timeout", "gtimeout", "time", "exec", "command", "nice", "caffeinate":
-				rest := fields[1:]
-				for len(rest) > 1 && (strings.HasPrefix(rest[0], "-") || reAssignment.MatchString(rest[0]) || isNumberish(rest[0])) {
-					if rest[0] == "-u" || rest[0] == "--unset" {
-						rest = rest[1:]
-					}
-					rest = rest[1:]
-				}
-				fields = rest
-				continue
-			}
-			break
-		}
-		if len(fields) > 0 {
-			return fields[0]
+	for _, seg := range resolveVars(segments(masked)) {
+		if _, head, _, ok := unwrapHead(seg); ok {
+			return head
 		}
 	}
 	return ""
@@ -1353,7 +1312,7 @@ var reAssignment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 func shortTitle(cmd string) string {
 	s := strings.TrimSpace(cmd)
 	if m := reHeredoc.FindStringIndex(s); m != nil {
-		head := strings.TrimSpace(reEnvPrefix.ReplaceAllString(s[:m[0]], ""))
+		head := strings.TrimSpace(stripEnvPrefix(strings.TrimSpace(s[:m[0]])))
 		lines := strings.Split(s, "\n")
 		body := ""
 		n := 0

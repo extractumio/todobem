@@ -27,9 +27,10 @@ todobem unknown -rules /path/draft.json …     # dry-run a draft overlay on top
 - `todobem unknown` scans the newest root sessions of every configured source (cache-backed,
   seconds; a session without a cache entry is parsed) and prints one row per unknown **head**:
   the command name, SOURCE (`codex`, `claude`), op count, time, sessions touched, the longest
-  op's command. A Claude Code tool without a mapping is listed under its **tool name**
-  (`Artifact`, `ReportFindings`). `-ops` lists every unknown op with status / exit and the full
-  command (400 chars); `-json` gives the same for tools.
+  op's command. A Claude Code tool without a mapping is listed under its **tool name** (one
+  the adapter does not map yet; `Artifact` and `ReportFindings` are mapped), a Codex `exec`
+  envelope whose commands are not literal under `exec-script`. `-ops` lists every unknown op
+  with status / exit and the full command (400 chars); `-json` gives the same for tools.
 - `-explain` prints the head, the **word key** a word rule must use (the head's basename,
   optionally + sub-words), the phase, kind, rule, lifecycle and whether the command carries a
   retry identity; it exits 1 while the command is still unknown.
@@ -110,12 +111,12 @@ HEAD                                 SOURCE    OPS     TIME  SESS  SAMPLE (longe
 python3                              codex,c…   15  17m 03s     5  python3 artifacts/tools/capture-database.py before-complete
 apps/demo/scripts/xcodebuild…        codex      24   3m 18s     1  APP_XCB_SCHEME=Demo-iOS … xcodebuild-app.sh build-for-testing -only-testing …
 backend/scripts/new-migration…   codex       2       0s     1  backend/scripts/new-migration.sh app_device_identity
-Artifact                             claude      3   1m 10s     2  {"file_path":"…/report.html","title":"…"}
+SomeNewTool                          claude      3   1m 10s     2  {"file_path":"…/report.html","title":"…"}
 
 no telemetry: 2 intervals · 4m 10s — turns without a close event …
 ```
 
-`Artifact` is a Claude Code tool name: no rule can cover it; it stays an honest unknown (or
+`SomeNewTool` is a Claude Code tool name: no rule can cover it; it stays an honest unknown (or
 becomes a mapping in `tools.go`). Evidence for the rest: `capture-database.py` dumps the app's
 database from a device before / after a step so a check can diff it (a test fixture step);
 `xcodebuild-app.sh` wraps `xcodebuild` and takes the action as its first argument — `-explain`

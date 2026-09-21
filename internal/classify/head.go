@@ -16,8 +16,8 @@ import (
 // (path kept), base its last path element. ok is false when nothing runs (`for x in …`, an
 // empty command).
 func unwrapHead(seg string) (fields []string, head, base string, ok bool) {
-	seg = strings.TrimSpace(reSubst.ReplaceAllString(seg, ""))
-	seg = strings.TrimSpace(reEnvPrefix.ReplaceAllString(seg, ""))
+	seg = strings.TrimSpace(stripSubstitutions(seg))
+	seg = strings.TrimSpace(stripEnvPrefix(seg))
 unwrap:
 	for {
 		fields := shellFields(seg)
@@ -25,7 +25,10 @@ unwrap:
 			return nil, "", "", false
 		}
 		h := fields[0]
-		if shellKeywords[h] {
+		if i := strings.LastIndex(h, "/"); i >= 0 && wrapperWords[h[i+1:]] {
+			h = h[i+1:] // `/usr/bin/time -l cmd`, `/usr/bin/env FOO=1 cmd`: the wrapper by its name
+		}
+		if shellKeywords[h] && !wrapperWords[h] { // `time` is a keyword with flags: the wrapper case below
 			// `for x in …`, `select x in …` and `case $x in` are headers with no command in
 			// them: the words after the keyword are a variable and a word list (`for log in
 			// a.log b.log` must not classify as the macOS `log` tool). The body follows in
@@ -77,11 +80,19 @@ unwrap:
 	if strings.HasPrefix(fields[0], "#") || strings.HasPrefix(fields[0], "-") {
 		return nil, "", "", false // a comment, or a continuation fragment (`-t page.yml | head -1)`): nothing runs
 	}
+	if strings.HasSuffix(fields[0], "()") || strings.TrimSpace(fields[0]) == "…" || fields[0] == "\\" || len(fields) > 1 && fields[1] == "in" || sqlWords[fields[0]] {
+		// a function definition header (`retry() {`) runs nothing; nor does a segment that is
+		// only the `…` of a clipped record (shortTitle / Part.Segment clip the text this package
+		// is later asked to name), a lone line continuation, or a `for` header whose keyword
+		// was clipped away (`e in a b c`: `in` is reserved, no command reads so)
+		return nil, "", "", false
+	}
 	head = fields[0]
 	base = head
 	if i := strings.LastIndex(head, "/"); i >= 0 {
 		base = head[i+1:]
 	}
+	base = interpreterAlias(base) // python3.12 → python3: the rows are keyed by the plain name
 	// node_modules/.bin/<tool> → <tool>; node … node_modules/<pkg>/…/cli.js <sub> → <pkg> <sub>
 	if strings.Contains(head, "node_modules/.bin/") {
 		head = base
@@ -144,25 +155,36 @@ unwrap:
 	return fields, head, base, true
 }
 
-// reScriptVariant is an npm script name that is a variant of build or test.
-var reScriptVariant = regexp.MustCompile(`^(build|test)(?:[:_-]\S*)?$|^(tests)$`)
+// sqlWords are the upper-case SQL keywords a line of a quoted statement starts with once a
+// nested quote broke the segmenter (a psql statement quoted inside an ssh command): data.
+var sqlWords = set("SELECT", "WITH", "FROM", "WHERE", "GROUP", "ORDER", "LIMIT", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "JOIN", "LEFT", "INNER", "UNION", "VALUES", "AND", "OR", "ON", "AS", "HAVING")
 
-// npmFields strips the option prefix of npm / pnpm / yarn so the subcommand is the second
-// field: [--prefix DIR | --cwd DIR | -C DIR | -w PKG | --workspace PKG | --filter G] <sub> → <tool> <sub>.
+// wrapperWords are the words unwrapHead strips with their flags (a path form included).
+var wrapperWords = set("sudo", "nohup", "exec", "command", "builtin", "nice", "timeout", "gtimeout", "env", "xargs", "caffeinate", "time")
+
+// reScriptVariant is an npm script name that is a variant of a base script the table lists
+// (`build:prod`, `e2e:install`, `bench:stop`, `lint:fix` → build, e2e, bench, lint).
+var reScriptVariant = regexp.MustCompile(`^(build|test|e2e|bench|benchmark|lint|typecheck|check|verify|format|fmt|dev|start|serve|preview)(?:[:_-]\S*)?$|^(tests)$`)
+
+// npmFields strips the option prefix of npm / pnpm / yarn / uv so the subcommand is the second
+// field: [--prefix DIR | --cwd DIR | -C DIR | -w PKG | --workspace PKG | --filter G | --project
+// DIR | --opt=value] <sub> → <tool> <sub>.
 func npmFields(fields []string) []string {
 	base := fields[0]
 	if i := strings.LastIndex(base, "/"); i >= 0 {
 		base = base[i+1:]
 	}
-	if base != "npm" && base != "pnpm" && base != "yarn" {
+	if base != "npm" && base != "pnpm" && base != "yarn" && base != "uv" {
 		return fields
 	}
 	rest := fields[1:]
 	for len(rest) > 0 {
 		switch {
-		case (rest[0] == "--prefix" || rest[0] == "--cwd" || rest[0] == "-C" || rest[0] == "-w" || rest[0] == "--workspace" || rest[0] == "--filter" || rest[0] == "-F") && len(rest) > 1:
+		case (rest[0] == "--prefix" || rest[0] == "--cwd" || rest[0] == "-C" || rest[0] == "-w" || rest[0] == "--workspace" || rest[0] == "--filter" || rest[0] == "-F" ||
+			rest[0] == "--userconfig" || rest[0] == "--globalconfig" || rest[0] == "--registry" || rest[0] == "--project" || rest[0] == "--directory") && len(rest) > 1:
 			rest = rest[2:]
-		case strings.HasPrefix(rest[0], "--prefix=") || strings.HasPrefix(rest[0], "--cwd=") || strings.HasPrefix(rest[0], "--workspace=") || strings.HasPrefix(rest[0], "--filter=") || rest[0] == "--silent" || rest[0] == "-s" || rest[0] == "--no-audit" || rest[0] == "--no-fund":
+		case strings.HasPrefix(rest[0], "--") && strings.Contains(rest[0], "="), // --prefix=DIR, --userconfig=/dev/null, --registry=URL: an option with its value attached
+			rest[0] == "--silent" || rest[0] == "-s" || rest[0] == "-q" || rest[0] == "--quiet" || rest[0] == "--no-audit" || rest[0] == "--no-fund" || rest[0] == "--offline" || rest[0] == "--frozen":
 			rest = rest[1:]
 		default:
 			return append([]string{base}, rest...)
@@ -173,7 +195,7 @@ func npmFields(fields []string) []string {
 
 // runners are the package runners that only resolve a tool and hand it the rest of the line,
 // by their head word or word pair.
-var runners = set("npx", "bunx", "npm exec", "npm x", "pnpm dlx", "pnpm exec", "yarn dlx", "yarn exec", "bun x", "bundle exec", "poetry run", "uv run", "pipenv run")
+var runners = set("npx", "bunx", "npm exec", "npm x", "pnpm dlx", "pnpm exec", "yarn dlx", "yarn exec", "bun x", "bundle exec", "poetry run", "uv run", "pipenv run", "rokit run")
 
 // runnerValueFlags are the runner options whose value is the next word (the union over the
 // runners: npx -p / --package / -w, pnpm --filter / -C, poetry -C / -P, uv --with / --python /

@@ -122,11 +122,12 @@ for names; sub-agent files are attached to their root by the parent chain.
 | `SubAgentActivity` (started / interacted / completed / interrupted) | lane graph, spawn links |
 | `CollabAgentToolCall` (`wait`, `spawn`, `send_message`), `wait_agent`, `sleep` | `wait_worker/agent`, `wait_worker/sleep` |
 | `ContextCompaction` | `compaction` operations, with the context before and the re-read after |
-| `McpToolCall`, `WebSearch`, `view_image` | `code/mcp`, `code/web_search`, `code/image` |
+| `McpToolCall`, `WebSearch`, `view_image` | `code/mcp`, `code/web_search`, `code/image` (a `WebSearch` item whose id is a pending `run` call adds no second op) |
+| `function_call` `run` in the `web` namespace; a call in an `mcp__<server>` namespace (a connector: `mcp__codex_apps__github`, `mcp__xcodebuildmcp`) | `code/web_search` titled by its action (`web search_query` / `open` / `find`); `code/mcp` titled `mcp <server>.<tool>` — except the connector's pull-request writes (`_create_pull_request`, `_update_…`, `_merge_…`, `_mark_…_ready`) → `release/pr` and its review calls (`…pull_request_review…`, `…review_comment`) → `release/pr review` (the review pin); the trivial sim lookups stay no op (`tools.go`) |
 | `update_plan` | a `plan` marker; a call that *creates* a plan (no step completed) is an instantaneous `llm/plan` op pinned to the planning stage |
 | `request_user_input` / `request_user_input_async` | `wait_user/question` (an open op while unanswered) / a `question` marker only (the agent keeps working; the harness's `{"accepted":true}` output is not the answer — a later user message is, so the list's pending question survives it and the end of the turn) |
 | `response_item/function_call` + `function_call_output` (old format: `exec_command`, `write_stdin` polls) | tool-call envelopes; old-format command timing stitched from the call and its polls |
-| `response_item/custom_tool_call` `exec` (a JS script fanning out `tools.exec_command`) | parallel commands inside one call (`Operation.Parallel`); provisional ops synthesized from the literal `cmd:` strings when the call returns before its commands finish, replaced by the real items |
+| `response_item/custom_tool_call` `exec` (a JS script fanning out `tools.exec_command`) | parallel commands inside one call (`Operation.Parallel`); when no `CommandExecution` item follows (older CLIs) one op is synthesized from the commands the JS carries literally — `cmd: "…"` / `'…'` / a template (a `${x}` hole left in), `cmd = "…"` / `String.raw`, or a flat array of strings the envelope maps over (`execCommands`, `tools.go`); a nested pair list (`[["label", "cmd"], …]`) is a positional convention, not a literal, so that envelope is one `unknown/exec-script` op with the JS as its detail. A provisional op (the call returned before its commands finished) is replaced by the real item that repeats its text — a template with a hole is never a provisional key — and is closed by the `wait` on its cell (`Script running with cell ID N` … `Script completed`) |
 | `message` with `skills.selected_skill_instructions` | a `skill` marker and `Turn.Skill`: the harness's record that a skill was invoked (never the words of a prompt) |
 | `turn_context` | model, reasoning effort, collaboration mode (`plan`) per turn |
 | `token_count` (cumulative `total_token_usage`, `last_token_usage`) | tokens per lane, turn and compaction |
@@ -187,7 +188,11 @@ message.
 Tool name → operation (`tools.go`): `Bash` → the command classifier; `Edit` / `Write` /
 `MultiEdit` / `NotebookEdit` → `code/edit` (+ an edited-path lifecycle pin from the overlay);
 `Read` / `Grep` / `Glob` (`LS`) → `code/read`, `code/search`, `code/list_files`;
-`WebSearch` / `WebFetch` → `code/web_search`; `mcp__*` → `code/mcp`; `Agent` / `Task` →
+`WebSearch` / `WebFetch` → `code/web_search`; `mcp__*` → `code/mcp`; `Artifact` (and the
+observed `ArtifactComments`, `ArtifactData`) → `code/artifact` titled by its action and file
+(a page published to claude.ai or read back: not a change of the sources, no stage pin);
+`ReportFindings` → `code/review findings` pinned to the review stage (the tool exists only to
+report code-review findings — a harness-level signal, like `gh pr review`); `Agent` / `Task` →
 `wait_worker/agent` (+ `agent_started`, linked to the lane when the result names the agent);
 `AskUserQuestion` → `wait_user/question`; `TaskOutput` / `BashOutput` / `Monitor` → a poll of a
 background task, else `wait_worker/process`; `Skill` → a `skill` marker and `Turn.Skill`;
@@ -284,16 +289,16 @@ into compiling and installing dependencies so "build time" can be read as compil
 |---|---|---|
 | `code` | `read` | read, image |
 | | `search` | search, list, list_files |
-| | `edit` | the change kinds: edit, sed -i, write-file, script-write, format, mkdir, cp, mv, touch, ln, git rm / mv / apply / cherry-pick |
+| | `edit` | the change kinds: edit, sed -i, perl -i, write-file, script-write, format, mkdir, cp, mv, touch, ln, git rm / mv / apply / cherry-pick |
 | | `vcs` | git * (local), vcs-script, vcs-subcommand |
-| | `hosting` | gh, gh api, glab, glab mr, glab ci, glab api (queries) |
+| | `hosting` | gh, gh api, glab, glab mr, glab ci, glab api, linear, linear query, jira |
 | | `network` | http, dns, net, web_search |
 | | `mcp` | mcp |
-| | `shell` | inspect, shell, probe, process, system, version, script-read, sqlite, sql, go env / list / doc, npm, cargo, rm, docker / kubectl queries, devicectl, simulator, xcode, codesign, everything else |
+| | `shell` | inspect, shell, probe, process, system, version, help, script-read, sqlite, sql, archive, keychain, ssh-agent, pip, artifact, review findings, harness cli, go env / list / doc, npm, npm init, cargo, rm, docker / kubectl queries, devicectl, simulator, xcode, codesign, everything else |
 | `build` | `compile` | cargo build / check, go build / generate / install, swift build, xcodebuild, cc, link, configure, rustc, tsc, vite, esbuild, webpack, next build, npm / pnpm / yarn / bun build, make and its build targets, cmake, ninja, meson, bazel, gradle, mvn, dotnet build, docker build, build-flag, build-script, everything else |
-| | `deps` | npm / pnpm / yarn / bun install, pip install, uv, poetry, pipenv, go mod / get, go install tool (`pkg@version`), cargo deps / install, bundle, pod, carthage, mint, swift package resolve, make deps |
+| | `deps` | npm / pnpm / yarn / bun install, pip install, uv, venv, poetry, pipenv, go mod / get, go install tool (`pkg@version`), cargo deps / install, bundle, pod, carthage, mint, rokit, playwright install, swift package resolve, make deps |
 | `wait_worker` | `agents` / `polling` / `hooks` | agent / sleep, poll-loop, tail-f, process, ci, wait / hook |
-| `unknown` | `script` / `tool` / `command` | python, node, ruby, perl, npm run, run, swift / go / cargo / bazel / dotnet / deno run, exec-script-error / `tool:<name>` / unknown |
+| `unknown` | `script` / `tool` / `command` | python, node, ruby, perl, luau, lua, Rscript, php, npm run, run, swift / go / cargo / bazel / dotnet / deno run, app run (a `.app/Contents/MacOS/<name>` launched directly), eval, exec-script, exec-script-error / `tool:<name>` / unknown |
 
 A heredoc classified by its inner command (`script→<kind>`) maps by the inner kind. `Phase`
 itself never changes: priority, retry groups, query kinds and the timeline colours stay.
@@ -334,8 +339,16 @@ pin. Word rules are looked up exactly (longest key first: `xcrun devicectl devic
 3. The masked command is split into top-level segments at `&&`, `;`, `|`, `|&`, `||`, newline
    (quotes and `(){}` depth respected; a subshell `(cd x && npm run build) | tail` is its inner
    commands, the redirection after the paren riding on the last). Every segment is normalized:
-   a comment (`# …`) or a continuation fragment (`-t page.yml | head -1)`) runs nothing; env
-   assignments, `sudo` /
+   a comment (`# …`, also mid-command: its apostrophe opens no quote) or a continuation
+   fragment (`-t page.yml | head -1)`) runs nothing, a `\`-newline joins its lines, a
+   `$(…)` is one expansion however nested; a function definition header (`retry() {`), a
+   `for` header (`for x in …`, also with its keyword clipped: `x in …`) and a `…` left by a
+   clipped record run nothing either; env
+   assignments — read the way the shell reads them (`envprefix.go`: a `"…"` / `'…'` span, a
+   `$(…)` / `${…}` / backtick expansion with its own quotes and parentheses balanced, or an
+   unquoted run, ending only at unquoted whitespace, so `LOG="/tmp/x_$(date +%s)_y.log"` never
+   leaves `+%s)_y.log"` behind as a command; a segment that is only assignments runs nothing) —,
+   `sudo` /
    `nohup` / `exec` / `command` / `nice` / `timeout` / `env` / `xargs` / `caffeinate` / `time`
    wrappers and shell keywords stripped (`for x in …` / `case` headers carry no command);
    `node_modules/.bin/<tool>` → `<tool>`; a package runner (`npx [-y] [-p pkg] [--] <tool>`,
@@ -353,35 +366,63 @@ pin. Word rules are looked up exactly (longest key first: `xcrun devicectl devic
    judged by the package or binary name (a `-serve` flag → service); interpreters (`python3
    scripts/x.py`, extensionless `python3 check_tests` and `bun test.ts` judged by the script
    name after exact subcommand rules — `bash -c '…'` by the inner command, `bash -n` a
-   syntax check, `python3 -` opaque). A `seg:` rule matches the segment as written **or** as
-   unwrapped, so `npx -y tsc --noEmit` and `./node_modules/.bin/tsc --noEmit` are `tsc
-   --noEmit`.
+   syntax check, `python3 -` opaque; `python3.12` / `pythonX.Y` is `python3`; `luau`, `lua`, `Rscript` and
+   `php` are interpreters too). A variable the same call assigned names the head of a later
+   segment (`vars.go`: `CLI=.build/debug/app; "$CLI" health`, `AB="agent-browser -s x" && $AB
+   open …`, `S=/tmp/s; "$S/drag" 1 2`; a `$(…)` value is opaque except `$(which x)` / `$(command
+   -v x)` / `$(xcrun -f x)`, whose answer is `x`; never a value from another call). A `seg:` rule
+   matches the segment as written **or** as unwrapped, so `npx -y tsc --noEmit` and
+   `./node_modules/.bin/tsc --noEmit` are `tsc --noEmit`. `npm` / `pnpm` / `yarn` / `uv` shed
+   any `--opt=value` and `--userconfig` / `--registry` / `--project DIR` before their
+   subcommand; `rokit run <tool>` is a runner. An npm script variant is its base script for
+   every base the table lists (`e2e:install` → `e2e`, `bench:stop` → `bench`, `lint:fix` →
+   `lint`).
 4. Every segment is matched (`matchHead`): `make` / `ninja` by their targets (`matchTargets`:
    the listed target of the highest priority decides — `make clean all` builds, `make build
    test` tests — an artifact target, a path or a file name such as `build/app` or `main.o`,
-   builds, and an unlisted phony target makes the call `unknown` under `make <target>`, the
-   dispatcher-verb precedent, so `todobem unknown` lists it and the overlay can pin it); a
-   `--version` alone is a lookup for any tool; then word rules, then script-name rules (`head:`
-   / `headpath:`; a read-only subcommand such as `status` / `list` keeps a deploy script a
-   lookup), then a local dispatcher script's first positional verb (`./dev ci-build` → build;
-   only unambiguous verbs, only for a clearly local script), then literal flags (`--build-only`,
-   `--test`, `--deploy`, `--serve`). An unmatched executable stays unknown.
+   builds, a verb-first target is the listed verb's row (`test-one` → `make test`,
+   `deploy-prod` → `make deploy`, `ci-e2e` → `make e2e`: the dispatcher-verb convention read
+   left to right like an npm script variant; `targetVerb`), and any other unlisted phony target
+   (`ios-test`, `clean-all`, `run-tests`: a verb elsewhere is not read) makes the call `unknown`
+   under `make <target>`, so `todobem unknown` lists it and the overlay can pin it); a
+   `--version` (`-V`, `version`) as the only argument, redirections aside, is a lookup for any
+   tool, and so is `--help` as the last argument (`gh pr create --help` creates nothing) or a
+   lone `-h` on a tool the table does not know (`df -h` is a listing); then word rules (`python3
+   -m ruff format` before `python3 -m ruff`); `source f` / `. f` is judged by the file's name
+   like `bash f` (`source ./deploy.sh` is the deploy) and is shell glue otherwise (a venv
+   activation); `eval '<literal>'` is that command and `eval "$(…)"` a named unknown; then
+   script-name rules (`head:` / `headpath:`; a read-only subcommand such as `status` / `list` /
+   `doctor` / `env` keeps a deploy script a lookup), then a local dispatcher script's first
+   positional verb (`./dev ci-build` → build; only unambiguous verbs, only for a clearly local
+   script), then literal flags (`--build-only`, `--test`, `--deploy`, `--serve`). Only when the
+   phase is still unknown after every rule — the `go run` / `python3` / app-bundle rows included
+   — the **fallback tier** reads two more literal signals: a server-only listen flag
+   (`--listen`, `--bind`, `--addr` / `-addr`; a `--port` sits on both sides of a socket and is
+   not one) makes it `infra/service`, and an SQL statement passed as one argument (`"$DB"
+   "SELECT …"`) makes it `code/sql`. An unmatched executable stays unknown; a `.app/Contents/
+   MacOS/<name>` launched directly is the named unknown `app run` (it runs the product, like
+   `swift run`; the overlay pins it).
 5. The op takes the **highest-priority** phase among its segments; at equal priority the first
    segment decides, except that a `shell` segment (`cd`, `echo`, `set`) yields to a substantive
    one (`cd x && rg foo` is the search). Priority also settles a word rule against a `seg:` rule
    on the same head: `tsc` is `build` (it emits JavaScript) and `tsc --noEmit` is
    `test/typecheck` — one definition of a type check across `mypy`, `pyright`, `npm run
    typecheck` and the dispatcher verb `typecheck`, which Insights reads as verification (§10.2).
-6. Interpreter heredocs (`python3 - <<PY`, `node --input-type=module <<JS`) are classified one
-   level deep by literal signals: commands passed to `subprocess.*` / `os.system` / `execSync`
+6. Interpreter heredocs (`python3 - <<PY`, `node --input-type=module <<JS`) and inline
+   programs (`python3 -c '…'`, `node -e '…'`, `ruby -e '…'`, `perl -pe '…'`; `inline.go`, one
+   extractor for the signals below and for the written-then-executed scripts) are classified
+   one level deep by literal signals: commands passed to `subprocess.*` / `os.system` / `execSync`
    (argv lists, including one bound to a variable and passed later) are classified with the same
    table (kind `script→<inner>`); assertions or a playwright / puppeteer import → `test/
    script-check`; file writes → `code/script-write`; only reads / queries / probes and no DML →
    `code/script-read`; anything else stays `unknown`. A file written in the same command with a
    literal body (`Path(f).write_text('''…''')`, `cat > f <<EOF`) and executed by a later segment
-   is classified by that body.
+   is classified by that body. A `bash -c '…'` body is the compound command it is, with its
+   parts (`bash -c 'go build && go test'` shares its clock between build and test).
 7. A `while … sleep` / `until … sleep` loop followed by real work keeps the work's phase with the
-   `queued` flag; `ssh` / `scp` / `rsync` / `*_REMOTE_HOST=` / `--remote` set `remote`.
+   `queued` flag; `ssh` / `scp` / `rsync` / `*_REMOTE_HOST=` / `--remote` set `remote`. A loop
+   block's part is named by the body segment that decided it, never by its header (`for e in a
+   b c` says nothing; `./sim $e` does).
 8. The title is the segment that decided the phase (`(+N more)` when there were others).
 9. `Identity` (the retry key) is set for test, build and release ops and for infra kinds whose
    exit code is a verdict (`docker`, `kubectl`, `ssh`, `scp`, `rsync`, `brew`, `apt`, `rustup`,
@@ -392,9 +433,10 @@ pin. Word rules are looked up exactly (longest key first: `xcrun devicectl devic
 ### 4.2 Query kinds and failures
 
 A non-zero exit or `is_error` is a **failed step** only when the op is a verdict. Query kinds
-(`classify.queryKinds`: read, search, list, probe, inspect, process, system, version, the
-read-only git / docker / kubectl / gh / glab / go / npm / cargo / devicectl / simulator / xcode /
-codesign queries, dns, net) and a CI status wait (`gh pr checks`, `gh run watch`: `wait_worker/
+(`classify.queryKinds`: read, search, list, probe, inspect, process, system, version, help, the
+read-only git / docker / kubectl / gh / glab / go / npm / pip / cargo / devicectl / simulator /
+xcode / codesign / keychain / ssh-agent / linear queries, dns, net — a `security` or `ssh-add`
+that changes something is `infra` and stays a verdict) and a CI status wait (`gh pr checks`, `gh run watch`: `wait_worker/
 ci`, whose exit says the checks are still pending or failing) are **answers**: the op keeps its
 literal status and exit, is marked `query_miss`, and is not counted in `failed_ops`.
 `Operation.Failure()` is the single predicate every count, filter, retry role and Insights
@@ -407,11 +449,12 @@ of 2026-09-15; kill signals: 2026-09-16.)
 - `PhaseLifecycle`: the stage default — `code`, `build`, `infra` → `implement`; `test` → `test`;
   `release` → `release`; everything else passes through under its own name.
 - `LifecyclePins`: kinds whose stage is not the phase default — `pr review`, `pr comment`, `mr
-  approve`, `mr note` → `review`; `journalctl`, `systemctl`, `launchctl`, `diagnostics`, `docker
+  approve`, `mr note`, `review findings` (Claude Code's ReportFindings tool) → `review`; `journalctl`, `systemctl`, `launchctl`, `diagnostics`, `docker
   logs`, `kubectl logs`, `kubectl describe` → `operate` (demoted before the lane's first
   release, §6.3).
-- `ChangeKinds`: the code-phase kinds that change files (§3.2 `edit`) — the literal evidence
-  that a turn implemented something; `IsChangeOp` defines the change window (§6.2).
+- `ChangeKinds`: the code-phase kinds that change files (§3.2 `edit`, `perl -i` included) —
+  the literal evidence that a turn implemented something; `IsChangeOp` defines the change window
+  (§6.2). An `artifact` publish is not one: it leaves the sources as they were.
 - Matchers: `ReviewSkillPattern` on a *selected skill name* (`code-review`, `codereview`,
   `simplify`, with `cc-` / path / `$` prefixes; bare `review` excluded so `security-review` does
   not match); overlay skill / role / path regexes keyed by stage. Requirements and design have no
@@ -1093,6 +1136,32 @@ simulation (the three Claude Code sessions matched to the second).
 ---
 
 ## 13. Decision record (what shaped the design, with dates)
+
+- **2026-09-21, the unknown-command sweep (reviewed by the `pragmatic` agent).** Every session's
+  `Outside stages → Unknown` (449 sessions, 4,628 ops, 6 h 18 m, 351 heads) clustered by cause.
+  Bugs first: the env-prefix regexp backtracked into quoted / `$(…)` values with a space and left
+  fragments as unknown parts (a scanner replaces it, `envprefix.go`); a loop part was named by
+  its `for` header; `Head` named an op by its first segment even when it ran nothing; a Codex
+  `exec` envelope whose commands sat in an array literal was booked as its JavaScript text; the
+  web `run` call was unknown *and* duplicated by the `WebSearch` item under the same id;
+  `Namespace` was parsed and unused. Then the literal gaps: versioned interpreters, inline
+  `-c` / `-e` programs (the heredoc signals apply — the text is on the line), `-m` modules,
+  `perl -i`, lookups behind redirections, `--help`, `source` / `eval`, the tool rows (§4.1), the
+  Claude `Artifact` / `ReportFindings` tools. Judgment calls, decided against the wider plan on
+  review: a backgrounded `&` / `nohup` / `run_in_background` command is *how* it ran, not what
+  it is, and an env name containing `PORT` / `ADDR` sits on both sides of a socket — neither
+  makes a service; only a server-only listen flag does, and only after every rule left the
+  phase unknown (the fallback tier), so product servers (`./app -addr`, `HTTP_ADDR=… go run
+  ./cmd/app`) are the overlay's job. A make target is read verb-first over the dispatcher
+  verbs only (`test-one`, `deploy-prod`), amending 09-19: a verb anywhere (`ios-test`,
+  `clean-all` → `all`) would have betrayed the unlisted-target decision in the direction it
+  guarded against. A `.app/Contents/MacOS/<name>` launched directly is the product, like `swift
+  run`: the named unknown `app run`, not a test. `npm create` scaffolds files, not deps.
+  `security` / `ssh-add` / `diskutil` reads are queries, their writes are infra verdicts. The
+  same-command variable resolution (`CLI=…; "$CLI" health`) was added on the evidence (a 28-min
+  op named `$CLI`): the value is literal text of the same call. Noticed, not changed: an
+  unknown command piped into a cosmetic filter (`./tool … | head -1`) takes the filter's
+  phase (`code/read`) because unknown ranks below code — a semantics change, deferred.
 
 - **2026-09-19, agent mode (reviewed by the `pragmatic` agent; `docs/AGENT-MODE.md`).** The
   hub pulls, the agent only answers; TCP with a pinned self-signed certificate and a bearer

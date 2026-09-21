@@ -63,16 +63,21 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
 - `internal/codex/` — the Codex adapter. `index.go` reads first lines (`session_meta`) into an
   in-memory index (the Codex `Source`); `reader.go` types lines by prefix and skips multi-MB
   lines undecoded; `lane.go` turns one rollout file into a lane (turns, ops, markers);
-  `tokens.go` the per-call token accounting. Design: `docs/ARCHITECTURE.md` §2.1, §7.1.
+  `tokens.go` the per-call token accounting; `tools.go` the non-command calls (the web `run`
+  tool, `mcp__*` connectors, the `exec` envelope's command extraction). Design:
+  `docs/ARCHITECTURE.md` §2.1, §7.1.
 - `internal/claude/` — the Claude Code adapter. `index.go` walks `projects/<project>/` (a bounded
   head scan for cwd / version / title, a tail scan for the last answer, `agent-*.meta.json` for
   sub-agents); `lane.go` the turn state machine (prompt line → deferred close at the last
   `end_turn` block, stop hooks inside the turn, interrupts, slash commands, tokens once per
   message); `tools.go` the tool-name → operation mapping. Design: `docs/ARCHITECTURE.md` §2.2.
-- `internal/classify/` — `Rules` in `classify.go` is the single source of truth for command →
-  phase/kind (served at `/api/rules`), plus the heredoc and remote/queued regexes right below
-  it; `head.go` unwraps wrappers, package runners and option prefixes, `make.go` judges make /
-  ninja by their targets; `shell.go` splits commands and masks heredocs; `Identity` normalizes
+- `internal/classify/` — `Rules` in `rules.go` is the single source of truth for command →
+  phase/kind (served at `/api/rules`); `classify.go` matches a command against it (segments,
+  the rule chain, the lookup and fallback tiers, heredoc bodies, parts); `head.go` unwraps
+  wrappers, package runners and option prefixes, `make.go` judges make / ninja by their targets;
+  `shell.go` tokenizes and masks heredocs; `envprefix.go` reads env assignments and `$(…)`
+  expansions the way the shell does; `vars.go` resolves a variable the same command assigned;
+  `inline.go` reads `-c` / `-e` programs as script bodies; `Identity` normalizes
   commands for retry groups; `Result.Parts` lists a compound command's working segments (the
   categories its wall clock is shared among); `lifecycle.go` holds the SDLC-stage type, the phase → stage defaults, the change
   kinds, the kind pins and the skill / role / path matchers; `subgroup.go` the breakdown
@@ -139,7 +144,7 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
 - `docs/ARCHITECTURE.md` — the one document: components, schema, algorithms, the stage and
   operation detection mechanism, the validation protocol, the decision record. Keep it current
   in the same change that alters what it describes; validation reports stay local (gitignored).
-- A new rule: a row in `Rules`, a case in `classify_test.go`, `docs/ARCHITECTURE.md` §3 if a
+- A new rule: a row in `Rules` (`rules.go`), a case in `classify_test.go`, `docs/ARCHITECTURE.md` §3 if a
   phase or kind changes; a stage pin goes in `LifecyclePins` with a case in
   `userconfig_test.go`. A new Claude Code tool: a case in `internal/claude/tools.go` with a fixture in `lane_test.go` and a row in
   `docs/ARCHITECTURE.md` §2.2 (an unmapped tool is `unknown/tool:<name>`, which is honest). A new insight:

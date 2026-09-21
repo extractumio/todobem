@@ -84,6 +84,11 @@ func TestLifecyclePins(t *testing.T) {
 	if PhaseLifecycle(Code) != LcImplement || PhaseLifecycle(Build) != LcImplement || PhaseLifecycle(Infra) != LcImplement || PhaseLifecycle(Test) != LcTest || PhaseLifecycle(Release) != LcRelease || PhaseLifecycle(WaitUser) != "wait_user" || PhaseLifecycle(LLM) != "llm" {
 		t.Error("PhaseLifecycle defaults changed")
 	}
+	// tool kinds pinned by the adapters (no command text): Claude Code's ReportFindings, the
+	// GitHub connector's review calls (internal/codex/tools.go)
+	if LifecyclePins["review findings"] != LcReview || LifecyclePins["pr review"] != LcReview || LifecyclePins["artifact"] != "" {
+		t.Error("tool pins")
+	}
 	if !IsWorkLifecycle(LcOperate) || IsWorkLifecycle("llm") || IsWorkLifecycle("") {
 		t.Error("IsWorkLifecycle")
 	}
@@ -113,6 +118,8 @@ func TestUserConfigOverlay(t *testing.T) {
 			{Rule: Rule{Match: "mydeploy", Phase: Release, Kind: "deploy"}},
 			{Rule: Rule{Match: "make", Phase: Test, Kind: "make (project override)"}}, // override built-in make→build
 			{Rule: Rule{Match: "prodctl", Phase: Infra, Kind: "prodctl"}, Lifecycle: LcOperate},
+			{Rule: Rule{Match: "seg:\\bmyapp[-\\w]*\\s+(token|status)\\b", Phase: Code, Kind: "myapp cli"}},
+			{Rule: Rule{Match: "make ios-test", Phase: Test, Kind: "xcodebuild test"}}, // an unlisted target pinned
 		},
 		Lifecycle: LifecycleMatcherConfig{
 			Skills: map[Lifecycle][]string{LcReview: {"audit-.*", "my-review"}, LcPlan: {"^brainstorm$"}},
@@ -134,6 +141,9 @@ func TestUserConfigOverlay(t *testing.T) {
 	check("mydeploy prod", Release, "deploy", "")
 	check("make", Test, "make (project override)", "") // user rule wins over built-in make->build
 	check("prodctl restart api", Infra, "prodctl", LcOperate)
+	check("./myapp token -addr 127.0.0.1:7788", Code, "myapp cli", "") // a seg rule silences the fallback tier's listen flag
+	check("./myapp -addr 127.0.0.1:7788 -open=false", Infra, "service", "")
+	check("make ios-test", Test, "xcodebuild test", "") // matchTargets consults the overlay's word rules
 	if !ReviewSkill("audit-security") || !ReviewSkill("my-review") {
 		t.Error("user review skills not matched")
 	}

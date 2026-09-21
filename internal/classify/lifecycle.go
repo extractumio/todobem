@@ -78,7 +78,7 @@ func PhaseLifecycle(p Phase) Lifecycle {
 // (checkout, merge, stash …) navigate the tree rather than change its content and stay out. The
 // same set is the "Editing files" subgroup of the breakdown (Subgroup).
 var ChangeKinds = map[string]bool{
-	"edit": true, "sed -i": true, "write-file": true, "script-write": true, "format": true,
+	"edit": true, "sed -i": true, "perl -i": true, "write-file": true, "script-write": true, "format": true,
 	"mkdir": true, "cp": true, "mv": true, "touch": true, "ln": true,
 	"git rm": true, "git mv": true, "git apply": true, "git cherry-pick": true,
 }
@@ -98,12 +98,13 @@ func IsChangeOp(phase Phase, kind string) bool {
 
 // LifecyclePins are the command kinds whose stage is not the phase default, keyed by Rule.Kind
 // (the kind must be unique to the commands it pins). Review verbs on a PR/MR are review work
-// even though the phase stays release. Log reading, service control and system diagnostics are
+// even though the phase stays release; so is Claude Code's ReportFindings tool, which exists
+// only to report code-review findings (internal/claude/tools.go). Log reading, service control and system diagnostics are
 // operations candidates: model.Derive demotes them to implementation before the lane's first
 // release op (an order rule, like the change window — see docs/ARCHITECTURE.md §6.3). An overlay rule with a
 // "lifecycle" value adds its kind here.
 var LifecyclePins = map[string]Lifecycle{
-	"pr review": LcReview, "pr comment": LcReview, "mr approve": LcReview, "mr note": LcReview,
+	"pr review": LcReview, "pr comment": LcReview, "mr approve": LcReview, "mr note": LcReview, "review findings": LcReview,
 	"journalctl": LcOperate, "systemctl": LcOperate, "launchctl": LcOperate, "diagnostics": LcOperate,
 	"docker logs": LcOperate, "kubectl logs": LcOperate, "kubectl describe": LcOperate,
 }
@@ -194,10 +195,12 @@ func ReviewSkillMatchers() []string { return matcherSources(lifecycleSkills)[LcR
 // across model changes (2: the lifecycle partition; 3: sub-agent turns inherit the parent turn's
 // stage and model output takes the nearest tool call's stage; 4: skill runs, the change window,
 // model-output ops carry their segment's stage, subgroups; 5: the build phase's compile / deps
-// sub-rows; 6: compound commands share their wall clock, segments carry their sub-row).
+// sub-rows; 6: compound commands share their wall clock, segments carry their sub-row; 7: the
+// env-prefix scanner, loop parts named by their body, same-command variables, inline programs,
+// verb-first make targets, the lookup and fallback tiers).
 func RulesFingerprint() string {
 	h := sha1.New()
-	fmt.Fprint(h, "schema=6;")
+	fmt.Fprint(h, "schema=7;")
 	change := make([]string, 0, len(ChangeKinds))
 	for k := range ChangeKinds {
 		change = append(change, k)
