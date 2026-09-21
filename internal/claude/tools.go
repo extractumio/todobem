@@ -27,6 +27,10 @@ import (
 //	ExitPlanMode               → an instant llm/plan op pinned to the planning stage
 //	TodoWrite / TaskCreate     → plan markers
 //	mcp__<server>__<tool>      → code/mcp
+//	Artifact (+ ArtifactComments, ArtifactData: observed names) → code/artifact: a page
+//	                             published to claude.ai or read back; not a change of the sources
+//	ReportFindings             → code/"review findings", lifecycle review: the tool exists only to
+//	                             report code-review findings (a harness-level signal, like pr review)
 //	bookkeeping tools          → nothing (trivialTools)
 //	anything else              → unknown/"tool:<name>" — honest unknown, listed by `todobem unknown`
 var trivialTools = map[string]bool{"ToolSearch": true, "ListAgents": true, "TaskList": true, "TaskStop": true, "SendMessage": true, "KillShell": true, "KillBash": true, "TaskUpdate": true, "TaskGet": true, "ListMcpResourcesTool": true, "ReadMcpResourceTool": true, "EnterWorktree": true, "ExitWorktree": true, "EnterPlanMode": true}
@@ -44,6 +48,7 @@ type toolInput struct {
 	URL             string `json:"url"`
 	Prompt          string `json:"prompt"`
 	Skill           string `json:"skill"`
+	Action          string `json:"action"`
 	SubagentType    string `json:"subagent_type"`
 	Name            string `json:"name"`
 	TaskID          string `json:"task_id"`
@@ -162,6 +167,19 @@ func (p *laneParser) onCall(b block, ts int64, src *model.Src) {
 		p.addMarker(ts, "plan", turn, todoSummary(in), "", src)
 	case "TaskCreate":
 		p.addMarker(ts, "plan", turn, "☐ "+source.Clip(in.Subject, 300), "", src)
+	case "Artifact", "ArtifactComments", "ArtifactData":
+		op := p.newOp(b.ID, turn, classify.Code, "artifact", ts, ts, src)
+		op.Title = strings.TrimSpace("artifact " + source.OrDefault(in.Action, "publish") + " " + filepath.Base(source.OrDefault(in.FilePath, in.URL)))
+		op.Detail = source.Clip(string(b.Input), 1000)
+		op.Open, op.Status = true, "running"
+		pc.op = op
+	case "ReportFindings":
+		op := p.newOp(b.ID, turn, classify.Code, "review findings", ts, ts, src)
+		op.Title = "report review findings"
+		op.Detail = source.Clip(string(b.Input), 1000)
+		op.Lifecycle, op.LifecycleRule = classify.LcReview, "review findings reported (ReportFindings)"
+		op.Open, op.Status = true, "running"
+		pc.op = op
 	default:
 		if trivialTools[b.Name] {
 			break

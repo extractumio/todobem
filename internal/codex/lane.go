@@ -334,13 +334,14 @@ func parseSkillSelection(line []byte) (name, path string, ok bool) {
 }
 
 var (
-	reExited   = regexp.MustCompile(`Process exited with code (-?\d+)`)
-	reRunning  = regexp.MustCompile(`Process running with session ID (\d+)`)
-	reExecCmd  = regexp.MustCompile(`"?cmd"?\s*:\s*"((?:[^"\\]|\\.)*)"`)
-	reCmdArg   = regexp.MustCompile(`"cmd"\s*:\s*"((?:[^"\\]|\\.)*)"`)
-	reSession  = regexp.MustCompile(`"session_id"\s*:\s*(\d+)`)
-	reWorkdir  = regexp.MustCompile(`"workdir"\s*:\s*"((?:[^"\\]|\\.)*)"`)
-	reQuestion = regexp.MustCompile(`"title"\s*:\s*"((?:[^"\\]|\\.)*)"`)
+	reExited      = regexp.MustCompile(`Process exited with code (-?\d+)`)
+	reRunning     = regexp.MustCompile(`Process running with session ID (\d+)`)
+	reCellRunning = regexp.MustCompile(`Script running with cell ID (\d+)`)
+	reCellArg     = regexp.MustCompile(`"cell_id"\s*:\s*"?(\d+)`)
+	reCmdArg      = regexp.MustCompile(`"cmd"\s*:\s*"((?:[^"\\]|\\.)*)"`)
+	reSession     = regexp.MustCompile(`"session_id"\s*:\s*(\d+)`)
+	reWorkdir     = regexp.MustCompile(`"workdir"\s*:\s*"((?:[^"\\]|\\.)*)"`)
+	reQuestion    = regexp.MustCompile(`"title"\s*:\s*"((?:[^"\\]|\\.)*)"`)
 )
 
 // source.LaneParser: the joiner reads the lane, the file, the offset and the last evidence.
@@ -566,6 +567,7 @@ func (p *laneParser) closeTurn(ts int64, status, final string) {
 		}
 	}
 	p.pending = map[string]*pendingCall{}
+	p.provisional = map[string]*model.Operation{} // an envelope's commands never report after its turn
 	p.turn = nil
 	p.execCall = ""
 }
@@ -623,11 +625,7 @@ func (p *laneParser) handleItem(line []byte, start int64, ts int64) {
 		}
 		if prov, ok := p.provisional[strings.TrimSpace(cmd)]; ok {
 			p.dropOp(prov)
-			for k, v := range p.provisional {
-				if v == prov {
-					delete(p.provisional, k)
-				}
-			}
+			p.dropProvisional(prov)
 		}
 		op := p.commandOp(head.ID, ic.TurnID, cmd, codexKind, s, e, src)
 		if op.Identity != "" {
@@ -701,6 +699,9 @@ func (p *laneParser) handleItem(line []byte, start int64, ts int64) {
 		op.Title = "mcp " + mi.Server + "." + mi.Tool
 		op.Status = source.OrDefault(mi.Status, "completed")
 	case "WebSearch":
+		if pc, ok := p.pending[head.ID]; ok && pc.op != nil {
+			break // the `run` call of the web tool already holds this id; its output closes it
+		}
 		op := p.newOp(head.ID, ic.TurnID, classify.Code, "web_search", s, e, src)
 		op.Title = "web search"
 		op.Status = "completed"
@@ -848,6 +849,12 @@ func (p *laneParser) onCall(fc funcCall, ts int64, start int64, line []byte, cus
 				op.Open, op.Status = true, "running"
 			}
 		}
+		if m := reCellArg.FindStringSubmatch(fc.Arguments); m != nil && pc.op == nil {
+			if op := p.procs["cell:"+m[1]]; op != nil { // a wait on an exec envelope's cell
+				pc.op = op
+				op.Open, op.Status = true, "running"
+			}
+		}
 		if pc.op == nil && fc.Name == "wait" {
 			op := p.newOp(fc.CallID, turn, classify.WaitWorker, "process", ts, ts, src)
 			op.Title = "wait for process"
@@ -918,21 +925,31 @@ func (p *laneParser) onCall(fc funcCall, ts int64, start int64, line []byte, cus
 		op.Open, op.Status = true, "running"
 		pc.op = op
 	case "run":
-		op := p.newOp(fc.CallID, turn, classify.Unknown, "run", ts, ts, src)
-		op.Title = "run " + source.Clip(fc.Arguments, 60)
+		phase, kind, title := classify.Unknown, "run", "run "+source.Clip(fc.Arguments, 60)
+		if fc.Namespace == "web" {
+			// the browsing tool (search_query / open / find): a lookup, like the WebSearch item
+			// the harness writes for the same call id (handleItem skips that duplicate)
+			phase, kind, title = classify.Code, "web_search", webRunTitle(fc.Arguments)
+		}
+		op := p.newOp(fc.CallID, turn, phase, kind, ts, ts, src)
+		op.Title = title
+		op.Detail = source.Clip(fc.Arguments, 1000)
 		op.Open, op.Status = true, "running"
 		pc.op = op
 	default:
 		if trivialCalls[fc.Name] {
 			break
 		}
-		phase, kind := classify.Unknown, "tool:"+fc.Name
-		if strings.HasPrefix(fc.Name, "_") && strings.Contains(fc.Name, "pull_request") || strings.Contains(fc.Name, "merge_pull") {
-			phase, kind = classify.Release, "pr"
+		phase, kind, title := classify.Unknown, "tool:"+fc.Name, fc.Name
+		if strings.HasPrefix(fc.Namespace, "mcp__") || strings.HasPrefix(fc.Name, "_") {
+			phase, kind, title = connectorOp(fc)
 		}
 		op := p.newOp(fc.CallID, turn, phase, kind, ts, ts, src)
-		op.Title = fc.Name
+		op.Title = title
 		op.Detail = source.Clip(fc.Arguments, 1000)
+		if lc, ok := classify.LifecyclePins[kind]; ok {
+			op.Lifecycle, op.LifecycleRule = lc, "tool kind "+kind
+		}
 		op.Open, op.Status = true, "running"
 		pc.op = op
 	}
@@ -946,15 +963,17 @@ func (p *laneParser) onOutput(fo funcOutput, ts int64, start int64, line []byte)
 		// end of an `exec` envelope; if no CommandExecution items were emitted (old versions),
 		// synthesize one op from the JS input.
 		if p.execCmds == 0 && strings.Contains(p.execInput, "exec_command") {
-			var cmds []string
-			for _, m := range reExecCmd.FindAllStringSubmatch(p.execInput, -1) {
-				cmds = append(cmds, unescapeJSON(m[1]))
+			cmds := execCommands(p.execInput)
+			var op *model.Operation
+			if len(cmds) > 0 {
+				op = p.commandOp(fo.CallID, p.turnID(), strings.Join(cmds, "\n"), "", p.execStart, ts, p.src(start, line))
+			} else {
+				// the commands are not literal in the JS (a nested pair list, an expression): an
+				// honest unknown named as what it is, the JS kept as its detail
+				op = p.newOp(fo.CallID, p.turnID(), classify.Unknown, "exec-script", p.execStart, ts, p.src(start, line))
+				op.Title = execScriptTitle(p.execInput)
+				op.Detail = source.Clip(p.execInput, 2000)
 			}
-			joined := strings.Join(cmds, "\n")
-			if joined == "" {
-				joined = source.Clip(p.execInput, 500)
-			}
-			op := p.commandOp(fo.CallID, p.turnID(), joined, "", p.execStart, ts, p.src(start, line))
 			op.Status = "completed"
 			op.Parallel = len(cmds)
 			out := outputText(fo.Output)
@@ -967,12 +986,24 @@ func (p *laneParser) onOutput(fo funcOutput, ts int64, start int64, line []byte)
 				op.Kind = "exec-script-error"
 				op.Title = "exec script failed (no commands ran): " + source.Clip(source.FirstLine(out), 80)
 				p.addMarker(ts, "llm_error", op.Turn, source.Clip(out, 300), op.ID, p.src(start, line))
+			} else if m := reCellRunning.FindStringSubmatch(out); m != nil {
+				// the script is still running in a cell (yield_time_ms elapsed): a later `wait` on
+				// that cell extends the op, and its "Script completed" closes it
+				op.Status = "running"
+				p.procs["cell:"+m[1]] = op
+				for _, c := range cmds {
+					if !strings.Contains(c, "${") { // a template with a hole never matches an item's text
+						p.provisional[strings.TrimSpace(c)] = op
+					}
+				}
 			} else {
-				// commands may still be running (yield_time_ms elapsed): keep the op only until the
-				// real CommandExecution item reports the same command
+				// commands may still be running: keep the op only until the real CommandExecution
+				// item reports the same command
 				op.Status = "running"
 				for _, c := range cmds {
-					p.provisional[strings.TrimSpace(c)] = op
+					if !strings.Contains(c, "${") {
+						p.provisional[strings.TrimSpace(c)] = op
+					}
 				}
 			}
 		}
@@ -1008,6 +1039,9 @@ func (p *laneParser) onOutput(fo funcOutput, ts int64, start int64, line []byte)
 			op.Status = "running"
 		} else {
 			op.Status = "completed"
+			if strings.HasPrefix(out, "Script completed") {
+				p.dropProvisional(op) // the envelope's cell finished: its commands are final
+			}
 		}
 	default:
 		if op.Status == "running" {
@@ -1096,6 +1130,15 @@ func (p *laneParser) dropTurn(t *model.Turn, newTurn string) {
 		mk.Turn = newTurn
 	}
 	p.turn = nil
+}
+
+// dropProvisional forgets every provisional key that points at op.
+func (p *laneParser) dropProvisional(op *model.Operation) {
+	for k, v := range p.provisional {
+		if v == op {
+			delete(p.provisional, k)
+		}
+	}
 }
 
 // dropOp removes an op from the lane (rare: provisional ops superseded by real items).

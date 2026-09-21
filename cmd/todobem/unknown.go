@@ -169,10 +169,11 @@ func collectUnknown(srv *server.Server, ids []string, withOps bool) unknownRepor
 						continue
 					}
 					head := classify.Head(cmd)
-					if strings.HasPrefix(o.Kind, "tool:") {
-						// a Claude Code tool without a mapping is named by the tool, not by the
-						// first word of its JSON input
-						head = strings.TrimPrefix(o.Kind, "tool:")
+					if kind := classify.BaseKind(o.Kind); strings.HasPrefix(kind, "tool:") || kind == "exec-script" {
+						// a Claude Code tool without a mapping is named by the tool, a Codex exec
+						// envelope without a command literal by its kind — not by the first word of
+						// its JSON or JavaScript; the retry role (`|fix`) is not part of the name
+						head = strings.TrimPrefix(kind, "tool:")
 					}
 					if head == "" {
 						head = o.Title

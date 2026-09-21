@@ -30,7 +30,10 @@ import (
 // 8: one op per Claude Code stop hook, with the command's classification and retry identity.
 // 9: a Claude Code assistant line with the model "<synthetic>" never names the turn's model.
 // 10: a Codex task_complete carrying an error is an llm_error marker.
-const cacheVersion = 10
+// 11: Codex exec envelopes recover their commands from array literals (else `exec-script`), the
+// web `run` tool and `mcp__*` connectors are mapped, the exec cell wait extends its op; Claude
+// Code's Artifact and ReportFindings tools are mapped.
+const cacheVersion = 11
 
 // maxDecodedJSON bounds every derived cache object after decompression. The wire already caps
 // compressed model responses; this second bound prevents a small gzip bomb from exhausting the
