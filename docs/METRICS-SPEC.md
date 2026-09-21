@@ -94,7 +94,7 @@ Refused, with the reason, so the page is not asked for them later:
 | session | `ID, Source, CWD, CLI, Started, Ended, Live` |
 | root totals | `Root.ElapsedMs, InTurnMs, ByPhase, ByLifecycle, Tokens, AllTokens, Turns, Aborted, UserMessages` |
 | turns | `Turns[].Lane, Status, Trigger, Question, Responses, Tokens, Model, Effort` |
-| delivery walk | `Delivery.Changes, Verified, VerifiedBy, VerifiedKinds, Tests, TestsFailed, HookOps, LastVerdictFailed, ReviewedAt, ChangesAfterReview, BlindAfterLastChangeMs, Pushes[].{Verified, BlindMs}, EditTurns, EditTurnsUnverified` |
+| delivery walk | `Delivery.Changes, Verified, VerifiedBy, VerifiedKinds, Tests, TestsFailed, HookOps, LastVerdictFailed, ReviewedAt, ChangesAfterReview, BlindAfterLastChangeMs, AmbiguousTestAfterLastChange, Pushes[].{Verified, BlindMs, AmbiguousTest}, EditTurns, EditTurnsUnverified, EditTurnsAmbiguous` |
 | retries | `Groups[].Windows[].{Lane, Start, End}` |
 | waits | `Waits[].{Kind, Start, End, SoloMs}` |
 | compactions | `Compactions[].{Lane, InChangeWindow}` |
@@ -145,10 +145,10 @@ source.
 
 | id | title (on the page) | num / den | unit | NA / no data | insight |
 |---|---|---|---|---|---|
-| `verified_end` | Sessions that ended verified | sessions with `Delivery.Verified` / sessions with `Changes > 0 && BlindAfterLastChangeMs == 0` | session | NA: `Changes == 0`; no data: `BlindAfterLastChangeMs > 0` | D17 |
-| `push_verified` | Pushes with a passing test since the last edit | `Pushes[].Verified` / pushes with `BlindMs == 0` | push | NA: no push after a change; no data: `BlindMs > 0` | D25 |
+| `verified_end` | Sessions that ended verified | sessions with `Delivery.Verified` / sessions with `Changes > 0 && BlindAfterLastChangeMs == 0 && !AmbiguousTestAfterLastChange` | session | NA: `Changes == 0`; no data: `BlindAfterLastChangeMs > 0 || AmbiguousTestAfterLastChange` | D17 |
+| `push_verified` | Pushes with a passing test since the last edit | `Pushes[].Verified` / pushes with `BlindMs == 0 && !AmbiguousTest` | push | NA: no push after a change; no data: `BlindMs > 0 || AmbiguousTest` | D25 |
 | `push_verified_sessions` | Sessions whose every measurable push was verified | sessions with ≥ 1 measurable push, all verified / sessions with ≥ 1 measurable push | session | as above | D25 |
-| `edit_turn_verified` | Edit turns verified inside the turn (any lane) | `EditTurns − EditTurnsUnverified` / `EditTurns` — turns with a change op **on any lane**, a sub-agent's edit turn included (the delivery walk's session scope, consistent with D17); the tile's definition sentence says so, since it sits next to root-only numbers | turn | NA: `EditTurns == 0` | D17 (stat) |
+| `edit_turn_verified` | Edit turns verified inside the turn (any lane) | `EditTurns − EditTurnsUnverified − EditTurnsAmbiguous` / `EditTurns − EditTurnsAmbiguous` — turns with a change op **on any lane**, a sub-agent's edit turn included (the delivery walk's session scope, consistent with D17); the tile's definition sentence says so, since it sits next to root-only numbers | turn | NA: `EditTurns == 0`; no data: `EditTurnsAmbiguous` | D17 (stat) |
 | `hook_verified` | Hook sessions verified first by the hook | sessions with `Verified && VerifiedBy == "hook"` / `verified_end`'s den ∩ `HookOps > 0` | session | NA: no hook ran, or `verified_end` NA / no data; **Codex sessions cannot carry the signal** (no hook op exists in `codex/lane.go`): not measurable, never in the all-sources ratio | D17 (stat) |
 | `review_covered` | Reviews that covered the last change | sessions with `ReviewedAt > 0 && ChangesAfterReview == 0` / sessions with `ReviewedAt > 0` | session | NA: no review run | D24 |
 

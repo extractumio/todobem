@@ -111,7 +111,6 @@ const Dropdown = (() => {
         return;
       }
       if (e.key === 'Tab') {
-        e.preventDefault();
         const select = owner;
         commit();
         select.focus();

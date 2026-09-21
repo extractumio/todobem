@@ -61,8 +61,8 @@ func TestDeliveryWalkVerificationAndReview(t *testing.T) {
 	}
 	// the same hook with an error, or one running a lint-free formatter, verifies nothing
 	f = Extract(session(t, rootLane(edit("e1", 1*minute), hook("h1", 9*minute, 9*minute+5000, classify.Test, "failed"))))
-	if f.Delivery.Verified {
-		t.Fatal("a failed hook is not a verification")
+	if d = f.Delivery; d.Verified || d.Tests != 1 || d.TestsFailed != 1 || !d.LastVerdictFailed {
+		t.Fatalf("a failed hook is a failed test verdict: %+v", d)
 	}
 	f = Extract(session(t, rootLane(edit("e1", 1*minute), hook("h1", 9*minute, 9*minute+5000, classify.Code, "completed"))))
 	if f.Delivery.Verified {
@@ -72,6 +72,27 @@ func TestDeliveryWalkVerificationAndReview(t *testing.T) {
 	f = Extract(session(t, rootLane(edit("e1", 1*minute), op("b1", "R", classify.Build, "go build", 2*minute, 3*minute, "completed"))))
 	if f.Delivery.Verified || f.Delivery.Tests != 0 {
 		t.Fatalf("build is not verification: %+v", f.Delivery)
+	}
+	// Compound shares allocate elapsed time but do not preserve shell control flow or per-step
+	// outcomes. Neither apparent order is delivery evidence.
+	compound := edit("both", 2*minute)
+	compound.End = 4 * minute
+	compound.Shares = []model.Share{
+		{Phase: classify.Code, Kind: "edit", Ms: minute},
+		{Phase: classify.Test, Kind: "go test", Ms: minute},
+	}
+	f = Extract(session(t, rootLane(compound)))
+	if d = f.Delivery; d.Changes != 0 || d.Tests != 0 || d.Verified {
+		t.Fatalf("compound edit then test: %+v", d)
+	}
+	compound = test("reverse", 2*minute, 4*minute, "completed")
+	compound.Shares = []model.Share{
+		{Phase: classify.Test, Kind: "go test", Ms: minute},
+		{Phase: classify.Code, Kind: "edit", Ms: minute},
+	}
+	f = Extract(session(t, rootLane(compound)))
+	if d = f.Delivery; d.Changes != 0 || d.Tests != 0 || d.Verified {
+		t.Fatalf("compound test then edit: %+v", d)
 	}
 	// an unknown command after the last edit: the walk may have missed a test
 	f = Extract(session(t, rootLane(edit("e1", 1*minute), op("u1", "R", classify.Unknown, "unknown", 2*minute, 3*minute, "completed"))))
@@ -105,6 +126,22 @@ func TestDeliveryWalkSessionScopeAndReview(t *testing.T) {
 	f := Extract(session(t, root, child))
 	if d := f.Delivery; !d.Verified || d.LastChangeLane != 1 || d.VerifiedOp != "c1" || d.EditTurns != 1 || d.EditTurnsUnverified != 1 {
 		t.Fatalf("session scope: %+v", d)
+	}
+	// A test share cannot be ordered against another lane's edit from estimated boundaries.
+	compound := test("slow", 0, 10*minute, "completed")
+	compound.Shares = []model.Share{
+		{Phase: classify.WaitWorker, Kind: "sleep", Ms: 9 * minute, Literal: true},
+		{Phase: classify.Test, Kind: "go test", Ms: minute},
+	}
+	root = rootLane(compound)
+	child = &model.Lane{ID: "A", Path: "/root/a", Parent: "R", Depth: 1, Started: minute, Ended: 6 * minute}
+	child.Turns = []*model.Turn{{ID: "a1", Start: minute, End: 6 * minute, Status: "completed"}}
+	ce = op("e2", "A", classify.Code, "edit", 5*minute, 5*minute+1000, "completed")
+	ce.Turn = "a1"
+	child.Ops = []*model.Operation{ce}
+	f = Extract(session(t, root, child))
+	if d := f.Delivery; d.Verified || !d.AmbiguousTestAfterLastChange || d.LastChangeAt != 5*minute {
+		t.Fatalf("cross-lane share order: %+v", d)
 	}
 	// review: a review-skill turn, then an edit after it
 	root = &model.Lane{ID: "R", Path: "/root", Started: 0, Ended: 10 * minute}
@@ -274,6 +311,41 @@ func TestDeliveryWalkPushes(t *testing.T) {
 	f = Extract(session(t, root, child))
 	if d = f.Delivery; len(d.Pushes) != 1 || !d.Pushes[0].Verified || d.Pushes[0].Lane != 0 {
 		t.Fatalf("session scope push: %+v", d.Pushes)
+	}
+	// A successful compound still has no per-step outcome or control-flow trace. Its test makes
+	// the window unknown and its apparent push share is not recorded as a push.
+	compound := push("both", 1*minute)
+	compound.End = 3 * minute
+	compound.Shares = []model.Share{
+		{Phase: classify.Test, Kind: "go test", Ms: minute},
+		{Phase: classify.Release, Kind: "git push", Ms: minute},
+	}
+	f = Extract(session(t, rootLane(edit("e1", 30e3), compound)))
+	if d = f.Delivery; d.Verified || d.Tests != 0 || len(d.Pushes) != 0 || !d.AmbiguousTestAfterLastChange || d.EditTurnsAmbiguous != 1 || d.EditTurnsUnverified != 0 {
+		t.Fatalf("compound test then push: %+v", d)
+	}
+	compound.Status = "failed"
+	f = Extract(session(t, rootLane(edit("e2", 30e3), compound)))
+	if d = f.Delivery; d.Verified || d.Tests != 0 || d.TestsFailed != 0 || d.LastVerdictFailed || len(d.Pushes) != 0 || !d.AmbiguousTestAfterLastChange || d.EditTurnsAmbiguous != 1 || d.EditTurnsUnverified != 0 {
+		t.Fatalf("ambiguous failed compound: %+v", d)
+	}
+	r := detectUnverifiedChanges(&f)
+	if r.Measurable || r.NotApplicable || r.Reason == "" {
+		t.Fatalf("ambiguous failed compound should be no data: %+v", r)
+	}
+	// The dominant phase is classifier priority, not a per-share failure verdict. Changing it
+	// cannot make the preceding test known to have passed or failed.
+	compound.Phase = classify.Test
+	f = Extract(session(t, rootLane(edit("e3", 30e3), compound)))
+	if d = f.Delivery; d.Verified || d.Tests != 0 || !d.AmbiguousTestAfterLastChange || len(d.Pushes) != 0 {
+		t.Fatalf("priority-independent compound ambiguity: %+v", d)
+	}
+	// a failed push never claims that changes were released
+	badPush := push("bad", 2*minute)
+	badPush.Status = "failed"
+	f = Extract(session(t, rootLane(edit("e1", 1*minute), badPush)))
+	if d = f.Delivery; len(d.Pushes) != 0 || d.ChangesAfterLastPush != 0 {
+		t.Fatalf("failed push recorded as delivery: %+v", d)
 	}
 }
 

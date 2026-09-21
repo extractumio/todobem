@@ -46,7 +46,8 @@ type DeliveryFacts struct {
 	// Blind: unknown + no_telemetry time on the root lane between LastChangeAt and the session
 	// end; when > 0 the walk may have missed a test, and a rule reading Verified reports the
 	// session as no data instead.
-	BlindAfterLastChangeMs int64 `json:"blind_after_last_change_ms,omitempty"`
+	BlindAfterLastChangeMs       int64 `json:"blind_after_last_change_ms,omitempty"`
+	AmbiguousTestAfterLastChange bool  `json:"ambiguous_test_after_last_change,omitempty"` // a compound had a test share but no execution trace or per-share verdict
 	// Pushes: every `git push` op (any lane) that had a change op before it, with what ran
 	// between that change and the push; ChangesAfterLastPush counts the change ops started after
 	// the session's last push (the tail the next session inherits).
@@ -57,6 +58,7 @@ type DeliveryFacts struct {
 	// lane's change windows.
 	EditTurns           int   `json:"edit_turns"`
 	EditTurnsUnverified int   `json:"edit_turns_unverified"`
+	EditTurnsAmbiguous  int   `json:"edit_turns_ambiguous,omitempty"`
 	UnknownInWindowMs   int64 `json:"unknown_in_window_ms,omitempty"`
 }
 
@@ -76,20 +78,24 @@ type PushFacts struct {
 	Tests          int    `json:"tests,omitempty"`
 	LastTestFailed bool   `json:"last_test_failed,omitempty"`
 	BlindMs        int64  `json:"blind_ms,omitempty"`
+	AmbiguousTest  bool   `json:"ambiguous_test,omitempty"`
 }
 
 // verificationOp reports whether o is a recorded verification: a test op that completed
 // without failing, or a stop hook whose command classified as test and raised no hook error.
 // by is "agent" or "hook".
 func verificationOp(o *model.Operation) (by string, ok bool) {
-	if o.Background || o.Status != "completed" || o.Failure() {
+	if o.Background {
 		return "", false
 	}
-	if o.Phase == classify.Test {
-		return "agent", true
-	}
 	if p, isHook := classify.HookPhase(o.Rule); isHook && p == classify.Test {
-		return "hook", true
+		return "hook", o.Status == "completed" && !o.Failure()
+	}
+	if len(o.Shares) > 0 {
+		return "", false
+	}
+	if o.Phase == classify.Test && o.Status == "completed" && !o.Failure() {
+		return "agent", true
 	}
 	return "", false
 }
@@ -100,14 +106,18 @@ func isPushOp(o *model.Operation) bool {
 	return o.Phase == classify.Release && classify.BaseKind(o.Kind) == "git push"
 }
 
-// verificationKind names what a verification ran: the base kind the rule table gave the test op
-// (a heredoc classified by its inner command loses the "script→" prefix, as in classify.Subgroup),
-// or the kind of a stop hook's command.
-func verificationKind(o *model.Operation, by string) string {
-	if by == "hook" {
-		return classify.HookKind(o.Rule)
+// changeAt reports a recorded change operation. Shares are allocation estimates, not an
+// execution trace, so a compound's apparent change slice is not delivery evidence.
+func changeAt(o *model.Operation) (int64, bool) {
+	if len(o.Shares) > 0 {
+		return o.Start, false
 	}
-	return strings.TrimPrefix(classify.BaseKind(o.Kind), "script→")
+	return o.Start, classify.IsChangeOp(o.Phase, o.Kind)
+}
+
+func isChangeOp(o *model.Operation) bool {
+	_, ok := changeAt(o)
+	return ok
 }
 
 // appendDistinct appends s to list unless it is already there (first-seen order kept).
@@ -130,15 +140,16 @@ type changeWindow struct {
 func changeWindows(l *model.Lane) map[string]*changeWindow {
 	out := map[string]*changeWindow{}
 	for _, o := range l.Ops {
-		if o.Background || !classify.IsChangeOp(o.Phase, o.Kind) {
+		at, changed := changeAt(o)
+		if o.Background || !changed {
 			continue
 		}
 		w := out[o.Turn]
 		if w == nil {
-			w = &changeWindow{first: o.Start, last: o.Start}
+			w = &changeWindow{first: at, last: at}
 			out[o.Turn] = w
 		}
-		w.first, w.last = min(w.first, o.Start), max(w.last, o.Start)
+		w.first, w.last = min(w.first, at), max(w.last, at)
 		w.changes++
 	}
 	return out
@@ -159,69 +170,141 @@ func blindMs(l *model.Lane, from, to int64) int64 {
 	return ms
 }
 
-// deliveryFacts walks every non-background op of the session in start order.
+type deliveryEvent struct {
+	at              int64
+	seq             int
+	kind, by, event string
+	op              *model.Operation
+	failed, passed  bool
+}
+
+func compoundHasTest(o *model.Operation) bool {
+	for _, sh := range o.Shares {
+		if sh.Phase == classify.Test {
+			return true
+		}
+	}
+	return false
+}
+
+// deliveryFacts flattens every non-background operation into recorded change, test and push
+// events, then walks those events in timestamp order across all lanes. Compound shares never
+// become events: they allocate one measured clock but preserve neither control flow nor per-step
+// outcomes. A test share instead makes an affected later window explicitly ambiguous.
 func deliveryFacts(s *model.Session, laneIndex map[string]int) DeliveryFacts {
 	var d DeliveryFacts
 	root := s.Lanes[0]
 	var all []*model.Operation
+	var events []deliveryEvent
+	seq := 0
+	add := func(at int64, event string, o *model.Operation, kind, by string, failed, passed bool) {
+		events = append(events, deliveryEvent{at: at, seq: seq, event: event, op: o, kind: kind, by: by, failed: failed, passed: passed})
+		seq++
+	}
 	for _, l := range s.Lanes {
 		for _, o := range l.Ops {
-			if !o.Background {
-				all = append(all, o)
+			if o.Background {
+				continue
+			}
+			all = append(all, o)
+			if isHookOp(o) {
+				d.HookOps++
+				if p, _ := classify.HookPhase(o.Rule); p == classify.Test {
+					failed := o.Failure()
+					add(o.Start, "test", o, classify.HookKind(o.Rule), "hook", failed, o.Status == "completed" && !failed)
+				}
+				continue
+			}
+			if len(o.Shares) == 0 {
+				switch {
+				case classify.IsChangeOp(o.Phase, o.Kind):
+					add(o.Start, "change", o, o.Kind, "", false, false)
+				case o.Phase == classify.Test:
+					failed := o.Failure()
+					add(o.Start, "test", o, o.Kind, "agent", failed, o.Status == "completed" && !failed)
+				case isPushOp(o) && o.Status == "completed" && !o.Failure():
+					add(o.Start, "push", o, o.Kind, "", false, true)
+				}
+				continue
+			}
+			if compoundHasTest(o) {
+				// End is the conservative ordering point: a change that happened while the
+				// compound was running may or may not precede its test command.
+				add(o.End, "ambiguous_test", o, "", "", false, false)
 			}
 		}
 	}
 	sort.SliceStable(all, func(a, b int) bool { return all[a].Start < all[b].Start })
+	sort.SliceStable(events, func(a, b int) bool {
+		return events[a].at < events[b].at || events[a].at == events[b].at && events[a].seq < events[b].seq
+	})
 	var verified *model.Operation
 	verifiedBy := ""
+	var verifiedAt int64
 	var verifiedKinds []string
 	var lastVerdict *model.Operation
+	lastVerdictFailed := false
 	// the window since the last change, read at each push: tests in it and the last one's verdict
 	testsSinceChange, lastTestSinceChangeFailed := 0, false
 	changesSinceLastPush := 0
-	for _, o := range all {
-		if classify.IsChangeOp(o.Phase, o.Kind) {
-			d.Changes++
-			if d.FirstChangeAt == 0 {
-				d.FirstChangeAt = o.Start
-			}
-			d.LastChangeAt, d.LastChangeOp, d.LastChangeLane = o.Start, o.ID, laneIndex[o.Lane]
-			verified, verifiedBy, verifiedKinds = nil, "", nil // a later change invalidates the verification seen so far
-			testsSinceChange, lastTestSinceChangeFailed = 0, false
-			changesSinceLastPush++
-			continue
+	ambiguousTest := false
+	recordTest := func(o *model.Operation, kind, by string, at int64, failed, passed bool) {
+		d.Tests++
+		testsSinceChange++
+		lastTestSinceChangeFailed = failed
+		if failed {
+			d.TestsFailed++
 		}
-		if o.Phase == classify.Test {
-			d.Tests++
-			testsSinceChange++
-			lastTestSinceChangeFailed = o.Failure()
-			if lastTestSinceChangeFailed {
-				d.TestsFailed++
-			}
-			lastVerdict = o
+		lastVerdict = o
+		lastVerdictFailed = failed
+		if !passed {
+			return
 		}
-		if isHookOp(o) {
-			d.HookOps++
+		ambiguousTest = false
+		if verified == nil {
+			verified, verifiedBy, verifiedAt = o, by, at
 		}
-		if by, ok := verificationOp(o); ok {
-			if verified == nil {
-				verified, verifiedBy = o, by
-			}
-			verifiedKinds = appendDistinct(verifiedKinds, verificationKind(o, by))
+		verifiedKinds = appendDistinct(verifiedKinds, strings.TrimPrefix(classify.BaseKind(kind), "script→"))
+	}
+	recordPush := func(o *model.Operation, at int64) {
+		if d.Changes == 0 {
+			return
 		}
-		if isPushOp(o) && d.Changes > 0 {
-			d.Pushes = append(d.Pushes, PushFacts{Lane: laneIndex[o.Lane], Op: o.ID, Start: o.Start, LastChangeAt: d.LastChangeAt, Verified: verified != nil, Tests: testsSinceChange, LastTestFailed: lastTestSinceChangeFailed, BlindMs: blindMs(root, d.LastChangeAt, o.Start)})
-			changesSinceLastPush = 0
+		d.Pushes = append(d.Pushes, PushFacts{Lane: laneIndex[o.Lane], Op: o.ID, Start: at, LastChangeAt: d.LastChangeAt, Verified: verified != nil, Tests: testsSinceChange, LastTestFailed: lastTestSinceChangeFailed, BlindMs: blindMs(root, d.LastChangeAt, at), AmbiguousTest: ambiguousTest && verified == nil})
+		changesSinceLastPush = 0
+	}
+	recordChange := func(o *model.Operation, at int64) {
+		if d.Changes == 0 {
+			d.FirstChangeAt = at
+		}
+		d.Changes++
+		d.LastChangeAt, d.LastChangeOp, d.LastChangeLane = at, o.ID, laneIndex[o.Lane]
+		verified, verifiedBy, verifiedAt, verifiedKinds = nil, "", 0, nil
+		testsSinceChange, lastTestSinceChangeFailed = 0, false
+		ambiguousTest = false
+		changesSinceLastPush++
+	}
+	for _, e := range events {
+		switch e.event {
+		case "change":
+			recordChange(e.op, e.at)
+		case "test":
+			recordTest(e.op, e.kind, e.by, e.at, e.failed, e.passed)
+		case "ambiguous_test":
+			ambiguousTest = true
+		case "push":
+			recordPush(e.op, e.at)
 		}
 	}
 	if len(d.Pushes) > 0 {
 		d.ChangesAfterLastPush = changesSinceLastPush
 	}
 	if d.Changes > 0 && verified != nil {
-		d.Verified, d.VerifiedAt, d.VerifiedOp, d.VerifiedBy, d.VerifiedKinds = true, verified.Start, verified.ID, verifiedBy, verifiedKinds
+		d.Verified, d.VerifiedAt, d.VerifiedOp, d.VerifiedBy, d.VerifiedKinds = true, verifiedAt, verified.ID, verifiedBy, verifiedKinds
 	}
+	d.AmbiguousTestAfterLastChange = d.Changes > 0 && ambiguousTest && verified == nil
 	if lastVerdict != nil {
-		d.LastVerdictOp, d.LastVerdictFailed = lastVerdict.ID, lastVerdict.Failure()
+		d.LastVerdictOp, d.LastVerdictFailed = lastVerdict.ID, lastVerdictFailed
 	}
 	for _, l := range s.Lanes {
 		for _, t := range l.Turns {
@@ -233,7 +316,7 @@ func deliveryFacts(s *model.Session, laneIndex map[string]int) DeliveryFacts {
 	}
 	if d.ReviewedAt > 0 {
 		for _, o := range all {
-			if classify.IsChangeOp(o.Phase, o.Kind) && o.Start > d.ReviewedAt {
+			if at, changed := changeAt(o); changed && at > d.ReviewedAt {
 				d.ChangesAfterReview++
 			}
 		}
@@ -246,8 +329,16 @@ func deliveryFacts(s *model.Session, laneIndex map[string]int) DeliveryFacts {
 		for turn, w := range windows {
 			d.EditTurns++
 			ok := false
+			ambiguous := false
 			for _, o := range l.Ops {
-				if o.Turn != turn || o.Start < w.last {
+				if o.Turn != turn {
+					continue
+				}
+				if len(o.Shares) > 0 && compoundHasTest(o) && o.End > w.last {
+					ambiguous = true
+					continue
+				}
+				if o.Start < w.last {
 					continue
 				}
 				if _, isVerification := verificationOp(o); isVerification {
@@ -255,7 +346,9 @@ func deliveryFacts(s *model.Session, laneIndex map[string]int) DeliveryFacts {
 					break
 				}
 			}
-			if !ok {
+			if !ok && ambiguous {
+				d.EditTurnsAmbiguous++
+			} else if !ok {
 				d.EditTurnsUnverified++
 			}
 			if l == root {
@@ -292,7 +385,7 @@ func windowRecovery(s *model.Session, l *model.Lane, group string, from, to int6
 	inside := func(o *model.Operation) bool { return !o.Background && o.Start >= from && o.Start < to }
 	for _, lane := range s.Lanes {
 		for _, o := range lane.Ops {
-			if inside(o) && classify.IsChangeOp(o.Phase, o.Kind) {
+			if inside(o) && isChangeOp(o) {
 				kinds["fix"] = true
 			}
 		}
@@ -302,7 +395,7 @@ func windowRecovery(s *model.Session, l *model.Lane, group string, from, to int6
 			continue // this group's own attempts are the window's ends, never a step inside it
 		}
 		switch {
-		case classify.IsChangeOp(o.Phase, o.Kind): // counted above, on every lane
+		case isChangeOp(o): // counted above, on every lane
 		case o.Phase == classify.Infra:
 			kinds["infra"] = true
 		case o.Phase == classify.WaitWorker:

@@ -49,7 +49,8 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
   (`index.html`, `app.js` timeline/breakdown/inspector, `app.css`, `filter.js` the period +
   project + host + source filter shared by the session list and the Insights report (and the
   host chip of a remote row), `settings.js` the folders and the Servers section, `markdown.js` the
-  renderer of recorded messages (a GFM subset, escapes everything, web links only) and the Show
+  renderer of recorded messages (a GFM subset, escapes everything, web links only), `model.js`
+  the remote-safe view-model normalization/indexes, and the Show
   raw switch, `grain.js` the surface grain rasterized for a dense screen, `build.js` the reload onto a new
   server build, and `SOURCES` — the source names and marks); `cmd/todobem/app_test.js` — its
   regressions (`node --test`, no dependencies).
@@ -108,7 +109,7 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
   goes through: settings, cache entries and sidecars, the agents file, the snapshots.
 - `internal/auth/` — the lite authentication: key file (0600, refused when group/world-readable,
   re-read on change so `todobem token -revoke` kills every session live), 52-char one-time tokens
-  (5-minute window, single use, refused when minted before the server booted), stateless
+  (5-minute window, single use, refused when minted before the server's boot second), stateless
   HMAC-signed sessions; token and session MACs are domain-separated; a staged key
   (`<key>.next`, `StageKey`) is accepted next to the current one and promoted by the first
   session verified under it (the agent's two-phase rotation). `todobem token` lives in

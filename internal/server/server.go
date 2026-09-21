@@ -135,6 +135,9 @@ func (s *Server) Handler(listenAddr ...string) http.Handler {
 	static := http.FileServer(http.FS(s.web))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
+		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+			http.SetCookie(w, &http.Cookie{Name: buildCookie, Value: s.build, Path: "/", SameSite: http.SameSiteStrictMode})
+		}
 		static.ServeHTTP(w, r)
 	})
 	configuredHost := ""

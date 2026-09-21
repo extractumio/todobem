@@ -38,7 +38,10 @@ func detectUnverifiedChanges(f *Facts) Result {
 	if d.BlindAfterLastChangeMs > 0 {
 		return Result{Reason: "an unknown command or a telemetry gap after the last edit"}
 	}
-	r := Result{Measurable: true, Key: sourceLabel(f.Source), Stats: map[string]int64{"edit_turns": int64(d.EditTurns), "edit_turns_unverified": int64(d.EditTurnsUnverified), "tests": int64(d.Tests), "tests_failed": int64(d.TestsFailed)}}
+	if d.AmbiguousTestAfterLastChange {
+		return Result{Reason: "a compound command had a test step but no execution trace or per-step verdict"}
+	}
+	r := Result{Measurable: true, Key: sourceLabel(f.Source), Stats: map[string]int64{"edit_turns": int64(d.EditTurns), "edit_turns_unverified": int64(d.EditTurnsUnverified), "edit_turns_ambiguous": int64(d.EditTurnsAmbiguous), "tests": int64(d.Tests), "tests_failed": int64(d.TestsFailed)}}
 	if d.LastVerdictFailed {
 		r.Stats["last_verdict_failed"]++
 	}
@@ -61,7 +64,7 @@ func detectUnverifiedChanges(f *Facts) Result {
 	note := "no test ran in this session"
 	switch {
 	case d.Tests > 0 && d.LastVerdictFailed:
-		note = "the last test after the last edit failed"
+		note = "the last recorded test failed; no passing test ran after the last edit"
 	case d.Tests > 0:
 		note = "the last test ran before the last edit"
 	}
@@ -141,7 +144,7 @@ func detectPushWithoutTest(f *Facts) Result {
 		r.Stats["edits_after_last_push"] += int64(d.ChangesAfterLastPush)
 	}
 	for _, p := range d.Pushes {
-		if p.BlindMs > 0 {
+		if p.BlindMs > 0 || p.AmbiguousTest {
 			r.NoData++
 			continue
 		}
@@ -162,7 +165,7 @@ func detectPushWithoutTest(f *Facts) Result {
 		r.Findings = append(r.Findings, Finding{Lane: f.lanePath(p.Lane), LaneID: f.laneID(p.Lane), A: p.LastChangeAt, B: p.Start, Op: p.Op, Key: key, Note: note})
 	}
 	if !r.Measurable {
-		return Result{NotApplicable: false, NoData: r.NoData, Reason: "an unknown command or a telemetry gap between the last edit and the push", Stats: r.Stats}
+		return Result{NotApplicable: false, NoData: r.NoData, Reason: "unknown telemetry or an ambiguous compound test between the last edit and the push", Stats: r.Stats}
 	}
 	return r
 }

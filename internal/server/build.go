@@ -12,6 +12,10 @@ import (
 // a deploy replaces the binary under an open tab, and the tab follows without a manual reload.
 const BuildHeader = "X-Todobem-Build"
 
+// buildCookie lets the scripts identify the build of the HTML document itself. Without it, the
+// first API answer after a deploy could make an old document accept a new server as its own.
+const buildCookie = "todobem-page-build"
+
 // webFingerprint hashes the embedded web tree (every path and its bytes, in path order) into a
 // short id: the same files give the same id across restarts, one changed byte a different one.
 // A server without a UI (`todobem unknown`, `cache`) has no build id.

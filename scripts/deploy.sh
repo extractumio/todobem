@@ -34,6 +34,10 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 BINARY=${BINARY:-todobem}
+case "$BINARY" in
+  /*) BIN=$BINARY ;;
+  *) BIN_DIR=$(CDPATH= cd -- "$(dirname -- "$BINARY")" && pwd); BIN=$BIN_DIR/$(basename -- "$BINARY") ;;
+esac
 AGENT=${AGENT:-}
 if [ -n "$AGENT" ]; then ADDR=${ADDR:-:7789}; PIDFILE=${PIDFILE:-$ROOT/todobem-agent.pid}; LOGFILE=${LOGFILE:-$ROOT/todobem-agent.out}; fi
 ADDR=${ADDR:-127.0.0.1:7788}
@@ -45,6 +49,7 @@ PIDFILE=${PIDFILE:-$ROOT/todobem.pid}
 LOGFILE=${LOGFILE:-$ROOT/todobem.out}
 CMD=${1:-start}
 [ $# -gt 0 ] && shift || true
+[ "${1:-}" = "--" ] && shift || true
 
 need_go() {
   command -v go >/dev/null 2>&1 || { echo "error: Go toolchain not found. Install Go 1.22+ (https://go.dev/dl) and re-run." >&2; exit 1; }
@@ -52,31 +57,71 @@ need_go() {
 
 port=${ADDR##*:}
 cmdline() { ps -o command= -p "$1" 2>/dev/null; }
-# is_todobem: the process's command word is a todobem binary (`todobem`, `./todobem`,
-# `.../exe/todobem` under go run, `todobem-preview`) — not any command line that merely
-# mentions the name, such as an ssh tunnel to a host alias containing it
-is_todobem() { case "$(cmdline "$1")" in todobem*|*/todobem*) return 0 ;; esac; return 1; }
-# listener prints the pid listening on ADDR's port (none → nothing)
-listener() { lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | head -n 1; }
+proc_cwd() { lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1; }
+# is_binary identifies exactly the executable this deployment manages. is_todobem is broader
+# for the stray report: it also recognizes the conventional binary names.
+is_binary() {
+  line=$(cmdline "$1") || return 1
+  first=${line%% *}
+  case "$first" in
+    /*) actual=$first ;;
+    *) cwd=$(proc_cwd "$1"); actual=$cwd/${first#./} ;;
+  esac
+  [ "$actual" = "$BIN" ] && return 0
+  # `go run ./cmd/todobem` uses a temporary executable but keeps the repository cwd. Preserve
+  # hand-start adoption for the default binary without weakening custom BINARY matching.
+  [ "$BIN" = "$ROOT/todobem" ] && [ "${first##*/}" = todobem ] && [ "$(proc_cwd "$1")" = "$ROOT" ]
+}
+is_todobem() {
+  line=$(cmdline "$1") || return 1
+  first=${line%% *}
+  base=${first##*/}
+  if [ "$base" = "${BIN##*/}" ]; then return 0; fi
+  case "$base" in todobem|todobem-*) return 0 ;; esac
+  return 1
+}
+# is_instance also checks this invocation's address and mode. A shared or stale pidfile must
+# never let a custom ADDR adopt (and later stop) a different todobem process.
+is_instance() {
+  line=$(cmdline "$1") || return 1
+  is_binary "$1" || return 1
+  case " $line " in
+    *" -addr $ADDR "*|*" -addr=$ADDR "*) : ;;
+    *)
+      [ -z "$AGENT" ] && [ "$ADDR" = 127.0.0.1:7788 ] || return 1
+      case " $line " in *" -addr "*|*" -addr="*) return 1 ;; esac
+      ;;
+  esac
+  if [ -n "$AGENT" ]; then case " $line " in *" -agent "*) : ;; *) return 1 ;; esac
+  else case " $line " in *" -agent "*) return 1 ;; esac
+  fi
+}
+listeners() { lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | sort -u; }
+# listener prints the matching todobem pid on ADDR's port (none → nothing).
+listener() {
+  for candidate in $(listeners); do
+    if is_instance "$candidate"; then echo "$candidate"; return; fi
+  done
+}
 # running: the pidfile's process when it is still a todobem, else the todobem on the port,
 # adopted into the pidfile. Anything else on the port is not ours: `busy` names it.
 running() {
   pid=$(cat "$PIDFILE" 2>/dev/null || true)
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && is_todobem "$pid"; then return 0; fi
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && is_instance "$pid"; then return 0; fi
   rm -f "$PIDFILE"
   pid=$(listener)
   [ -n "$pid" ] || return 1
   if is_todobem "$pid"; then echo "$pid" >"$PIDFILE"; return 0; fi
   return 1
 }
-busy() { pid=$(listener); [ -n "$pid" ] && echo "$pid $(cmdline "$pid")"; }
+busy() { pid=$(listeners | head -n 1); [ -n "$pid" ] && echo "$pid $(cmdline "$pid")"; }
 # strays: every other todobem server listening on this machine — a preview left on another
 # port, say. Listed, never stopped: an instance pinned to a test folder is legitimate. Nothing
 # started for a task may outlive it; this is where a leftover shows up.
 strays() {
   mine=$(cat "$PIDFILE" 2>/dev/null || echo 0)
-  lsof -nP -iTCP -sTCP:LISTEN -a -c todobem 2>/dev/null | awk -v mine="$mine" 'NR > 1 && $2 != mine { print $2, $9 }' | sort -u | while read -r pid addr; do
-    echo "  other todobem server: pid $pid on $addr  $(cmdline "$pid")"
+  lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk -v mine="$mine" 'NR > 1 && $2 != mine { print $2, $9 }' | sort -u | while read -r other_pid addr; do
+    if is_todobem "$other_pid"; then echo "  other todobem server: pid $other_pid on $addr  $(cmdline "$other_pid")"; fi
   done
 }
 
@@ -93,7 +138,7 @@ stop() {
   rm -f "$PIDFILE"
 }
 
-build() { need_go; echo "building $BINARY"; go build -o "$BINARY" ./cmd/todobem; }
+build() { need_go; echo "building $BIN"; go build -o "$BIN" ./cmd/todobem; }
 
 # launch runs todobem with this run's arguments — the mode and the address, the caller's extra
 # flags, then the folders, rules and auth the environment names — in the foreground (fg: exec)
@@ -107,12 +152,12 @@ launch() {
   [ -n "$AUTH" ] && [ -z "$AGENT" ] && set -- "$@" -auth "$AUTH"
   case "$how" in
     fg)
-      echo "running in foreground: ./$BINARY $*"
-      if [ -n "$AGENT" ]; then echo "pairing string: run  ./$BINARY agent pair  in another terminal"; else echo "login link: run  ./$BINARY token  in another terminal"; fi
-      exec "./$BINARY" "$@" ;;
+      echo "running in foreground: $BIN $*"
+      if [ -n "$AGENT" ]; then echo "pairing string: run  $BIN agent pair  in another terminal"; else echo "login link: run  $BIN token  in another terminal"; fi
+      exec "$BIN" "$@" ;;
     bg)
       : >"$LOGFILE"; chmod 600 "$LOGFILE"   # the log names sessions; keep it to this user
-      nohup "./$BINARY" "$@" >>"$LOGFILE" 2>&1 &
+      nohup "$BIN" "$@" >>"$LOGFILE" 2>&1 &
       echo $! >"$PIDFILE" ;;
   esac
 }
@@ -134,11 +179,24 @@ url_hint() {
 
 # login_hint prints a one-time login link to THIS terminal only — never into the log file.
 login_hint() {
-  if [ -n "$AGENT" ]; then "./$BINARY" agent pair -port "${ADDR##*:}" || echo "could not mint a pairing string; run: ./$BINARY agent pair" >&2; return; fi
+  if [ -n "$AGENT" ]; then
+    agent_key=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -agent-key) shift; [ $# -gt 0 ] && agent_key=$1 ;;
+        -agent-key=*) agent_key=${1#-agent-key=} ;;
+      esac
+      [ $# -gt 0 ] && shift || true
+    done
+    set -- agent pair -port "${ADDR##*:}"
+    [ -n "$agent_key" ] && set -- "$@" -key "$agent_key"
+    "$BIN" "$@" || echo "could not mint a pairing string; run: $BIN agent pair" >&2
+    return
+  fi
   if [ "$AUTH" = off ]; then echo "auth: OFF"; return; fi
   set -- -addr "$ADDR"
   [ -n "$AUTH" ] && set -- "$@" -auth "$AUTH"
-  "./$BINARY" token "$@" || echo "could not mint a login token; run: ./$BINARY token" >&2
+  "$BIN" token "$@" || echo "could not mint a login token; run: $BIN token" >&2
 }
 
 case "$CMD" in
@@ -157,6 +215,6 @@ case "$CMD" in
     if other=$(busy); then echo "error: $ADDR is taken by another program: $other" >&2; exit 1; fi
     launch bg "$@"
     sleep 1
-    if running; then url_hint; login_hint; echo "logs: $LOGFILE  stop: ./scripts/deploy.sh stop"; strays; else echo "failed to start; see $LOGFILE" >&2; tail -n 20 "$LOGFILE" >&2 || true; exit 1; fi ;;
+    if running; then url_hint; login_hint "$@"; echo "logs: $LOGFILE  stop: ./scripts/deploy.sh stop"; strays; else echo "failed to start; see $LOGFILE" >&2; tail -n 20 "$LOGFILE" >&2 || true; exit 1; fi ;;
   *) echo "usage: $0 [start|run|stop|status] [-- extra todobem flags]" >&2; exit 2 ;;
 esac

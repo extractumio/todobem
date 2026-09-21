@@ -148,7 +148,7 @@ unwrap:
 var reScriptVariant = regexp.MustCompile(`^(build|test)(?:[:_-]\S*)?$|^(tests)$`)
 
 // npmFields strips the option prefix of npm / pnpm / yarn so the subcommand is the second
-// field: [--prefix DIR | -C DIR | -w PKG | --workspace PKG | --filter G] <sub> → <tool> <sub>.
+// field: [--prefix DIR | --cwd DIR | -C DIR | -w PKG | --workspace PKG | --filter G] <sub> → <tool> <sub>.
 func npmFields(fields []string) []string {
 	base := fields[0]
 	if i := strings.LastIndex(base, "/"); i >= 0 {
@@ -160,9 +160,9 @@ func npmFields(fields []string) []string {
 	rest := fields[1:]
 	for len(rest) > 0 {
 		switch {
-		case (rest[0] == "--prefix" || rest[0] == "-C" || rest[0] == "-w" || rest[0] == "--workspace" || rest[0] == "--filter" || rest[0] == "-F") && len(rest) > 1:
+		case (rest[0] == "--prefix" || rest[0] == "--cwd" || rest[0] == "-C" || rest[0] == "-w" || rest[0] == "--workspace" || rest[0] == "--filter" || rest[0] == "-F") && len(rest) > 1:
 			rest = rest[2:]
-		case strings.HasPrefix(rest[0], "--prefix=") || strings.HasPrefix(rest[0], "--workspace=") || strings.HasPrefix(rest[0], "--filter=") || rest[0] == "--silent" || rest[0] == "-s" || rest[0] == "--no-audit" || rest[0] == "--no-fund":
+		case strings.HasPrefix(rest[0], "--prefix=") || strings.HasPrefix(rest[0], "--cwd=") || strings.HasPrefix(rest[0], "--workspace=") || strings.HasPrefix(rest[0], "--filter=") || rest[0] == "--silent" || rest[0] == "-s" || rest[0] == "--no-audit" || rest[0] == "--no-fund":
 			rest = rest[1:]
 		default:
 			return append([]string{base}, rest...)

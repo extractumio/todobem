@@ -69,6 +69,11 @@ func TestCommand(t *testing.T) {
 		{"bash -o pipefail -c 'git push origin main'", Release, "git push"},
 		{"some-unknown-binary --flag", Unknown, "unknown"},
 		{"rm -rf build/", Infra, "cleanup"},
+		{"rm -fr build/", Infra, "cleanup"},
+		{"rm -fR build/", Infra, "cleanup"},
+		{"yarn --cwd web test", Test, "yarn test"},
+		{"python3 check_tests", Test, "test-script"},
+		{"printf x |& rg x", Code, "search"},
 		{"for f in a b; do echo $f; done", Code, "shell"},
 		// GitLab (glab): reads are code (like gh api); MR lifecycle writes are release.
 		{"glab api 'projects/2151/pipelines/496613/jobs?per_page=100'", Code, "glab api"},

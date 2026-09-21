@@ -148,7 +148,7 @@ flags shared: -agents PATH   the agents file (default ~/.todobem/agents.json or 
 		}
 		if *revoke {
 			c := fleet.NewClient(a.Addr, a.Pin, a.Bearer)
-			_, err := c.Rotate()
+			_, err := fleet.Revoke(*path, a, c)
 			c.Close()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%s: revoke: %v (not removed)\n", a.Name, err)

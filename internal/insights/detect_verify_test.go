@@ -191,6 +191,14 @@ func TestPushWithoutTest(t *testing.T) {
 	if r = detectPushWithoutTest(&f); r.Measurable || r.NotApplicable || r.NoData != 1 || r.Reason == "" {
 		t.Fatalf("D25 blind: %+v", r)
 	}
+	// edit → failed compound containing a test → push: the compound has no per-share verdict,
+	// so the push window is no data rather than an unsupported "no test passed" finding.
+	ambiguous := op("a1", "R", classify.Release, "git push", 2*minute, 3*minute, "failed")
+	ambiguous.Shares = []model.Share{{Phase: classify.Test, Kind: "go test", Ms: 30e3}, {Phase: classify.Release, Kind: "git push", Ms: 30e3}}
+	f = Extract(session(t, rootLane(edit("e1", 1*minute), ambiguous, push("p1", 4*minute))))
+	if r = detectPushWithoutTest(&f); r.Measurable || r.NotApplicable || r.NoData != 1 || len(r.Findings) != 0 {
+		t.Fatalf("D25 ambiguous compound: %+v", r)
+	}
 	// no push after a change: not applicable
 	f = Extract(session(t, rootLane(push("p0", 30e3), edit("e1", 1*minute))))
 	if r = detectPushWithoutTest(&f); !r.NotApplicable {

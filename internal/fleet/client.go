@@ -3,6 +3,7 @@ package fleet
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,8 @@ import (
 type Client struct {
 	addr string
 	http *http.Client
+	ctx  context.Context
+	stop context.CancelFunc
 	mu   sync.Mutex
 	bear string
 }
@@ -37,11 +40,13 @@ var errNotModified = errors.New("not modified")
 const (
 	shortTimeout = 30 * time.Second
 	longTimeout  = 5 * time.Minute
+	maxModelBody = int64(256 << 20)
 )
 
 // NewClient dials addr, trusting exactly the certificate with that pin.
 func NewClient(addr, pin, bearer string) *Client {
-	return &Client{addr: addr, bear: bearer, http: &http.Client{Transport: PinnedTransport(pin)}}
+	ctx, stop := context.WithCancel(context.Background())
+	return &Client{addr: addr, bear: bearer, ctx: ctx, stop: stop, http: &http.Client{Transport: PinnedTransport(pin)}}
 }
 
 // SetBearer replaces the credential (after a rotation).
@@ -59,6 +64,7 @@ func (c *Client) bearer() string {
 
 // Close drops the idle connections.
 func (c *Client) Close() {
+	c.stop()
 	if t, ok := c.http.Transport.(*http.Transport); ok {
 		t.CloseIdleConnections()
 	}
@@ -80,7 +86,7 @@ func (c *Client) do(method, route string, q url.Values, body any, etag string, t
 	if len(q) > 0 {
 		u += "?" + q.Encode()
 	}
-	req, err := http.NewRequest(method, u, rd)
+	req, err := http.NewRequestWithContext(c.ctx, method, u, rd)
 	if err != nil {
 		return nil, err
 	}
@@ -205,12 +211,20 @@ func (c *Client) Model(uuid, etag string, refresh bool) (file []byte, notModifie
 	}
 	// the file is gzip itself: served with Content-Encoding gzip and read raw
 	defer resp.Body.Close()
+	file, err = readLimited(resp.Body, resp.ContentLength, maxModelBody)
+	return file, false, err
+}
+
+func readLimited(r io.Reader, size, limit int64) ([]byte, error) {
 	var buf bytes.Buffer
-	if resp.ContentLength > 0 {
-		buf.Grow(int(resp.ContentLength))
+	if size > 0 && size <= limit {
+		buf.Grow(int(size))
 	}
-	_, err = buf.ReadFrom(io.LimitReader(resp.Body, 256<<20))
-	return buf.Bytes(), false, err
+	_, err := buf.ReadFrom(io.LimitReader(r, limit+1))
+	if err == nil && int64(buf.Len()) > limit {
+		return nil, fmt.Errorf("agent model exceeds %d compressed bytes", limit)
+	}
+	return buf.Bytes(), err
 }
 
 // Version is the Follow-mode poll, passed through as the agent answered it.

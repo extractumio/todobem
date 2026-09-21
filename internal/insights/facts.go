@@ -24,8 +24,10 @@ import (
 // 11: the llm_error points dropped with the D14 card. 12: the delivery walk's pushes (D25), what
 // verified the session by kind, failed test runs and stop hooks run; retry windows session-scoped
 // with the retry op and the "other" recovery. 13: the tool-call mix per slice (a compound
-// command's shares land in their categories) with the shared calls and time apart.
-const FactsVersion = 13
+// command's shares land in their categories) with the shared calls and time apart. 14: delivery
+// facts count test-running hooks and ordered compound change, test and push shares. 15: failed
+// compounds leave their per-share test verdict explicitly ambiguous.
+const FactsVersion = 16
 
 // Facts is everything the detectors need about one session, in a few KB.
 type Facts struct {
@@ -317,8 +319,12 @@ func Extract(s *model.Session) Facts {
 			if (isVerdictPhase(o.Phase) || isHookOp(o)) && !o.Background && o.End > o.Start {
 				f.LongOps = append(f.LongOps, opFacts(i, o))
 			}
-			if o.Phase == classify.Unknown && !o.Background && o.End > o.Start {
-				f.UnknownOps = append(f.UnknownOps, opFacts(i, o))
+			if !o.Background && o.End > o.Start {
+				if len(o.Shares) == 0 && o.Phase == classify.Unknown {
+					f.UnknownOps = append(f.UnknownOps, opFacts(i, o))
+				} else {
+					f.UnknownOps = append(f.UnknownOps, unknownShareFacts(i, o)...)
+				}
 			}
 		}
 	}
@@ -390,7 +396,7 @@ func toolCallFacts(root *model.Lane) []ToolCallFacts {
 			t.Failed++
 		}
 		for _, sh := range o.Shares {
-			if sh.Phase != o.Phase && !sh.Literal {
+			if !sh.Literal && (sh.Phase != o.Phase || sh.Sub != o.Subgroup) {
 				get(sh.Phase, sh.Sub).Shared++
 			}
 		}
@@ -749,6 +755,24 @@ func opFacts(lane int, o *model.Operation) OpFacts {
 		of.Shape = Shape(o.Phase, "\n"+o.Title)
 	}
 	return of
+}
+
+func unknownShareFacts(lane int, o *model.Operation) []OpFacts {
+	var out []OpFacts
+	at := o.Start
+	for _, sh := range o.Shares {
+		end := at + sh.Ms
+		if sh.Phase == classify.Unknown && end > at {
+			title := sh.Segment
+			out = append(out, OpFacts{
+				Lane: lane, ID: o.ID, Phase: classify.Unknown, Sub: sh.Sub,
+				Kind: unknownHead(title), Shape: Shape(classify.Unknown, "\n"+title), Title: title,
+				Start: at, End: end, Status: o.Status, Exit: o.Exit, Turn: o.Turn,
+			})
+		}
+		at = end
+	}
+	return out
 }
 
 func unknownHeads(s *model.Session) []HeadFacts {

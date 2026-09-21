@@ -190,7 +190,12 @@ func runAgent(addr, keyPath string, homes sessionHomes, cache string) int {
 		log.Printf("agent: %v", err)
 		return 1
 	}
-	hs := &http.Server{Handler: handler, TLSConfig: fleet.ServerTLS(cert), ReadHeaderTimeout: 10 * time.Second}
+	hs := &http.Server{
+		Handler:           handler,
+		TLSConfig:         fleet.ServerTLS(cert),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+	}
 	if err := hs.ServeTLS(ln, "", ""); err != nil {
 		log.Printf("agent: %v", err)
 		return 1

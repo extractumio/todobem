@@ -100,6 +100,31 @@ func TestRunsUnseenAndModelDetectors(t *testing.T) {
 	if r16.Stats["calls_code:edit"] != 1 || r16.Stats["failed_code:edit"] != 1 || r16.Stats["misses_code:edit"] != 0 {
 		t.Fatalf("D16 stats %v", r16.Stats)
 	}
+	compound := op("c1", "R", classify.Code, "shell", 1*minute, 1*minute+2000, "completed")
+	compound.Subgroup = "shell"
+	compound.Shares = []model.Share{{Phase: classify.Code, Kind: "rg", Sub: "search", Ms: 1000}, {Phase: classify.Code, Kind: "shell", Sub: "shell", Ms: 1000}}
+	sharedRoot := rootLane(compound)
+	sharedRoot.Segments = []model.Segment{{Start: 1 * minute, End: 1*minute + 1000, Phase: classify.Code, Sub: "search", Op: "c1", Shared: true}, {Start: 1*minute + 1000, End: 1*minute + 2000, Phase: classify.Code, Sub: "shell", Op: "c1", Shared: true}}
+	sharedFacts := Extract(session(t, sharedRoot))
+	shared := detectToolCalls(&sharedFacts)
+	sharedNote := ""
+	for _, finding := range shared.Findings {
+		if finding.Key == "code:search" {
+			sharedNote = finding.Note
+		}
+	}
+	if shared.Stats["shared_ms_code:search"] != 1000 || !strings.Contains(sharedNote, "compound") {
+		t.Fatalf("D16 same-phase subgroup share: %+v %+v", shared.Findings, shared.Stats)
+	}
+	compound = op("c2", "R", classify.Test, "go test", 2*minute, 2*minute+2000, "completed")
+	compound.Shares = []model.Share{{Phase: classify.Test, Kind: "go test", Ms: 1000}, {Phase: classify.Unknown, Kind: "unknown", Segment: "mystery-command --check", Sub: "command", Ms: 1000}}
+	unknownRoot := rootLane(compound)
+	unknownRoot.Segments = []model.Segment{{Start: 2 * minute, End: 2*minute + 1000, Phase: classify.Test, Op: "c2", Shared: true}, {Start: 2*minute + 1000, End: 2*minute + 2000, Phase: classify.Unknown, Sub: "command", Op: "c2", Shared: true}}
+	unknownFacts := Extract(session(t, unknownRoot))
+	unknown := detectUnknown(&unknownFacts)
+	if len(unknown.Findings) != 1 || unknown.Findings[0].Key != "mystery-command" || unknown.Findings[0].TimeMs != 1000 {
+		t.Fatalf("D13 compound evidence: %+v", unknown.Findings)
+	}
 	if r := detectUnknown(&f); r.Stats["unknown_command_ms"] != 2*minute || r.Stats["unknown_script_ms"] != 0 {
 		t.Fatalf("D13 subgroup stats %v", r.Stats)
 	}

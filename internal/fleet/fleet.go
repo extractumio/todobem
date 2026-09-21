@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -27,15 +28,19 @@ type Fleet struct {
 	facts FactsSink
 
 	mu      sync.Mutex
+	control sync.Mutex // serializes durable add/remove/rotate operations with Stop
+	reload  sync.Mutex
 	members map[string]*member
 	fileMod time.Time
 	touched time.Time // the last request a browser made for the list or a report
 	stop    chan struct{}
 	started bool
+	stopped bool
 }
 
-// FactsSink receives the facts of one remote session under its hub id and cache key.
-type FactsSink func(id string, f insights.Facts, fp store.Fingerprint)
+// FactsSink receives the facts of one remote session under its hub id and cache key. It reports
+// whether they reached durable storage; only durable facts are acknowledged in the snapshot.
+type FactsSink func(id string, f insights.Facts, fp store.Fingerprint) bool
 
 // AgentError is a request the agent did not answer well: unreachable, a refused bearer, an
 // error status. The server answers it as a bad gateway, not as an unknown session.
@@ -60,17 +65,20 @@ const (
 )
 
 type member struct {
-	f      *Fleet
-	agent  Agent
-	client *Client
-	kick   chan struct{}
-	stop   chan struct{}
+	f       *Fleet
+	kick    chan struct{}
+	stop    chan struct{}
+	done    chan struct{}
+	stopper sync.Once
+	pollMu  sync.Mutex
 
-	mu   sync.Mutex
-	snap Snapshot
-	rows map[string]model.SessionSummary // by the agent's own id
-	want map[string]int64                // uuid → not before (ms): facts wanted
-	seen map[string]string               // uuid → the version the last Follow-mode poll answered
+	mu     sync.Mutex
+	agent  Agent   // guarded by mu; Name never changes
+	client *Client // guarded by mu; endpoint changes are serialized with pollMu
+	snap   Snapshot
+	rows   map[string]model.SessionSummary // by the agent's own id
+	want   map[string]int64                // uuid → not before (ms): facts wanted
+	seen   map[string]string               // uuid → the version the last Follow-mode poll answered
 }
 
 // New prepares a fleet over the agents file at path and snapshots under dir. Nothing is read or
@@ -96,6 +104,9 @@ func (f *Fleet) Start() error {
 	f.started = true
 	f.mu.Unlock()
 	if err := f.Reload(); err != nil {
+		f.mu.Lock()
+		f.started = false
+		f.mu.Unlock()
 		return err
 	}
 	go f.watch()
@@ -104,17 +115,27 @@ func (f *Fleet) Start() error {
 
 // Stop ends every poller (tests).
 func (f *Fleet) Stop() {
+	f.control.Lock()
+	defer f.control.Unlock()
+	f.reload.Lock()
+	defer f.reload.Unlock()
+
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	if f.stopped {
+		f.mu.Unlock()
+		return
+	}
+	f.stopped = true
 	select {
 	case <-f.stop:
 	default:
 		close(f.stop)
 	}
-	for name, m := range f.members {
-		close(m.stop)
-		m.client.Close()
-		delete(f.members, name)
+	members := f.membersLocked()
+	f.members = map[string]*member{}
+	f.mu.Unlock()
+	for _, m := range members {
+		m.stopAndWait()
 	}
 }
 
@@ -142,6 +163,8 @@ func (f *Fleet) watch() {
 // Reload re-reads the agents file: new agents start polling, removed ones stop, a changed
 // bearer or address takes effect in place (the snapshot stays).
 func (f *Fleet) Reload() error {
+	f.reload.Lock()
+	defer f.reload.Unlock()
 	agents, mod, err := LoadAgents(f.path)
 	if err != nil {
 		return err
@@ -163,22 +186,25 @@ func (f *Fleet) Reload() error {
 		fresh[name] = snap
 	}
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	if f.stopped {
+		f.mu.Unlock()
+		return nil
+	}
 	f.fileMod = mod
 	seen := map[string]bool{}
+	type update struct {
+		m *member
+		a Agent
+	}
+	var updates []update
+	var started, stopped []*member
 	for _, a := range agents {
 		seen[a.Name] = true
 		if m, ok := f.members[a.Name]; ok {
-			if m.agent.Addr != a.Addr || m.agent.Pin != a.Pin {
-				m.client.Close()
-				m.client = NewClient(a.Addr, a.Pin, a.Bearer)
-			} else if m.agent.Bearer != a.Bearer {
-				m.client.SetBearer(a.Bearer)
-			}
-			m.agent = a
+			updates = append(updates, update{m, a})
 			continue
 		}
-		m := &member{f: f, agent: a, client: NewClient(a.Addr, a.Pin, a.Bearer), kick: make(chan struct{}, 1), stop: make(chan struct{}), rows: map[string]model.SessionSummary{}, want: map[string]int64{}, seen: map[string]string{}}
+		m := &member{f: f, agent: a, client: NewClient(a.Addr, a.Pin, a.Bearer), kick: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}), rows: map[string]model.SessionSummary{}, want: map[string]int64{}, seen: map[string]string{}}
 		m.snap = fresh[a.Name]
 		for _, r := range m.snap.Rows {
 			m.rows[r.ID] = r
@@ -188,13 +214,28 @@ func (f *Fleet) Reload() error {
 		}
 		m.wantStale(nil)
 		f.members[a.Name] = m
-		go m.loop()
+		started = append(started, m)
 	}
 	for name, m := range f.members {
 		if !seen[name] {
-			close(m.stop)
-			m.client.Close()
 			delete(f.members, name)
+			stopped = append(stopped, m)
+		}
+	}
+	f.mu.Unlock()
+	for _, u := range updates {
+		u.m.reconfigure(u.a)
+	}
+	for _, m := range started {
+		go m.loop()
+	}
+	for _, m := range stopped {
+		a, _ := m.config()
+		m.stopAndWait()
+		// A CLI removal can race a poll that was already saving. Delete only after the poller
+		// has stopped, otherwise its final save can recreate a forgotten agent's snapshot.
+		if err := RemoveSnapshot(f.dir, a.Name); err != nil {
+			log.Printf("fleet: remove snapshot of %s: %v", a.Name, err)
 		}
 	}
 	return nil
@@ -226,7 +267,11 @@ func (f *Fleet) membersLocked() []*member {
 	for _, m := range f.members {
 		out = append(out, m)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].agent.Name < out[j].agent.Name })
+	sort.Slice(out, func(i, j int) bool {
+		a, _ := out[i].config()
+		b, _ := out[j].config()
+		return a.Name < b.Name
+	})
 	return out
 }
 
@@ -246,12 +291,54 @@ func (f *Fleet) Names() []string {
 	defer f.mu.Unlock()
 	var names []string
 	for _, m := range f.membersLocked() {
-		names = append(names, m.agent.Name)
+		a, _ := m.config()
+		names = append(names, a.Name)
 	}
 	return names
 }
 
 // ---- the poller -----------------------------------------------------------------------------
+
+func (m *member) config() (Agent, *Client) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.agent, m.client
+}
+
+// reconfigure swaps an endpoint only between polls. Closing the old client cancels a request
+// already in flight, so Reload never combines hello metadata from one endpoint with rows from
+// another. A bearer-only rotation stays on the concurrency-safe Client.
+func (m *member) reconfigure(a Agent) {
+	old, client := m.config()
+	if old.Addr != a.Addr || old.Pin != a.Pin {
+		client.Close()
+		m.pollMu.Lock()
+		m.mu.Lock()
+		m.agent = a
+		m.client = NewClient(a.Addr, a.Pin, a.Bearer)
+		m.mu.Unlock()
+		m.pollMu.Unlock()
+		return
+	}
+	if old.Bearer != a.Bearer {
+		client.SetBearer(a.Bearer)
+	}
+	m.mu.Lock()
+	m.agent = a
+	m.mu.Unlock()
+}
+
+func (m *member) stopAndWait() {
+	m.stopper.Do(func() {
+		close(m.stop)
+		_, client := m.config()
+		client.Close()
+	})
+	// A manual PollNow is not the loop, so wait for the whole-operation lock as well as the loop.
+	m.pollMu.Lock()
+	m.pollMu.Unlock()
+	<-m.done
+}
 
 func (m *member) wake() {
 	select {
@@ -261,8 +348,10 @@ func (m *member) wake() {
 }
 
 func (m *member) loop() {
+	defer close(m.done)
+	a, _ := m.config()
 	h := fnv.New32a()
-	h.Write([]byte(m.agent.Name))
+	h.Write([]byte(a.Name))
 	wait := time.Duration(h.Sum32()%uint32(activeInterval/time.Second)) * time.Second
 	for {
 		force := false
@@ -292,16 +381,20 @@ func (m *member) interval() time.Duration {
 // delta made stale (force: the pending ones too, before their retry time). The snapshot is
 // written when the rows or the facts changed and when reachability flipped.
 func (m *member) poll(force bool) {
+	m.pollMu.Lock()
+	defer m.pollMu.Unlock()
 	now := time.Now().UnixMilli()
 	m.mu.Lock()
 	needHello := m.snap.Hello.Protocol == 0 || m.snap.Attempts > 0
 	wasDown := m.snap.Attempts > 0
 	m.mu.Unlock()
+	helloed := false
 	if needHello {
 		if err := m.hello(); err != nil {
 			m.fail(now, err)
 			return
 		}
+		helloed = true
 	}
 	changed, restarted, err := m.syncList()
 	if err != nil {
@@ -309,26 +402,42 @@ func (m *member) poll(force bool) {
 		return
 	}
 	if restarted && !needHello {
-		_ = m.hello() // a new boot: its build, rules and homes may have changed with it
+		if err := m.hello(); err != nil {
+			m.fail(now, err)
+			return
+		}
+		helloed = true
 	}
 	m.mu.Lock()
 	m.snap.LastOK, m.snap.LastErr, m.snap.Since, m.snap.Attempts = now, "", 0, 0
 	m.mu.Unlock()
 	fetched := m.fetchFacts(now, force)
-	if changed || fetched || wasDown {
+	if changed || fetched || wasDown || helloed {
 		m.save()
 	}
 }
 
 func (m *member) hello() error {
-	h, err := m.client.Hello()
+	_, client := m.config()
+	h, err := client.Hello()
 	if err != nil {
 		return err
 	}
-	m.mu.Lock()
-	m.snap.Hello, m.snap.Incompatible = h, false
-	m.mu.Unlock()
+	m.applyHello(h)
 	return nil
+}
+
+func (m *member) applyHello(h Hello) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	old := m.snap.Hello
+	m.snap.Hello, m.snap.Incompatible = h, false
+	if old.Protocol != 0 && (old.RulesFingerprint != h.RulesFingerprint || old.CacheVersion != h.CacheVersion || old.FactsVersion != h.FactsVersion) {
+		m.snap.Facts = map[string]int64{}
+		for id := range m.rows {
+			m.want[id] = 0
+		}
+	}
 }
 
 func (m *member) fail(now int64, err error) {
@@ -344,7 +453,8 @@ func (m *member) fail(now int64, err error) {
 	}
 	m.mu.Unlock()
 	if first {
-		log.Printf("fleet: %s unreachable: %v", m.agent.Name, err)
+		a, _ := m.config()
+		log.Printf("fleet: %s unreachable: %v", a.Name, err)
 		m.save()
 	}
 }
@@ -356,21 +466,23 @@ func (m *member) syncList() (changed, restarted bool, err error) {
 	m.mu.Lock()
 	cursor := m.snap.Cursor
 	m.mu.Unlock()
-	page, err := m.client.Sessions(cursor)
+	_, client := m.config()
+	page, err := client.Sessions(cursor)
 	if err != nil {
 		return false, false, err
 	}
 	restarted = page.Full && cursor != ""
 	changed = m.apply(page)
 	if !m.consistent(page) {
-		full, err := m.client.Sessions("")
+		full, err := client.Sessions("")
 		if err != nil {
 			return changed, restarted, err
 		}
 		full.Full = true
 		changed = m.apply(full) || changed
 		if !m.consistent(full) {
-			log.Printf("fleet: %s: the list does not add up even after a full fetch (count %d, hash %s)", m.agent.Name, full.Count, full.IDsHash)
+			a, _ := m.config()
+			log.Printf("fleet: %s: the list does not add up even after a full fetch (count %d, hash %s)", a.Name, full.Count, full.IDsHash)
 		}
 	}
 	return changed, restarted, nil
@@ -435,8 +547,10 @@ func (m *member) wantStale(rows []model.SessionSummary) {
 // sameRow compares the fields a row is displayed and keyed by (Totals is a pointer: identity
 // would say "changed" on every decode).
 func sameRow(a, b model.SessionSummary) bool {
-	return a.ID == b.ID && a.Updated == b.Updated && a.Bytes == b.Bytes && a.Title == b.Title && a.Question == b.Question &&
-		a.LastAnswer == b.LastAnswer && a.Live == b.Live && a.Agents == b.Agents && a.Started == b.Started && (a.Totals == nil) == (b.Totals == nil)
+	return a.ID == b.ID && a.Source == b.Source && a.Title == b.Title && a.CWD == b.CWD && a.Branch == b.Branch &&
+		a.Started == b.Started && a.Updated == b.Updated && a.Bytes == b.Bytes && a.Agents == b.Agents &&
+		a.Live == b.Live && a.CLI == b.CLI && a.Model == b.Model && a.LastAnswer == b.LastAnswer &&
+		a.Question == b.Question && totalsSig(a.Totals) == totalsSig(b.Totals)
 }
 
 // consistent proves the rows against the page's count and hash.
@@ -456,6 +570,7 @@ func (m *member) consistent(page SessionsPage) bool {
 // fetchFacts asks for the facts of the rows that want them, in batches, and hands each to the
 // sink under the row's cache key — outside the member lock. Pending ids are asked again later.
 func (m *member) fetchFacts(now int64, force bool) bool {
+	a, client := m.config()
 	m.mu.Lock()
 	var ids []string
 	for id, notBefore := range m.want {
@@ -470,15 +585,16 @@ func (m *member) fetchFacts(now int64, force bool) bool {
 		n := min(MaxFactsIDs, len(ids))
 		batch := ids[:n]
 		ids = ids[n:]
-		page, err := m.client.Facts(batch)
+		page, err := client.Facts(batch)
 		if err != nil {
-			log.Printf("fleet: %s: facts: %v", m.agent.Name, err)
+			log.Printf("fleet: %s: facts: %v", a.Name, err)
 			return fetched
 		}
 		type delivery struct {
-			id string
-			f  insights.Facts
-			fp store.Fingerprint
+			id, uuid string
+			updated  int64
+			f        insights.Facts
+			fp       store.Fingerprint
 		}
 		var deliveries []delivery
 		m.mu.Lock()
@@ -496,10 +612,8 @@ func (m *member) fetchFacts(now int64, force bool) bool {
 				continue
 			}
 			uuid := fact.ID
-			fact.ID = Join(uuid, m.agent.Name)
-			deliveries = append(deliveries, delivery{fact.ID, fact, m.fingerprintLocked(row)})
-			m.snap.Facts[uuid] = row.Updated
-			delete(m.want, uuid)
+			fact.ID = Join(uuid, a.Name)
+			deliveries = append(deliveries, delivery{fact.ID, uuid, row.Updated, fact, m.fingerprintLocked(row)})
 			fetched = true
 		}
 		for _, id := range page.Pending {
@@ -509,16 +623,23 @@ func (m *member) fetchFacts(now int64, force bool) bool {
 			delete(m.want, id)
 		}
 		m.mu.Unlock()
-		if m.f.facts != nil {
-			for _, d := range deliveries {
-				m.f.facts(d.id, d.f, d.fp)
+		for _, d := range deliveries {
+			durable := m.f.facts != nil && m.f.facts(d.id, d.f, d.fp)
+			m.mu.Lock()
+			delete(m.want, d.uuid)
+			if durable {
+				m.snap.Facts[d.uuid] = d.updated
+			} else {
+				delete(m.snap.Facts, d.uuid)
 			}
+			m.mu.Unlock()
 		}
 	}
 	return fetched
 }
 
 func (m *member) save() {
+	a, _ := m.config()
 	m.mu.Lock()
 	rows := make([]model.SessionSummary, 0, len(m.rows))
 	for _, r := range m.rows {
@@ -527,15 +648,21 @@ func (m *member) save() {
 	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
 	m.snap.Rows = rows
 	snap := m.snap
+	snap.Facts = make(map[string]int64, len(m.snap.Facts))
+	for id, updated := range m.snap.Facts {
+		snap.Facts[id] = updated
+	}
 	m.mu.Unlock()
-	if err := SaveSnapshot(m.f.dir, m.agent.Name, snap); err != nil {
-		log.Printf("fleet: %s: snapshot: %v", m.agent.Name, err)
+	if err := SaveSnapshot(m.f.dir, a.Name, snap); err != nil {
+		log.Printf("fleet: %s: snapshot: %v", a.Name, err)
 	}
 }
 
 // fingerprintLocked is a remote row's cache key on the hub. Called under m.mu.
 func (m *member) fingerprintLocked(row model.SessionSummary) store.Fingerprint {
-	return store.RowFingerprint(m.snap.Hello.RulesFingerprint, row.ID, row.Bytes, row.Updated)
+	h := m.snap.Hello
+	versions := h.RulesFingerprint + ":cache=" + strconv.Itoa(h.CacheVersion) + ":facts=" + strconv.Itoa(h.FactsVersion)
+	return store.RowFingerprint(versions, row.ID, row.Bytes, row.Updated)
 }
 
 // ---- what the server asks -------------------------------------------------------------------
@@ -548,13 +675,14 @@ func (f *Fleet) Summaries() []model.SessionSummary {
 	f.mu.Unlock()
 	var out []model.SessionSummary
 	for _, m := range members {
+		a, _ := m.config()
 		m.mu.Lock()
 		if out == nil {
 			out = make([]model.SessionSummary, 0, len(m.rows)*len(members))
 		}
 		for _, r := range m.rows {
-			r.ID = Join(r.ID, m.agent.Name)
-			r.Host = m.agent.Name
+			r.ID = Join(r.ID, a.Name)
+			r.Host = a.Name
 			out = append(out, r)
 		}
 		m.mu.Unlock()
@@ -615,9 +743,10 @@ func (f *Fleet) Model(id string, refresh bool, etag string) (m *model.Session, n
 	if err != nil {
 		return nil, false, err
 	}
-	file, notModified, err := mem.client.Model(uuid, etag, refresh)
+	a, client := mem.config()
+	file, notModified, err := client.Model(uuid, etag, refresh)
 	if err != nil {
-		return nil, false, &AgentError{mem.agent.Name, err}
+		return nil, false, &AgentError{a.Name, err}
 	}
 	if notModified {
 		return nil, true, nil
@@ -627,10 +756,10 @@ func (f *Fleet) Model(id string, refresh bool, etag string) (m *model.Session, n
 		mem.mu.Lock()
 		theirs := mem.snap.Hello.CacheVersion
 		mem.mu.Unlock()
-		return nil, false, fmt.Errorf("%s: model unavailable, the agent's build differs (cache version %d, this hub %d): upgrade one of them", mem.agent.Name, theirs, store.CacheVersion())
+		return nil, false, fmt.Errorf("%s: model unavailable, the agent's build differs (cache version %d, this hub %d): upgrade one of them", a.Name, theirs, store.CacheVersion())
 	}
 	sess.ID = id
-	sess.Host = mem.agent.Name
+	sess.Host = a.Name
 	mem.mu.Lock()
 	mem.seen[uuid] = sess.Version
 	mem.mu.Unlock()
@@ -643,9 +772,10 @@ func (f *Fleet) Version(id string) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw, err := m.client.Version(uuid)
+	a, client := m.config()
+	raw, err := client.Version(uuid)
 	if err != nil {
-		return nil, &AgentError{m.agent.Name, err}
+		return nil, &AgentError{a.Name, err}
 	}
 	var v struct {
 		Version string `json:"version"`
@@ -664,9 +794,10 @@ func (f *Fleet) Event(id string, src model.Src) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	b, err := m.client.Event(uuid, src)
+	a, client := m.config()
+	b, err := client.Event(uuid, src)
 	if err != nil {
-		return nil, &AgentError{m.agent.Name, err}
+		return nil, &AgentError{a.Name, err}
 	}
 	return b, nil
 }
@@ -695,6 +826,7 @@ func (f *Fleet) Status() []AgentStatus {
 	f.mu.Unlock()
 	out := []AgentStatus{}
 	for _, m := range members {
+		a, _ := m.config()
 		m.mu.Lock()
 		s := m.snap
 		digested := 0
@@ -704,7 +836,7 @@ func (f *Fleet) Status() []AgentStatus {
 			}
 		}
 		reached := s.Hello.Protocol != 0
-		st := AgentStatus{Name: m.agent.Name, Addr: m.agent.Addr, Version: s.Hello.Version, Protocol: s.Hello.Protocol, Sessions: len(m.rows), Digested: digested, LastOK: s.LastOK, Since: s.Since, Error: s.LastErr, Expires: m.agent.Expires, Reached: reached}
+		st := AgentStatus{Name: a.Name, Addr: a.Addr, Version: s.Hello.Version, Protocol: s.Hello.Protocol, Sessions: len(m.rows), Digested: digested, LastOK: s.LastOK, Since: s.Since, Error: s.LastErr, Expires: a.Expires, Reached: reached}
 		if s.Incompatible {
 			st.Protocol = -1
 		}
@@ -724,6 +856,11 @@ func Pair(pairing, name, addr string) (Agent, Hello, error) {
 	p, err := ParsePairing(pairing)
 	if err != nil {
 		return Agent{}, Hello{}, err
+	}
+	if name != "" {
+		if err := CheckName(name); err != nil {
+			return Agent{}, Hello{}, err
+		}
 	}
 	if addr != "" {
 		p.Addr = addr
@@ -746,6 +883,14 @@ func Pair(pairing, name, addr string) (Agent, Hello, error) {
 // Add pairs an agent, records it in the agents file and polls it once. An existing name is
 // replaced (a re-pairing after a lost bearer).
 func (f *Fleet) Add(pairing, name, addr string) error {
+	f.control.Lock()
+	defer f.control.Unlock()
+	f.mu.Lock()
+	stopped := f.stopped
+	f.mu.Unlock()
+	if stopped {
+		return errors.New("fleet is stopped")
+	}
 	a, _, err := Pair(pairing, name, addr)
 	if err != nil {
 		return err
@@ -756,19 +901,43 @@ func (f *Fleet) Add(pairing, name, addr string) error {
 	if err := f.Reload(); err != nil {
 		return err
 	}
-	return f.PollNow(a.Name)
+	if err := f.PollNow(a.Name); err != nil {
+		log.Printf("fleet: %s paired and recorded; first poll failed: %v", a.Name, err)
+	}
+	return nil
+}
+
+// Revoke stages a replacement key, records its bearer before promotion, then proves it once to
+// retire the old key. If promotion or a later Forget fails, the durable record still holds the
+// one usable credential; a remove-with-revoke discards it only after Forget succeeds.
+func Revoke(path string, a Agent, client *Client) (Agent, error) {
+	resp, err := client.Rotate()
+	if err != nil {
+		return a, err
+	}
+	a.Bearer, a.Expires = resp.Bearer, resp.Expires
+	if err := Record(path, a); err != nil {
+		return a, err
+	}
+	promote := NewClient(a.Addr, a.Pin, resp.Bearer)
+	defer promote.Close()
+	_, err = promote.Hello()
+	return a, err
 }
 
 // Remove forgets an agent — its record and its snapshot — and returns the hub ids of its rows
 // so the caller can drop their cache entries. With revoke the key on the agent is rotated first
 // and the new bearer discarded, so nobody holds one.
 func (f *Fleet) Remove(name string, revoke bool) ([]string, error) {
+	f.control.Lock()
+	defer f.control.Unlock()
 	m, err := f.member(name)
 	if err != nil {
 		return nil, err
 	}
 	if revoke {
-		if _, err := m.client.Rotate(); err != nil {
+		a, client := m.config()
+		if _, err := Revoke(f.path, a, client); err != nil {
 			return nil, fmt.Errorf("revoke on %s: %w", name, err)
 		}
 	}
@@ -790,15 +959,17 @@ func (f *Fleet) Remove(name string, revoke bool) ([]string, error) {
 // Rotate stages a new key on the agent and records the bearer under it; the next poll retires
 // the old key. A lost answer costs nothing: the old bearer keeps working until then.
 func (f *Fleet) Rotate(name string) error {
+	f.control.Lock()
+	defer f.control.Unlock()
 	m, err := f.member(name)
 	if err != nil {
 		return err
 	}
-	resp, err := m.client.Rotate()
+	a, client := m.config()
+	resp, err := client.Rotate()
 	if err != nil {
 		return fmt.Errorf("rotate on %s: %w", name, err)
 	}
-	a := m.agent
 	a.Bearer, a.Expires = resp.Bearer, resp.Expires
 	if err := Record(f.path, a); err != nil {
 		return err
@@ -813,7 +984,8 @@ func (f *Fleet) Doctor(name string) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	return m.client.Doctor()
+	_, client := m.config()
+	return client.Doctor()
 }
 
 // PollNow runs one poll of an agent synchronously (the Servers page's Poll now, pairing, tests)

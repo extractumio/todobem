@@ -176,47 +176,6 @@ type edge struct {
 	sp    *span
 }
 
-// shareWallClock fills the equal shares of a compound command from its wall clock: a literal
-// share (sleep N) keeps its seconds (capped at what is left), the remainder is divided equally
-// among the other categories, the last of them taking the rounding remainder so the shares sum
-// to the wall clock exactly. Nothing to do for a single-category op.
-func shareWallClock(o *Operation, now int64) {
-	if len(o.Shares) == 0 {
-		return
-	}
-	end := o.End
-	if o.Open && now > end {
-		end = now
-	}
-	wall := max(end-o.Start, 1)
-	left := wall
-	equal := 0
-	for i := range o.Shares {
-		sh := &o.Shares[i]
-		if sh.Literal {
-			sh.Ms = min(sh.Ms, left)
-			left -= sh.Ms
-		} else {
-			equal++
-		}
-	}
-	if equal == 0 {
-		o.Shares[len(o.Shares)-1].Ms += left // only literal shares: the last one absorbs the rest
-		return
-	}
-	each := left / int64(equal)
-	given := int64(0)
-	last := -1
-	for i := range o.Shares {
-		if !o.Shares[i].Literal {
-			o.Shares[i].Ms = each
-			given += each
-			last = i
-		}
-	}
-	o.Shares[last].Ms += left - given
-}
-
 // spansOf lays an op out as sweep spans inside [start, end): one span, or its shares back to
 // back in share order (`go build && go test` → build then test), clipped to the window.
 func spansOf(o *Operation, start, end int64) []*span {

@@ -277,7 +277,7 @@ var Rules = []Rule{
 	{"log", Infra, "diagnostics", "macOS unified log"}, {"sample", Infra, "diagnostics", ""}, {"spindump", Infra, "diagnostics", ""}, {"dtrace", Infra, "diagnostics", ""},
 	{"ffmpeg", Infra, "media", ""}, {"qlmanage", Infra, "media", ""}, {"pdftotext", Infra, "media", ""}, {"pdfinfo", Infra, "media", ""}, {"cairosvg", Infra, "media", ""}, {"ffprobe", Infra, "media", ""}, {"sips", Infra, "media", ""}, {"magick", Infra, "media", ""}, {"convert", Infra, "media", ""},
 	{"head:(^|[-_])(install|setup|bootstrap|provision)([-_.]|$)", Infra, "setup-script", "executable whose name says it installs/sets up something"},
-	{"seg:^rm\\s+-[rR]", Infra, "cleanup", "recursive delete"}, {"rm", Code, "rm", "a file delete: a lookup-grade step, not a change of the sources (a recursive rm is cleanup)"},
+	{"seg:^rm\\s+(?:--?\\S+\\s+)*(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive)(?:\\s|$)", Infra, "cleanup", "recursive delete"}, {"rm", Code, "rm", "a file delete: a lookup-grade step, not a change of the sources (a recursive rm is cleanup)"},
 	{"head:^(cleanup|clean|teardown|reset)[\\w.-]*\\.(sh|py)$", Infra, "cleanup-script", ""},
 
 	// ---- develop (edits, local VCS, formatting)
@@ -951,6 +951,8 @@ func segmentsWithSeparators(cmd string) ([]string, []byte) {
 			if i+1 < len(cmd) && cmd[i+1] == '|' {
 				sep = 'o'
 				i++
+			} else if i+1 < len(cmd) && cmd[i+1] == '&' {
+				i++
 			}
 			continue
 		}
@@ -1043,9 +1045,10 @@ func matchHead(seg string) (Rule, string, bool) {
 			}
 			return Rule{}, "", false
 		}
-		// `bun test.ts` / `python3 scripts/check.py` are judged by the script name; a bare word
-		// (`bun test`, `deno lint`) is a subcommand and has its own rows, never a script guess
-		if len(args) > 0 && !strings.HasPrefix(args[0], "-") && strings.ContainsAny(args[0], "./") {
+		// Interpreter scripts are judged by the script name even when it is extensionless
+		// (`python3 check_tests`). Known bare subcommands (`bun test`, `deno lint`) matched the
+		// exact word rules above before reaching this script-name fallback.
+		if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 			if r, label, ok := matchScript(args[0]); ok {
 				return r, label, true
 			}

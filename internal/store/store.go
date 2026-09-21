@@ -12,6 +12,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +31,11 @@ import (
 // 9: a Claude Code assistant line with the model "<synthetic>" never names the turn's model.
 // 10: a Codex task_complete carrying an error is an llm_error marker.
 const cacheVersion = 10
+
+// maxDecodedJSON bounds every derived cache object after decompression. The wire already caps
+// compressed model responses; this second bound prevents a small gzip bomb from exhausting the
+// hub while decoding an agent response or a damaged local cache file.
+const maxDecodedJSON = int64(256 << 20)
 
 // FileFP fingerprints one source file. Append-only rollouts change size on every write and the
 // file set changes when a sub-agent appears, so (path,size,mtime) detects every real change.
@@ -124,12 +131,31 @@ func GzipJSON(v any) ([]byte, error) {
 
 // GunzipJSON is the inverse of GzipJSON.
 func GunzipJSON(b []byte, v any) error {
+	return gunzipJSON(b, v, maxDecodedJSON)
+}
+
+func gunzipJSON(b []byte, v any, limit int64) error {
 	gz, err := gzip.NewReader(bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
 	defer gz.Close()
-	return json.NewDecoder(gz).Decode(v)
+	lr := &io.LimitedReader{R: gz, N: limit + 1}
+	dec := json.NewDecoder(lr)
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("more than one JSON value")
+		}
+		return err
+	}
+	if lr.N <= 0 {
+		return fmt.Errorf("decompressed JSON exceeds %d bytes", limit)
+	}
+	return nil
 }
 
 // Encode serializes a model with its fingerprint into the cache file shape (gzipped JSON). It is

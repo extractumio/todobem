@@ -4,7 +4,7 @@ Status: implemented 2026-09-19 (steps 1–4 of §11; `internal/fleet`, `server/a
 `server/remote.go`, `cmd/todobem/agent.go`), verified against one Linux agent; the map is
 `docs/ARCHITECTURE.md` §7.4. Written first as a draft the same day and revised after a
 `pragmatic` review (§12 records its verdicts). Written against `main` at `2f72db5` plus the uncommitted working
-tree (`store.cacheVersion` 10, `insights.FactsVersion` 13). Inputs: the code in `cmd/todobem`,
+tree (`store.cacheVersion` 10, `insights.FactsVersion` 16). Inputs: the code in `cmd/todobem`,
 `internal/server`, `internal/auth`, `internal/source`, `internal/store`, `internal/settings`,
 `internal/insights`; sizes measured on the author's cache (482 models: 61 KB gzipped at the
 median, 393 KB at p90, 3.2 MB max; 256 facts sidecars: 4 KB median; a real `/api/sessions`
@@ -74,7 +74,7 @@ else in this document is the cost of reaching that daemon.
 4. **The existing `internal/auth` primitives, a second key file.** `~/.todobem/agent.key`
    is the agent's root of trust (0600, refused when group/world-readable). A **pairing token** is
    `auth.MintToken` from that key: 52 characters, one use, five minutes, refused if minted before
-   the agent booted. `POST /agent/v1/pair` redeems it for a **bearer**: `auth.MintSession` with a
+   the agent's boot second (its timestamp has whole-second precision). `POST /agent/v1/pair` redeems it for a **bearer**: `auth.MintSession` with a
    long TTL (365 days by default), stateless, HMAC-signed, verified on every request from
    `Authorization: Bearer …`. A separate key means rotating the UI's sessions never breaks the
    fleet and a UI login token can never be redeemed at an agent. Two footguns, named: the
@@ -105,7 +105,7 @@ else in this document is the cost of reaching that daemon.
    composite id; `/api/sessions/{id}/op/{op}` works from `details` without another round trip.
    No new format, no migration: a version mismatch is a miss, as it is locally.
 7. **Deltas by a scan generation, reconciled by a hash.** The agent counts a generation on
-   every index scan that added or changed a row (`updated`, `bytes`, `title`, `question`) and
+   every index scan that added or changed any displayed row field or its parsed `totals` and
    remembers per id the generation it last changed in. `GET sessions?since=<boot>:<gen>`
    returns the rows changed since, plus the current `count` and `ids_hash` (SHA-1 of the sorted
    ids, 16 hex). **There are no tombstones**: a deleted rollout and an agent restart (the boot
@@ -219,8 +219,10 @@ The pairing string is `todobem-agent://<hostname>:<port>/#<fingerprint>.<token>`
 overrides the authority (the agent knows its hostname, not the address the hub can reach). `add`
 dials with the pin, redeems the token, and appends to `~/.todobem/agents.json` (0600 — it holds
 bearers): `[{name, addr, pin, bearer, expires}]`. Flags come before the name, as in every
-other subcommand. A running hub re-reads
-the file when its mtime changes, so every `hub` command takes effect without a restart; the
+other subcommand. Every CLI and UI read-modify-write holds the adjacent advisory lock, so
+concurrent processes cannot overwrite one another's fleet change. A running hub re-reads
+the file when its mtime changes; content and mtime come from one open descriptor so an atomic
+replacement cannot suppress that reload. Every `hub` command takes effect without a restart; the
 commands talk to the agents directly (they need the file, not the hub), a bounded pool of 8 in
 parallel for `--all`. **The hub announces its fleet the way `-auth=off` is announced**, on the
 startup line: `fleet: 3 agents (~/.todobem/agents.json)` — it is the one todobem that dials out.
@@ -236,13 +238,17 @@ health view), then "Add server" with the pairing string and per-row *Doctor*, *R
 | version, protocol, rules | last `hello` |
 | sessions, digested | last delta's `count`, `hello.digest` |
 
-`remove` drops the agent, its snapshot and its cache entries; `-revoke` first rotates the key on
-the agent and discards the new bearer, so the agent is paired with nobody until `agent pair`.
+`remove` drops the agent, stops its poller before deleting its snapshot, and drops its cache
+entries; `-revoke` first asks for a replacement bearer, records it durably, then proves it once
+so the staged key is promoted. Only then is the record removed and the replacement discarded.
+Thus a failed file update never leaves a recorded agent with an invalid bearer. The old bearer
+is dead and the agent is paired with nobody until `agent pair`.
 
 ### 5.2 Storage — cache-shaped, nothing to migrate
 
 - `~/.todobem/fleet/<name>.json.gz`: the agent's last `hello`, cursor, `count`, `ids_hash`,
-  rows, `last_ok`, `last_error`. Written after every poll that changed something. It is what
+  rows, durably held facts, `last_ok`, `last_error`. Written after every poll that changed
+  something. It is what
   makes the list instant at start and lets the hub show an unreachable agent's last-known rows,
   greyed, with the badge.
 - Models and facts in the existing cache dir under the composite id (hashed by `safeName`);
@@ -313,8 +319,9 @@ request that verifies under it — from which point every bearer under the old k
 
 - JSON, UTF-8. Request bodies are `application/json` (a POST with another media type is 415);
   answers are `application/json`, gzip when `Accept-Encoding: gzip`, `Cache-Control: no-store`.
-- Every body is bounded with `http.MaxBytesReader`: 4 KB (`pair`, `rotate`), 64 KB (`facts`);
-  over the bound is 413.
+- Every request body is bounded with `http.MaxBytesReader`: 4 KB (`pair`, `rotate`), 64 KB
+  (`facts`); over the bound is 413. A model response is capped at 256 MiB compressed before
+  allocation, and every cache object at 256 MiB after decompression.
 - Times are Unix milliseconds on the **agent's** clock (as everywhere in the model); `hello.now`
   lets the hub measure skew and the doctor reports it.
 - Unknown JSON fields are ignored by both sides (`encoding/json` default; the JS likewise) —
@@ -347,7 +354,7 @@ and when the `boot` half of the cursor changes — not on every poll.
   "hostname": "web-01",
   "started": 1758270000000, "now": 1758273600000,
   "cache_version": 10,             // store.cacheVersion — models are comparable only when equal
-  "facts_version": 13,             // insights.FactsVersion — facts likewise
+  "facts_version": 16,             // insights.FactsVersion — facts likewise
   "rules_fingerprint": "a1b2c3d4…", // classify.RulesFingerprint(): built-in rules + the host's overlay
   "homes": [{"source": "codex", "path": "/home/ci/.codex", "status": "ok", "sessions": 312},
             {"source": "claude", "path": "/home/ci/.claude", "status": "missing", "sessions": 0}],
@@ -398,7 +405,7 @@ the composite id before storing or serving it.
 
 ```
 → {"ids": ["<uuid>", …]}                                // ≤ 100; more is 400
-← 200 {"facts_version": 13,
+← 200 {"facts_version": 16,
        "facts": [ …insights.Facts… ],                   // closed sessions the digest has parsed
        "pending": ["<uuid>", …],                        // live, or not digested yet — ask again later
        "unknown": ["<uuid>", …]}                        // not in the index (deleted) — drop the row
@@ -420,8 +427,8 @@ never persisted locally either); the hub shows such sessions as pending, "digest
 ### 6.5 The cursor and reconciliation
 
 Agent state, in memory only: `boot` (8 random bytes hex at start), `gen` (starts at 1, +1 on
-every index scan in which a row was added or changed in `updated`, `bytes`, `title` or
-`question`), `changed[id] = gen` for every row, and after each scan `count` and
+every index scan in which a row was added or any displayed field, pending-question signal or
+parsed `totals` changed), `changed[id] = gen` for every row, and after each scan `count` and
 `ids_hash = hex(sha1(sorted ids joined by "\n"))[:16]` (ids sorted bytewise).
 
 ```
@@ -439,15 +446,17 @@ There are no tombstones. Hub algorithm, per poll:
    the answer's → `GET sessions` without `since` at once and replace. This is how a deleted
    rollout, a restarted agent and any lost update are healed, with one extra request.
 4. Store the new cursor; persist the snapshot if anything changed; queue the changed ids for
-   `facts` (the rows whose `updated` differs from the facts the hub holds).
+   `facts` (the rows whose `updated` differs from the facts the hub holds). A fact is marked held
+   in that snapshot only after the server wrote its sidecar; with cache off or a failed write it
+   stays in memory for this run but is fetched again after restart.
 5. On a transport error or a non-200: mark the agent unreachable with the time and the error,
    keep serving its last rows greyed, fetch `hello` on the next success.
 
 ### 6.6 Freshness of a remote model on the hub
 
-Stored with every remote model: the row's `(bytes, updated)` it was fetched under and its
-`version`. On open: if the row is not live and its current `(bytes, updated)` equal the stored
-ones → serve the stored model, no request. Otherwise `GET sessions/{id}` with `If-None-Match`
+Stored with every remote model: the row's `(bytes, updated)`, the agent's rules fingerprint and
+its cache/facts versions, plus the model `version`. On open: if that fingerprint still matches
+→ serve the stored model, no request. Otherwise `GET sessions/{id}` with `If-None-Match`
 and take the 304 or the new file. Follow mode proxies `version` and re-fetches on change; the
 Refresh button passes `refresh=1` through. `/api/event` on the hub takes a `session` parameter
 (the composite id) to route the span to the owning agent; a local server ignores it.
@@ -513,7 +522,7 @@ runs nothing external.
    under the new key promotes it: `.next` → `agent.key`, and the old key — with every bearer
    signed by it — is dead from that request on.
 3. If the hub never received the answer, it keeps using the old bearer, which still works, and
-   the next `rotate` simply rewrites `.next`.
+   the next `rotate` reuses the same `.next` key, so a bearer from either answer can promote it.
 
 About 40 lines over `auth.KeySource`. `todobem agent pair -revoke` (rotate on the host itself)
 remains the emergency exit. Rotation is manual (`hub rotate --all`, cron if wanted); the Servers
@@ -599,7 +608,7 @@ executing the staged binary, and `runtime/debug.ReadBuildInfo` instead of `-ldfl
 limits; the on-demand round after idle and the per-host age; the early-arriving list ceiling;
 the shared-host sentence; `-cache off`; rule 8 naming both roles and the hub announcing its
 fleet; the digest moved to step 3; docs with each step; the end-to-end test; host UI out of
-`app.js`; `FactsVersion` 13.
+`app.js`; `FactsVersion` 16.
 
 Two points were left to the owner and decided the same day: the reviewer's ssh transport is
 rejected (no ssh connection to every machine will exist; the TCP/TLS design stands), and

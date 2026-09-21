@@ -130,6 +130,7 @@ const Markdown = (() => {
       const body = [m[4]];
       let k = j + 1;
       let sawBlank = false;
+      let contentAfterBlank = false;
       for (; k < lines.length; k++) {
         const line = lines[k];
         if (blank(line)) {
@@ -139,6 +140,7 @@ const Markdown = (() => {
         }
         const lead = line.length - line.trimStart().length;
         if (lead >= indent) {
+          if (sawBlank) contentAfterBlank = true;
           body.push(line.slice(indent));
           continue;
         }
@@ -152,7 +154,7 @@ const Markdown = (() => {
       while (body.length > 1 && body[body.length - 1] === '') body.pop();
       const following = k < lines.length ? itemAt(lines[k]) : null;
       const next = !!following && ordered(following[2]) === numbered;
-      if (sawBlank && next) loose = true;
+      if (sawBlank && (next || contentAfterBlank)) loose = true;
       items.push(body);
       j = k;
       if (!next) break;
@@ -409,29 +411,50 @@ const Markdown = (() => {
     return out.map(t => t.char ? t.before + esc(t.char.repeat(t.len)) + t.after : t.text).join('');
   }
 
-  // emphasis pairs each closing run with the nearest opener of the same character behind it
-  // (CommonMark's rule of three for runs that could do both), two characters at a time for
-  // strong and strikethrough, one for emphasis; the runs between a matched pair are used up
-  // and whatever is left of a run stays literal
+  // emphasis pairs each closing run with the nearest eligible opener. Openers are indexed by
+  // character, original length modulo three and whether they can also close; choosing among
+  // those 18 stack tops implements CommonMark's rule of three without rescanning every earlier
+  // delimiter for each unmatched closer. Interior stacks are trimmed once when a pair closes.
   function emphasis(delims) {
+    const chars = ['*', '_', '~'];
+    const stacks = Object.fromEntries(chars.map(c => [c, Array.from({ length: 6 }, () => [])]));
+    const category = d => (d.orig % 3) + (d.canClose ? 3 : 0);
+    const usable = (opener, closer) => {
+      if (!opener.len || closer.char === '~' && opener.len < 2) return false;
+      return !((opener.canClose || closer.canOpen) && (opener.orig + closer.orig) % 3 === 0 && !(opener.orig % 3 === 0 && closer.orig % 3 === 0));
+    };
+    const trimAfter = index => {
+      for (const c of chars) {
+        for (const stack of stacks[c]) while (stack.length && stack[stack.length - 1] > index) stack.pop();
+      }
+    };
     for (let j = 0; j < delims.length; j++) {
       const closer = delims[j];
-      if (!closer.canClose || !closer.len) continue;
-      for (let i = j - 1; i >= 0; i--) {
+      while (closer.canClose && closer.len && (closer.char !== '~' || closer.len >= 2)) {
+        let i = -1;
+        for (const stack of stacks[closer.char]) {
+          while (stack.length) {
+            const top = delims[stack[stack.length - 1]];
+            if (top.len && (closer.char !== '~' || top.len >= 2)) break;
+            stack.pop();
+          }
+          if (stack.length) {
+            const candidate = stack[stack.length - 1];
+            if (candidate > i && usable(delims[candidate], closer)) i = candidate;
+          }
+        }
+        if (i < 0) break;
         const opener = delims[i];
-        if (opener.char !== closer.char || !opener.canOpen || !opener.len) continue;
-        if ((opener.canClose || closer.canOpen) && (opener.orig + closer.orig) % 3 === 0 && !(opener.orig % 3 === 0 && closer.orig % 3 === 0)) continue;
-        if (closer.char === '~' && (opener.len < 2 || closer.len < 2)) continue;
         const n = closer.char === '~' ? 2 : Math.min(2, opener.len, closer.len);
         const tag = closer.char === '~' ? 'del' : n === 2 ? 'strong' : 'em';
         opener.after += `<${tag}>`;
         closer.before = `</${tag}>` + closer.before;
         opener.len -= n;
         closer.len -= n;
-        for (let k = i + 1; k < j; k++) delims[k].canOpen = delims[k].canClose = false;
-        // a closer with characters left looks for another opener
-        if (closer.len) j--;
-        break;
+        trimAfter(i);
+      }
+      if (closer.canOpen && closer.len && (closer.char !== '~' || closer.len >= 2)) {
+        stacks[closer.char][category(closer)].push(j);
       }
     }
   }

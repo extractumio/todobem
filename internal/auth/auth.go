@@ -173,8 +173,8 @@ func MintToken(key []byte, ttl time.Duration, now time.Time) (string, error) {
 // (StageKey, the two-phase rotation of an agent) is accepted next to the current one until a
 // session signed by it is first verified, which promotes it.
 type Verifier struct {
-	keys    func() [][]byte // the current key first, a staged key second; nil = deny everything
-	promote func()          // called when a session verified under the staged key (nil = never)
+	keys    func() [][]byte    // the current key first, a staged key second; nil = deny everything
+	promote func([]byte) error // called with the staged key that verified a session (nil = never)
 	boot    time.Time
 	mu      sync.Mutex
 	used    map[[8]byte]time.Time // nonce -> issued; entries older than TokenWindow are pruned
@@ -183,7 +183,7 @@ type Verifier struct {
 // NewVerifier verifies against a fixed key; boot is the server start (tokens minted before it
 // are refused).
 func NewVerifier(key []byte, boot time.Time) *Verifier {
-	return &Verifier{keys: func() [][]byte { return [][]byte{key} }, boot: boot, used: map[[8]byte]time.Time{}}
+	return &Verifier{keys: func() [][]byte { return [][]byte{key} }, boot: boot.Truncate(time.Second), used: map[[8]byte]time.Time{}}
 }
 
 // NewFileVerifier verifies against the key file at path, re-read whenever it changes, so
@@ -192,7 +192,13 @@ func NewVerifier(key []byte, boot time.Time) *Verifier {
 // is accepted too, and promoted to the key file by the first session verified under it.
 func NewFileVerifier(path string, boot time.Time) *Verifier {
 	src := &keySource{path: path}
-	return &Verifier{keys: src.All, promote: func() { _ = Promote(path) }, boot: boot, used: map[[8]byte]time.Time{}}
+	return &Verifier{keys: src.All, promote: func(staged []byte) error {
+		if err := promoteKey(path, staged); err != nil {
+			return err
+		}
+		src.invalidate()
+		return nil
+	}, boot: boot.Truncate(time.Second), used: map[[8]byte]time.Time{}}
 }
 
 // key is the current (first) key, for minting; nil when there is none.
@@ -203,14 +209,14 @@ func (v *Verifier) key() []byte {
 	return nil
 }
 
-// verifyAny reports which key (index) verifies the MAC of data, or -1.
-func (v *Verifier) verifyAny(tag byte, data, sum []byte, n int) int {
+// verifyAny reports which key (index and bytes) verifies the MAC of data, or -1 and nil.
+func (v *Verifier) verifyAny(tag byte, data, sum []byte, n int) (int, []byte) {
 	for i, key := range v.keys() {
 		if key != nil && hmac.Equal(sum, mac(key, tag, data)[:n]) {
-			return i
+			return i, key
 		}
 	}
-	return -1
+	return -1, nil
 }
 
 // keySource caches a key file and reloads it when its size or mtime changes. Next to it, a
@@ -242,6 +248,12 @@ func (k *keySource) All() [][]byte {
 	return keys
 }
 
+func (k *keySource) invalidate() {
+	k.mu.Lock()
+	k.cur, k.next = cachedKey{}, cachedKey{}
+	k.mu.Unlock()
+}
+
 // load returns the file's key, re-reading it when its size or mtime changed; nil when the file is
 // missing, malformed or too open.
 func (c *cachedKey) load(path string) []byte {
@@ -262,22 +274,48 @@ func (c *cachedKey) load(path string) []byte {
 	return key
 }
 
-// StageKey writes fresh key bytes to `<path>.next` (0600), replacing a previous staged key, and
-// returns them: the first half of a two-phase rotation. The current key stays valid until a
-// session signed by the staged key is verified (Verifier promotes it) or Promote is called.
+// StageKey returns the pending staged key at `<path>.next`, creating it (0600) when absent. A
+// concurrent or repeated rotation reuses that key, so every bearer already returned remains
+// usable. The current key stays valid until a session signed by the staged key is verified
+// (Verifier promotes it) or Promote is called.
 func StageKey(path string) ([]byte, error) {
 	next := NextPath(path)
-	if err := os.Remove(next); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+	key, err := LoadKey(next)
+	if !errors.Is(err, os.ErrNotExist) {
+		return key, err
 	}
-	return createKey(next)
+	key, err = createKey(next)
+	if errors.Is(err, os.ErrExist) {
+		return LoadKey(next)
+	}
+	return key, err
 }
 
 // Promote makes the staged key the key: `<path>.next` replaces `<path>` (rename, atomic). Every
-// session signed by the old key is refused from the next request on. No staged key: no-op.
+// session signed by the old key is refused from the next request on.
 func Promote(path string) error {
-	err := os.Rename(NextPath(path), path)
-	if errors.Is(err, os.ErrNotExist) {
+	return os.Rename(NextPath(path), path)
+}
+
+// promoteKey makes promotion idempotent for concurrent requests under the staged key. If
+// another request won the rename, the current file must contain exactly the key we verified.
+func promoteKey(path string, staged []byte) error {
+	err := Promote(path)
+	if err == nil {
+		current, loadErr := LoadKey(path)
+		if loadErr != nil {
+			return loadErr
+		}
+		if !hmac.Equal(current, staged) {
+			return errors.New("staged auth key changed before promotion")
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	current, loadErr := LoadKey(path)
+	if loadErr == nil && hmac.Equal(current, staged) {
 		return nil
 	}
 	return err
@@ -290,15 +328,17 @@ func (v *Verifier) RedeemToken(token string, now time.Time) (time.Duration, erro
 	if err != nil || len(raw) != 32 {
 		return 0, ErrBadToken
 	}
-	if v.verifyAny(tagToken, raw[:16], raw[16:], tokenMACLen) < 0 {
+	if i, _ := v.verifyAny(tagToken, raw[:16], raw[16:], tokenMACLen); i < 0 {
 		return 0, ErrBadToken
 	}
 	issued := time.Unix(int64(binary.BigEndian.Uint32(raw[8:12])), 0)
 	if now.Sub(issued) > TokenWindow || issued.After(now.Add(time.Minute)) {
 		return 0, ErrExpired
 	}
-	// A token minted before this server started cannot be in the used set any more; refusing
-	// it closes the replay window a restart would otherwise open (tokens live 5 minutes).
+	// A token minted before this server's boot second cannot be in the used set any more;
+	// refusing it closes the replay window a restart would otherwise open (tokens live 5
+	// minutes). The wire timestamp has whole-second precision, so ordering inside that second is
+	// unknowable and intentionally accepted.
 	if issued.Before(v.boot) {
 		return 0, ErrExpired
 	}
@@ -353,7 +393,7 @@ func (v *Verifier) VerifySession(value string, now time.Time) error {
 	if err != nil || len(raw) != 56 {
 		return ErrBadSession
 	}
-	i := v.verifyAny(tagSession, raw[:24], raw[24:], sha256.Size)
+	i, verifiedKey := v.verifyAny(tagSession, raw[:24], raw[24:], sha256.Size)
 	if i < 0 {
 		return ErrBadSession
 	}
@@ -361,7 +401,9 @@ func (v *Verifier) VerifySession(value string, now time.Time) error {
 		return ErrBadSession
 	}
 	if i > 0 && v.promote != nil {
-		v.promote()
+		if err := v.promote(verifiedKey); err != nil {
+			return fmt.Errorf("promote staged auth key: %w", err)
+		}
 	}
 	return nil
 }

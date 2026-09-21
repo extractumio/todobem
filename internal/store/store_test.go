@@ -1,12 +1,38 @@
 package store
 
 import (
+	"bytes"
+	"compress/gzip"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/extractumio/todobem/internal/model"
 )
+
+func gzipBytes(t *testing.T, b []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(b); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestGunzipJSONLimitsExpandedBody(t *testing.T) {
+	var out map[string]string
+	b := gzipBytes(t, []byte(`{"value":"`+string(bytes.Repeat([]byte{'x'}, 128))+`"}`))
+	if err := gunzipJSON(b, &out, 64); err == nil {
+		t.Fatal("oversized expanded JSON accepted")
+	}
+	if err := gunzipJSON(b, &out, 256); err != nil || len(out["value"]) != 128 {
+		t.Fatalf("bounded decode: %v %#v", err, out)
+	}
+}
 
 func sampleModel() *model.Session {
 	op := &model.Operation{ID: "op1", Phase: "code", Kind: "read", Title: "cat x", Detail: "cat /very/long/path x.go"}

@@ -4,6 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
+const { spawnSync } = require('node:child_process');
 const vm = require('node:vm');
 
 const shell = readFileSync(join(__dirname, 'web/index.html'), 'utf8');
@@ -14,7 +15,7 @@ const flush = async () => { for (let i = 0; i < 16; i++) await Promise.resolve()
 
 // Run the complete application, including startup and event registration. DOM nodes
 // track replacement so a stale inspector write cannot hide behind a permissive mock.
-function harness({ hash = '#sessions' } = {}) {
+function harness({ hash = '#sessions', cookie = '' } = {}) {
   const nodes = new Map(), requests = [], intervals = new Map(), timeouts = new Map(), errors = [];
   let timerID = 0;
   function events(object = {}) {
@@ -59,7 +60,7 @@ function harness({ hash = '#sessions' } = {}) {
   }
   for (const match of shell.matchAll(/\sid="([^"]+)"/g)) nodes.set(match[1], element(match[1]));
   const document = events({
-    hidden: false,
+    hidden: false, cookie,
     querySelector: selector => selector.startsWith('#') ? nodes.get(selector.slice(1)) || null : element(),
     querySelectorAll: () => [],
   });
@@ -152,11 +153,42 @@ function attributeValues(html, name) {
     .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
 }
 
+test('model normalization preserves an older segment lifecycle fallback', () => {
+  const h = harness();
+  const legacy = session();
+  legacy.lanes[0].segments = [
+    { s: 1000, e: 2000, p: 'test', op: 'op-A' },
+    { s: 2000, e: 3000, p: 'code', lc: 'future-stage', op: 'op-B' },
+  ];
+  const got = JSON.parse(h.run(`JSON.stringify((m => { prepare(m); return m.lanes[0].segments.map(sg => [sg.lc || '', lifecycleOf(sg)]); })(${JSON.stringify(legacy)}))`));
+  assert.deepEqual(got, [['', 'test'], ['unknown', 'unknown']]);
+});
+
+test('deploy default-address fallback rejects a process with another explicit address', () => {
+  const deploy = readFileSync(join(__dirname, '../../scripts/deploy.sh'), 'utf8');
+  const start = deploy.indexOf('is_instance() {');
+  const end = deploy.indexOf('\n}\nlisteners()', start);
+  assert.ok(start >= 0 && end > start, 'is_instance function found');
+  const fn = deploy.slice(start, end + 2);
+  const check = line => spawnSync('/bin/sh', ['-c', `set -eu\ncmdline() { printf '%s\\n' "$LINE"; }\nis_binary() { return 0; }\n${fn}\nis_instance 123`], {
+    env: { ...process.env, LINE: line, ADDR: '127.0.0.1:7788', AGENT: '' },
+  }).status;
+  assert.equal(check('/repo/todobem -open=false'), 0, 'a hand-started default instance without -addr remains adoptable');
+  assert.equal(check('/repo/todobem -addr 127.0.0.1:7788 -open=false'), 0);
+  assert.notEqual(check('/repo/todobem -addr 127.0.0.1:9000 -open=false'), 0);
+  assert.notEqual(check('/repo/todobem -addr=127.0.0.1:9000 -open=false'), 0);
+});
+
 test('source identifiers remain single attributes throughout the rendered UI and URLs', async () => {
   const h = await harness().ready();
   const suffix = '" onmouseover="synthetic&<', id = 'session' + suffix, lane = 'lane' + suffix;
   const turn = 'turn' + suffix, op = 'op' + suffix, child = 'child' + suffix, background = 'background' + suffix;
   const model = session(id, lane, turn, op);
+  model.lanes[0].ops[0].phase = suffix;
+  model.lanes[0].ops[0].lc = suffix;
+  model.lanes[0].ops[0].shares = [{ phase: suffix, lc: suffix, ms: 1000 }];
+  model.lanes[0].segments[0].p = suffix;
+  model.lanes[0].segments[0].lc = suffix;
   model.lanes[0].ops[0].status = 'failed';
   model.lanes[0].ops.push({ ...model.lanes[0].ops[0], id: background, background: true, start: 3000, end: 110000 });
   model.lanes[0].markers.push({ t: 4000, kind: 'agent_started', lane, ref: child });
@@ -164,6 +196,11 @@ test('source identifiers remain single attributes throughout the rendered UI and
   h.run(`state.fleetFilter.kind = 'all'; state.sessions = ${JSON.stringify([{ id, title: 'Example', cwd: '/synthetic', started: 1000, updated: 121000, bytes: 10, agents: 1 }])}; renderFleetRows()`);
   assert.ok(attributeValues(h.node('fleetRows').innerHTML, 'data-id').includes(id));
   await h.open(id, model);
+  assert.equal(h.run('state.model.lanes[0].ops[0].phase'), 'unknown');
+  assert.equal(h.run('state.model.lanes[0].ops[0].lc'), 'unknown');
+  assert.equal(h.run('state.model.lanes[0].ops[0].shares[0].phase'), 'unknown');
+  assert.equal(h.run('state.model.lanes[0].segments[0].p'), 'unknown');
+  assert.equal(h.run('state.model.lanes[0].segments[0].lc'), 'unknown');
   assert.equal(h.location.hash, '#session/' + encodeURIComponent(id));
   h.run(`state.expanded.add(${JSON.stringify(lane)}); renderTimeline()`);
   assert.ok(attributeValues(h.node('main').innerHTML, 'value').includes(lane));
@@ -302,6 +339,16 @@ test('an answer from another build reloads the page; the same build or no header
   // the old scripts do not fetch (or render) a model from the build replacing them
   assert.equal(h.requests.filter(r => r.url === '/api/sessions/session').length, 1, 'no re-fetch by the old scripts');
   assert.equal(h.errors.length, 0);
+});
+
+test('the HTML build cookie rejects a different first API answer instead of blessing mixed assets', async () => {
+  const h = harness({ cookie: 'todobem-page-build=aaaaaaaaaaaa' });
+  let reloads = 0;
+  h.location.reload = () => reloads++;
+  h.take('/api/auth').resolve({ enabled: false, authenticated: true }, 200, { 'X-Todobem-Build': 'bbbbbbbbbbbb' });
+  await flush();
+  assert.equal(reloads, 1);
+  assert.equal(h.requests.filter(r => r.url === '/api/sessions').length, 0, 'the old scripts never start rendering the new server');
 });
 
 test('a stale version poll cannot supersede a manual refresh', async () => {
@@ -1216,7 +1263,7 @@ test('an active session wears its chip on the same status row, next to the waiti
   assert.match(row('live'), /\d\d:\d\d<div class="status"><span class="chip live" style="[^"]*"><i class="dot"><\/i>active<\/span><\/div><\/td>/);
 });
 
-test('a question older than a day is no longer presented as waiting: no chip, no rank, in the list and in the top bar', async () => {
+test('an unanswered question stays pending however old it is: the source signal, not its duration, controls the chip and rank', async () => {
   const h = await harness().ready();
   h.run("go('sessions')");
   const now = Date.now();
@@ -1229,14 +1276,14 @@ test('a question older than a day is no longer presented as waiting: no chip, no
   await flush();
   const rows = h.node('fleetRows').innerHTML;
   const row = id => (rows.match(new RegExp(`<tr><td><button class="session-link" data-action="session" data-id="${id}"[^]*?</tr>`)) || [''])[0];
-  assert.doesNotMatch(row('stale'), /chip ask/, 'a question nobody answered for 11 days is not waiting');
-  assert.match(row('recent'), /chip ask[^]*?waiting 23h<\/span>/, 'up to a day it is');
-  assert.equal((rows.match(/class="qmark"/g) || []).length, 2, 'the table row and the mobile tile of the recent one only');
-  // the rank follows the chip: the stale one sorts by its update time, under the others
+  assert.match(row('stale'), /chip ask[^]*?waiting 11d 8h<\/span>/, 'an old unanswered question remains literal pending state');
+  assert.match(row('recent'), /chip ask[^]*?waiting 23h<\/span>/);
+  assert.equal((rows.match(/class="qmark"/g) || []).length, 4, 'both pending sessions appear in the table and mobile tiles');
+  // the rank follows the source signal: both unanswered questions stay above ordinary rows
   const order = [...rows.matchAll(/<tr><td><button class="session-link" data-action="session" data-id="([^"]+)"/g)].map(m => m[1]);
-  assert.deepEqual(order, ['recent', 'fresh', 'stale']);
+  assert.deepEqual(order, ['recent', 'stale', 'fresh']);
   // the session page's top bar reads the same summary
-  assert.equal(h.run(`askChip(state.sessions.find(s => s.id === 'stale'), ${now})`), '');
+  assert.match(h.run(`askChip(state.sessions.find(s => s.id === 'stale'), ${now})`), /^<span class="chip ask"/);
   assert.match(h.run(`askChip(state.sessions.find(s => s.id === 'recent'), ${now})`), /^<span class="chip ask"/);
 });
 
@@ -1849,6 +1896,7 @@ test('the session list filters by period and project with the same widget as the
     { id: 'S-new', title: 'Fresh', cwd: '/proj/a', updated: now - day, started: now - 2 * day, bytes: 1e6, agents: 0 },
     { id: 'S-old', title: 'Old', cwd: '/proj/a', updated: now - 40 * day, started: now - 41 * day, bytes: 1e6, agents: 0 },
     { id: 'S-b', title: 'Other', cwd: '/proj/b', updated: now - 3 * day, started: now - 3 * day, bytes: 1e6, agents: 0 },
+    { id: 'S-skew', title: 'Clock skew', cwd: '/proj/c', updated: now + day, started: now, bytes: 1e6, agents: 0 },
   ];
   h.run("go('sessions')");
   h.take('/api/sessions').resolve(list); await flush();
@@ -1856,16 +1904,16 @@ test('the session list filters by period and project with the same widget as the
   assert.match(main, /id="fleetPeriod"/);
   // the sessions list defaults to the last 30 days: the 40-day-old session is hidden
   assert.match(main, /<option value="30d" selected>/, 'period defaults to 30 days');
-  assert.equal(h.node('fleetCount').textContent, '2 of 3 sessions', '30 days by default hides the old session');
+  assert.equal(h.node('fleetCount').textContent, '2 of 4 sessions', '30 days hides both the old row and a future timestamp');
   h.document.emit('change', { target: { id: 'fleetPeriod', value: 'all' } });
   main = h.node('main').innerHTML;
   assert.match(main, /id="fleetProject"[^>]*>(?:(?!<\/select>).)*a \(2\)(?:(?!<\/select>).)*b \(1\)/, 'all time: projects carry their full counts');
-  assert.equal(h.node('fleetCount').textContent, '3 sessions', 'all time shows everything');
+  assert.equal(h.node('fleetCount').textContent, '4 sessions', 'all time includes a remote clock that is ahead');
   h.document.emit('change', { target: { id: 'fleetPeriod', value: '30d' } });
   let rows = h.node('fleetRows').innerHTML;
   assert.match(rows, /data-id="S-new"/);
   assert.doesNotMatch(rows, /data-id="S-old"/);
-  assert.equal(h.node('fleetCount').textContent, '2 of 3 sessions');
+  assert.equal(h.node('fleetCount').textContent, '2 of 4 sessions');
   h.document.emit('change', { target: { id: 'fleetProject', value: '/proj/b' } });
   rows = h.node('fleetRows').innerHTML;
   assert.doesNotMatch(rows, /data-id="S-new"/);
@@ -2099,6 +2147,49 @@ test('a refused save keeps the draft and shows the server\'s reason', async () =
   assert.equal(h.node('setSave').disabled, false);
 });
 
+test('a failed settings request clears Saving, and a GET started before the save cannot overwrite its answer', async () => {
+  const h = await harness().ready();
+  await openSettings(h);
+  h.document.emit('input', { target: { id: '', dataset: { source: 'codex', homeIndex: '0' }, value: '/srv/new' } });
+  h.action('set-save');
+  h.take('/api/settings').reject(new Error('connection lost'));
+  await flush();
+  assert.equal(h.run('state.settings.saving'), false);
+  assert.match(h.node('main').innerHTML, /Could not save: connection lost/);
+  assert.equal(h.node('setSave').disabled, false);
+
+  const staleLoad = h.run('loadSettings()');
+  const stale = h.take('/api/settings');
+  h.document.emit('input', { target: { id: '', dataset: { source: 'codex', homeIndex: '0' }, value: '/srv/saved' } });
+  h.action('set-save');
+  const saved = h.requests.find(r => r.url === '/api/settings' && r.options.method === 'POST' && !r.done);
+  assert.ok(saved);
+  saved.resolve(settingsPayload({ homes: [{ path: '/srv/saved', resolved: '/srv/saved', status: 'ok', sessions: 1 }] }));
+  await flush();
+  h.take('/api/sessions').resolve([]);
+  await flush();
+  stale.resolve(settingsPayload({ homes: [{ path: '/srv/stale', resolved: '/srv/stale', status: 'ok', sessions: 1 }] }));
+  await staleLoad;
+  await flush();
+  assert.equal(h.run('state.settings.draft.codex[0]'), '/srv/saved');
+  assert.equal(h.run('state.settings.saving'), false);
+
+  h.document.emit('input', { target: { id: '', dataset: { source: 'codex', homeIndex: '0' }, value: '/srv/again' } });
+  h.action('set-save');
+  const supersededSave = h.requests.find(r => r.url === '/api/settings' && r.options.method === 'POST' && !r.done);
+  assert.ok(supersededSave);
+  const newerLoad = h.run('loadSettings()');
+  const newer = h.requests.find(r => r.url === '/api/settings' && (!r.options.method || r.options.method === 'GET') && !r.done);
+  assert.ok(newer);
+  newer.resolve(settingsPayload({ homes: [{ path: '/srv/reloaded', resolved: '/srv/reloaded', status: 'ok', sessions: 1 }] }));
+  await newerLoad;
+  await flush();
+  supersededSave.resolve(settingsPayload({ homes: [{ path: '/srv/again', resolved: '/srv/again', status: 'ok', sessions: 1 }] }));
+  await flush();
+  assert.equal(h.run('state.settings.saving'), false, 'a superseded save still clears its busy state');
+  assert.doesNotMatch(h.node('main').innerHTML, /Saving…/);
+});
+
 test('folders pinned by -codex / -claude are shown read-only', async () => {
   const h = await harness().ready();
   await openSettings(h, settingsPayload({ pinned: true, homes: [{ path: '/srv/rollouts', resolved: '/srv/rollouts', status: 'ok', sessions: 3 }], claude: [] }));
@@ -2176,7 +2267,10 @@ test('the renderer covers the GFM subset the agents write', async () => {
   assert.equal(md(h, '3. c\n4. d'), '<ol start="3"><li>c</li><li>d</li></ol>');
   // a blank line between items makes the list loose: the items' paragraphs are wrapped
   assert.equal(md(h, '1. first\n\n2. second\n   wrapped'), '<ol><li><p>first</p></li><li><p>second\nwrapped</p></li></ol>');
+  assert.equal(md(h, '- first\n\n  second'), '<ul><li><p>first</p><p>second</p></li></ul>');
   assert.equal(md(h, '- [ ] todo\n- [x] done'), '<ul><li>☐ todo</li><li>☑ done</li></ul>');
+  const unmatched = Array.from({ length: 6000 }, () => 'word*').join(' ');
+  assert.equal(md(h, unmatched), `<p>${unmatched}</p>`, 'unmatched closers stay literal without rescanning every prior delimiter');
   // Codex style: a bold line, then bullets directly under it, then a list under a paragraph line
   assert.equal(md(h, '**Changes**\n- a\n- b\nNext:\n1. c'), '<p><strong>Changes</strong></p><ul><li>a</li><li>b\nNext:</li></ul><ol><li>c</li></ol>');
   assert.equal(md(h, 'Changes:\n- a\n- b'), '<p>Changes:</p><ul><li>a</li><li>b</li></ul>');

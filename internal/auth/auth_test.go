@@ -93,6 +93,13 @@ func TestTokenRoundTrip(t *testing.T) {
 	if _, err := NewVerifier(key, now.Add(time.Second)).RedeemToken(tok6, now.Add(2*time.Second)); err != ErrExpired {
 		t.Fatalf("pre-boot token: %v", err)
 	}
+	// Tokens record whole seconds. A token minted later in the server's boot second is current,
+	// not a replay from before the process started.
+	boot := now.Add(700 * time.Millisecond)
+	tok7, _ := MintToken(key, time.Hour, now.Add(900*time.Millisecond))
+	if _, err := NewVerifier(key, boot).RedeemToken(tok7, now.Add(time.Second)); err != nil {
+		t.Fatalf("same-second post-boot token: %v", err)
+	}
 	// a token is never accepted as a session and vice versa (domain separation)
 	if err := v.VerifySession(tok4, now); err != ErrBadSession {
 		t.Fatalf("token accepted as session: %v", err)
@@ -124,6 +131,116 @@ func TestFileVerifierFollowsRotation(t *testing.T) {
 	}
 	if _, err := v.RedeemToken("AAAA", now); err != ErrBadToken {
 		t.Fatalf("missing key file must deny tokens: %v", err)
+	}
+}
+
+func TestStageKeyReusesPendingKey(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "auth.key")
+	if _, err := LoadOrCreateKey(p); err != nil {
+		t.Fatal(err)
+	}
+	a, err := StageKey(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := StageKey(p)
+	if err != nil || string(a) != string(b) {
+		t.Fatalf("pending key changed: %v", err)
+	}
+}
+
+func TestPromotionFailureRejectsStagedSession(t *testing.T) {
+	key := make([]byte, KeyBytes)
+	key[0] = 1
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	value, _, err := MintSession(key, time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := &Verifier{
+		keys:    func() [][]byte { return [][]byte{make([]byte, KeyBytes), key} },
+		promote: func([]byte) error { return os.ErrPermission },
+		boot:    now,
+		used:    map[[8]byte]time.Time{},
+	}
+	if err := v.VerifySession(value, now); err == nil {
+		t.Fatal("staged session accepted after promotion failed")
+	}
+}
+
+func TestConcurrentPromotionAcceptsOnlyThePromotedKey(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "key")
+	if _, err := LoadOrCreateKey(p); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := StageKey(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Promote(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := promoteKey(p, staged); err != nil {
+		t.Fatalf("second request under the promoted key: %v", err)
+	}
+	wrong := append([]byte(nil), staged...)
+	wrong[0] ^= 0xff
+	if err := promoteKey(p, wrong); err == nil {
+		t.Fatal("missing staged file accepted for a different key")
+	}
+}
+
+func TestPromotionRejectsAReplacedStagedKey(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "key")
+	if _, err := LoadOrCreateKey(p); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := StageKey(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := append([]byte(nil), staged...)
+	replacement[0] ^= 0xff
+	if err := os.WriteFile(NextPath(p), replacement, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := promoteKey(p, staged); err == nil {
+		t.Fatal("a request under the replaced staged key was accepted")
+	}
+}
+
+func TestPromotionInvalidatesSameMtimeKeyCache(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "key")
+	old, err := LoadOrCreateKey(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged, err := StageKey(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(NextPath(p), st.ModTime(), st.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	value, _, err := MintSession(staged, time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := NewFileVerifier(p, now)
+	if err := v.VerifySession(value, now); err != nil {
+		t.Fatal(err)
+	}
+	oldValue, _, err := MintSession(old, time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.VerifySession(oldValue, now); err == nil {
+		t.Fatal("old session accepted from a same-mtime key cache after promotion")
 	}
 }
 

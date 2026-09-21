@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 
@@ -170,9 +171,16 @@ func (s *Server) dropRemote(ids []string) {
 
 // storeRemote is the fleet's facts sink: remembered like a local session's facts and written
 // to the sidecar under the row's cache key.
-func (svc *insightsSvc) storeRemote(id string, f insights.Facts, fp store.Fingerprint) {
+func (svc *insightsSvc) storeRemote(id string, f insights.Facts, fp store.Fingerprint) bool {
 	svc.remember(id, f, fp)
-	_ = svc.srv.cache.SaveSidecar("facts", id, insights.FactsVersion, fp, f)
+	if svc.srv.cache.Dir() == "" {
+		return false
+	}
+	if err := svc.srv.cache.SaveSidecar("facts", id, insights.FactsVersion, fp, f); err != nil {
+		log.Printf("fleet: facts cache: %v", err)
+		return false
+	}
+	return true
 }
 
 // forget drops the facts of removed sessions from the memo.

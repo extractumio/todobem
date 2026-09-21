@@ -4,13 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"syscall"
 	"time"
 
 	"github.com/extractumio/todobem/internal/atomicfile"
-	"github.com/extractumio/todobem/internal/auth"
 	"github.com/extractumio/todobem/internal/settings"
 )
 
@@ -66,22 +67,53 @@ func LoadAgents(path string) (agents []Agent, mod time.Time, err error) {
 	if path == "" {
 		return nil, time.Time{}, nil
 	}
-	b, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, time.Time{}, nil
 		}
 		return nil, time.Time{}, err
 	}
-	if err := auth.CheckPrivate(path); err != nil {
-		return nil, time.Time{}, err
-	}
-	st, err := os.Stat(path)
+	defer f.Close()
+	return loadAgentsFile(path, f)
+}
+
+// loadAgentsFile reads, validates and stats one opened inode. Keeping content and mtime on the
+// same descriptor prevents an atomic replacement from pairing old agents with the new mtime.
+func loadAgentsFile(path string, f *os.File) (agents []Agent, mod time.Time, err error) {
+	before, err := f.Stat()
 	if err != nil {
 		return nil, time.Time{}, err
 	}
+	if before.Mode().Perm()&0o077 != 0 {
+		return nil, time.Time{}, fmt.Errorf("%s is readable by other users (mode %o); run: chmod 600 %s", path, before.Mode().Perm(), path)
+	}
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	st, err := f.Stat()
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	if st.Size() != before.Size() || !st.ModTime().Equal(before.ModTime()) {
+		return nil, time.Time{}, fmt.Errorf("%s changed while it was being read", path)
+	}
 	if err := json.Unmarshal(b, &agents); err != nil {
 		return nil, time.Time{}, fmt.Errorf("%s: %w", path, err)
+	}
+	seen := make(map[string]bool, len(agents))
+	for _, a := range agents {
+		if err := CheckName(a.Name); err != nil {
+			return nil, time.Time{}, fmt.Errorf("%s: %w", path, err)
+		}
+		if seen[a.Name] {
+			return nil, time.Time{}, fmt.Errorf("%s: duplicate agent name %q", path, a.Name)
+		}
+		seen[a.Name] = true
+		if err := CheckPin(a.Pin); err != nil {
+			return nil, time.Time{}, fmt.Errorf("%s: agent %s: %w", path, a.Name, err)
+		}
 	}
 	sort.Slice(agents, func(i, j int) bool { return agents[i].Name < agents[j].Name })
 	return agents, st.ModTime(), nil
@@ -133,9 +165,36 @@ func Forget(path, name string) error {
 }
 
 func edit(path string, fn func([]Agent) []Agent) error {
-	agents, _, err := LoadAgents(path)
+	return withAgentsLock(path, func() error {
+		agents, _, err := LoadAgents(path)
+		if err != nil {
+			return err
+		}
+		return SaveAgents(path, fn(agents))
+	})
+}
+
+// withAgentsLock serializes the read-modify-write transaction across the running hub and CLI
+// processes. The lock file is durable but contains no data; flock is released by the kernel if
+// a process exits, so a crashed command cannot strand the fleet.
+func withAgentsLock(path string, fn func() error) error {
+	if path == "" {
+		return errors.New("no agents file path")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
-	return SaveAgents(path, fn(agents))
+	defer lock.Close()
+	if err := lock.Chmod(0o600); err != nil {
+		return err
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	return fn()
 }

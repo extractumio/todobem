@@ -149,7 +149,7 @@ host, tunnel it and open the URL locally:
 ssh -L 7788:127.0.0.1:7788 <host>     # then open http://127.0.0.1:7788/
 ```
 
-Override with env: `ADDR=127.0.0.1:9000 RULES=~/rules.json ./scripts/deploy.sh`
+Override with env: `ADDR=127.0.0.1:9000 RULES=~/rules.json BINARY=todobem-preview ./scripts/deploy.sh`
 (`CODEX=/path` / `CLAUDE=/path` pin the folders for the run, see Settings).
 
 ## Settings: which folders hold the sessions
@@ -217,7 +217,7 @@ ports.
   last answer its agent gave (sub-agent threads are attached to their parent); a period
   (last 24 hours … all time, custom dates) and project filter — the same widget as the Insights
   report — plus search and sort; a pulsing ? chip marks a session whose agent asked you a
-  question (or submitted a plan for approval) and is still waiting, with how long it has waited.
+  question (or submitted a plan for approval) and has no recorded answer, with how long it has waited.
   The session page names the
   rollout file each thread was read from.
 * **Session** — the first user message and the last answer, verbatim; a live/closed status; the

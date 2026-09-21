@@ -77,6 +77,7 @@ type Share struct {
 	Literal   bool      `json:"literal,omitempty"` // Ms is literal evidence (sleep N), not an equal share
 	Lifecycle Lifecycle `json:"lc,omitempty"`      // the stage this slice served (Derive)
 	Sub       string    `json:"sub,omitempty"`     // the category's sub-row (classify.Subgroup)
+	literalMs int64     // immutable sleep evidence; Ms is the allocation for the latest Derive
 }
 
 // SharesOf turns the classifier's parts into shares when they span at least two categories:
@@ -109,6 +110,7 @@ func SharesOf(parts []classify.Part) []Share {
 		if pt.Ms > 0 {
 			out[i].Ms += pt.Ms
 			out[i].Literal = true
+			out[i].literalMs += pt.Ms
 		}
 	}
 	if len(out) < 2 {
@@ -140,8 +142,6 @@ func (o *Operation) Booked(phase Phase) (text string, ms int64, ok bool) {
 	return "", 0, false
 }
 
-// Failure reports whether the op counts as a failed step: a recorded failure or non-zero exit
-// that is not a query miss.
 // Failure reports a step that failed: the harness recorded a failure or a non-zero exit, the
 // op is not a query (a miss is an answer, classify.QueryKind) and the exit is not a kill
 // signal — 130 (SIGINT) and 143 (SIGTERM) are what a command ends with when the turn is

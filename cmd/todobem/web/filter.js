@@ -51,11 +51,18 @@ function hostOn(f, host) {
 }
 // hostHue: every paired agent gets its own hue, 60° apart around the colour wheel in the order
 // of the hosts present (alphabetical, so a host keeps its colour between renders); the wheel
-// starts away from red, which would read as an alarm. The seventh host wraps around.
+// starts away from red, which would read as an alarm. The seventh host wraps around. Cache the
+// palette by session-list identity: a page can draw hundreds of badges without sorting the
+// whole fleet once per row.
+let hostHueSource = null;
+let hostHues = new Map();
 function hostHue(host) {
-  const hosts = hostsPresent(state.sessions || []).filter(Boolean);
-  const i = Math.max(0, hosts.indexOf(host));
-  return (200 + i * 60) % 360;
+  const sessions = state.sessions || [];
+  if (sessions !== hostHueSource) {
+    hostHueSource = sessions;
+    hostHues = new Map(hostsPresent(sessions).filter(Boolean).map((name, i) => [name, (200 + i * 60) % 360]));
+  }
+  return hostHues.get(host) ?? 200;
 }
 // hostBadge: the chip that names a paired agent, framed in its hue.
 const hostBadge = host => `<span class="host-mark" style="--host-hue:${hostHue(host)}" title="${esc(FILTER_TEXT.hostNote(host))}">${esc(host)}</span>`;
@@ -132,7 +139,7 @@ function dayLabel(t) {
 function filterRange(f, now = Date.now()) {
   if (FILTER_DAYS[f.kind]) return { from: now - FILTER_DAYS[f.kind] * DAY_MS, to: now };
   if (f.kind === 'custom') return { from: dayStart(f.from), to: dayEnd(f.to) || now };
-  return { from: 0, to: now };
+  return { from: 0, to: Number.POSITIVE_INFINITY };
 }
 
 // inView: whether a session is inside the filter's facets — source, host, project and period —

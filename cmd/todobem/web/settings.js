@@ -163,7 +163,16 @@ async function serversAction(a, el) {
   } else return;
   sv.busy = a + ':' + name;
   renderSettings();
-  const r = await apiPost(path, body);
+  let r;
+  try {
+    r = await apiPost(path, body);
+  } catch (e) {
+    sv.busy = '';
+    if (e instanceof AuthError) return;
+    sv.error = T.failed(e.message);
+    renderSettings();
+    return;
+  }
   sv.busy = '';
   if (r.status === 401) {
     lock();
@@ -218,7 +227,7 @@ function serversSectionHTML(st) {
 }
 
 function settingsState() {
-  if (!state.settings) state.settings = { loading: false, error: '', data: null, draft: {}, saving: false };
+  if (!state.settings) state.settings = { loading: false, error: '', data: null, draft: {}, saving: false, request: 0 };
   return state.settings;
 }
 
@@ -253,20 +262,24 @@ function settingsDirty(st) {
 async function loadSettings() {
   const st = settingsState();
   const navigation = navigationRequest;
+  const request = ++st.request;
   st.loading = true;
   st.error = '';
   renderSettings();
   loadServers();
   try {
     const data = await api('/api/settings');
+    if (request !== st.request) return;
+    st.loading = false;
     if (navigation !== navigationRequest) return;
     st.data = data;
     st.draft = draftOf(data);
   } catch (e) {
+    if (request !== st.request) return;
+    st.loading = false;
     if (navigation !== navigationRequest || e instanceof AuthError) return;
     st.error = e.message;
   }
-  st.loading = false;
   renderSettings();
 }
 
@@ -274,11 +287,31 @@ async function saveSettings() {
   const st = settingsState();
   if (!st.data || st.data.pinned || st.saving) return;
   const navigation = navigationRequest;
+  const request = ++st.request;
+  st.loading = false;
   st.saving = true;
   renderSettings();
-  const r = await apiPost('/api/settings', { codex_homes: st.draft.codex || [], claude_homes: st.draft.claude || [] });
-  if (navigation !== navigationRequest) return;
+  let r;
+  try {
+    r = await apiPost('/api/settings', { codex_homes: st.draft.codex || [], claude_homes: st.draft.claude || [] });
+  } catch (e) {
+    st.saving = false;
+    if (request !== st.request) {
+      if (navigation === navigationRequest) renderSettings();
+      return;
+    }
+    if (navigation !== navigationRequest) return;
+    if (e instanceof AuthError) return;
+    st.error = SETTINGS_TEXT.states.saveFailed(e.message);
+    renderSettings();
+    return;
+  }
   st.saving = false;
+  if (request !== st.request) {
+    if (navigation === navigationRequest) renderSettings();
+    return;
+  }
+  if (navigation !== navigationRequest) return;
   if (r.status === 401) {
     lock();
     return;

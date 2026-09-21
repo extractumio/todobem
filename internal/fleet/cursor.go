@@ -3,7 +3,9 @@ package fleet
 import (
 	"crypto/rand"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,8 +34,20 @@ type tracked struct {
 }
 
 type rowSig struct {
-	updated, bytes, question int64
-	title                    string
+	updated, bytes, question, started int64
+	title, source, cwd, branch        string
+	cli, model, lastAnswer            string
+	totals                            [sha256.Size]byte
+	agents                            int
+	live                              bool
+}
+
+func totalsSig(t *model.Totals) [sha256.Size]byte {
+	if t == nil {
+		return [sha256.Size]byte{}
+	}
+	b, _ := json.Marshal(t) // model.Totals contains only JSON-safe scalar maps
+	return sha256.Sum256(b)
 }
 
 // NewTracker starts a tracker with a fresh boot nonce.
@@ -56,7 +70,12 @@ func (t *Tracker) Page(since string, rows []model.SessionSummary) SessionsPage {
 	for _, r := range rows {
 		seen[r.ID] = true
 		ids = append(ids, r.ID)
-		sig := rowSig{updated: r.Updated, bytes: r.Bytes, question: r.Question, title: r.Title}
+		sig := rowSig{
+			updated: r.Updated, bytes: r.Bytes, question: r.Question, started: r.Started,
+			title: r.Title, source: r.Source, cwd: r.CWD, branch: r.Branch,
+			cli: r.CLI, model: r.Model, lastAnswer: r.LastAnswer,
+			totals: totalsSig(r.Totals), agents: r.Agents, live: r.Live,
+		}
 		if old, ok := t.rows[r.ID]; ok && old.sig == sig {
 			continue
 		}

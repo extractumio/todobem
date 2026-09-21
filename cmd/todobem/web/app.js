@@ -217,35 +217,6 @@ function loadFailure(e) {
 function current() { return state.model; }
 function root() { return state.model?.lanes[0]; }
 function laneById(id) { return state.model?.lanes.find(l => l.id === id); }
-function prepare(m) {
-  m.groups = m.groups || []; m.lanes = m.lanes || []; m.totals = m.totals || {}; m.totals.by_kind = m.totals.by_kind || {}; m.totals.by_phase = m.totals.by_phase || {};
-  for (const l of m.lanes) { l.turns = l.turns || []; l.ops = l.ops || []; l.markers = l.markers || []; l.segments = l.segments || []; l.active = l.active || []; l.by_phase = l.by_phase || {}; }
-  for (const l of m.lanes) for (const mk of l.markers) mk.text = mk.text ?? '';
-  m.opById = new Map();
-  m.laneById = new Map();
-  for (const l of m.lanes) { m.laneById.set(l.id, l); l.ops.sort((a, b) => a.start - b.start); for (const o of l.ops) m.opById.set(o.id, o); l.opsByEnd = [...l.ops].sort((a, b) => b.end - a.end); }
-  m.groupById = new Map(m.groups.map(g => [g.id, g]));
-  // runs: identical tool calls (same kind and title) that follow each other in one lane with no
-  // other tool call between them — a polling loop of sleeps, say; the model's reasoning between
-  // two calls does not break a run. The list shows a run as one row.
-  for (const l of m.lanes) {
-    let run = null;
-    for (const o of l.ops) {
-      if (o.phase === 'llm') continue;
-      if (o.background) { run = null; continue; }
-      if (run && run.kind === o.kind && run.title === o.title) { o.run = run.id; continue; }
-      run = { id: `${l.id}:${o.id}`, kind: o.kind, title: o.title };
-      o.run = run.id;
-    }
-  }
-  const runSize = new Map();
-  for (const l of m.lanes) for (const o of l.ops) runSize.set(o.run, (runSize.get(o.run) || 0) + 1);
-  for (const l of m.lanes) for (const o of l.ops) if (runSize.get(o.run) < 2) delete o.run;
-  // sub-agent spawn/complete markers live on the parent lane; index them by child lane id
-  m.agentMarks = new Map();
-  for (const l of m.lanes) for (const mk of l.markers) if (mk.kind.startsWith('agent_') && mk.ref) { if (!m.agentMarks.has(mk.ref)) m.agentMarks.set(mk.ref, []); m.agentMarks.get(mk.ref).push(mk); }
-  return m;
-}
 async function loadSessions() {
   const request = ++sessionsRequest, navigation = navigationRequest;
   const ownsRequest = () => request === sessionsRequest && navigation === navigationRequest;
@@ -604,11 +575,9 @@ function fleetPage() {
 // ACTIVE_WINDOW: a session written this recently is active (the "active" chip, the summary tile).
 const ACTIVE_WINDOW = 10 * 60e3;
 const isActive = (s, now) => now - s.updated < ACTIVE_WINDOW;
-// ASK_WINDOW: a question the agent asked this recently is still waiting for its answer (the
-// "waiting" chip, the rank). An older one stays recorded in the session, but nobody is coming
-// back to it: the list stops presenting it as pending.
-const ASK_WINDOW = 24 * 3600e3;
-const awaiting = (s, now) => !!s.question && now - s.question < ASK_WINDOW;
+// awaiting is a literal source signal: the index found a question or plan request with no later
+// answer. Its age does not prove that the user abandoned it, so the list keeps it pending.
+const awaiting = s => !!s.question;
 // fleetRank: under the default order the rows that need the reader come first — the active
 // sessions, then those whose agent is waiting for an answer — then everything else; an
 // explicit sort (size, agents, started) keeps its own order alone.
@@ -635,8 +604,8 @@ function sessionLink(s, withHost = false) {
   return `<button class="session-link" data-action="session" data-id="${esc(s.id)}"><strong>${sourceMark(s)}${withHost ? hostMark(s) : ''}${esc(s.title)}</strong>${desc}<span>${meta}</span></button>`;
 }
 // askChip: a question (or a plan awaiting approval) the harness recorded and nothing answered
-// within ASK_WINDOW — a chip with a pulsing ? next to the "active" chip, and the time it has
-// waited so far. Its containers (the status row, the tile, the top bar) space the chips.
+// yet — a chip with a pulsing ? next to the "active" chip, and the time it has waited so far.
+// Its containers (the status row, the tile, the top bar) space the chips.
 function askChip(s, now) {
   if (!awaiting(s, now)) {
     return '';
@@ -958,7 +927,7 @@ function overviewLcHTML(m, r) {
     const text = name ? (w >= (name.length + 1) * 0.6 ? name : w >= 1.1 ? name[0] : '') : '';
     const cls = 'lc-band-seg' + (work ? ' work' : user ? ' user' : ' idle');
     const title = def ? `${def.name} · ${fmt(run.e - run.s)}` : '';
-    out += `<div class="${cls}" style="left:${left.toFixed(3)}%;width:${w.toFixed(3)}%;${work ? 'background:' + fill : 'background:' + fill}" data-lc="${run.lc}" title="${esc(title)}">${text ? `<span>${esc(text)}</span>` : ''}</div>`;
+    out += `<div class="${cls}" style="left:${left.toFixed(3)}%;width:${w.toFixed(3)}%;${work ? 'background:' + fill : 'background:' + fill}" data-lc="${esc(run.lc)}" title="${esc(title)}">${text ? `<span>${esc(text)}</span>` : ''}</div>`;
   }
   return out;
 }
@@ -1078,7 +1047,7 @@ function renderTimeline() {
         // the last block of a live lane with no telemetry yet: the agent is generating and nothing
         // has been recorded since the last event — an in-progress wait, not an orphaned gap
         const pending = l.live && p === 'no_telemetry' && run === lastRun;
-        html += `<g class="mark" data-stage="1" data-lane="${esc(l.id)}" data-ta="${Math.round(ta)}" data-tb="${Math.round(tb)}" data-phase="${p}"${pending ? ' data-pending="1"' : ''}><rect x="${xa.toFixed(1)}" y="${top0}" width="${ww.toFixed(1)}" height="${fh}" rx="${ww > 4 ? 2 : 0}" fill="${fillFor(p)}"/>`;
+        html += `<g class="mark" data-stage="1" data-lane="${esc(l.id)}" data-ta="${Math.round(ta)}" data-tb="${Math.round(tb)}" data-phase="${esc(p)}"${pending ? ' data-pending="1"' : ''}><rect x="${xa.toFixed(1)}" y="${top0}" width="${ww.toFixed(1)}" height="${fh}" rx="${ww > 4 ? 2 : 0}" fill="${fillFor(p)}"/>`;
         if (pending) {
           if (ww > 15) html += hourglass(xa + 9, top0 + fh / 2, '#dbe6ee');
           if (ww > 120) { const label = `No telemetry yet (in progress) · ${fmt(tb - ta)}`; html += `<text class="op-label light" x="${xa + 19}" y="${top0 + fh / 2 + 3.5}">${esc(label.slice(0, Math.floor((ww - 26) / 5.8)))}</text>`; }
@@ -1106,7 +1075,7 @@ function renderTimeline() {
         const ta = state.a + run.start * per;
         const tb = state.a + run.end * per;
         const c = def.color, ly = y + BAND - 1;
-        html += `<g class="mark" data-stage="1" data-band="1" data-lane="${esc(l.id)}" data-ta="${Math.round(ta)}" data-tb="${Math.round(tb)}" data-lc="${run.key}"><title>${def.name} · ${fmt(tb - ta)}</title><rect x="${xa.toFixed(1)}" y="${y + 2}" width="${ww.toFixed(1)}" height="${BAND - 4}" rx="2" fill="${c}" opacity=".22"/><rect x="${xa.toFixed(1)}" y="${ly - 2}" width="${ww.toFixed(1)}" height="2" fill="${c}"/>`;
+        html += `<g class="mark" data-stage="1" data-band="1" data-lane="${esc(l.id)}" data-ta="${Math.round(ta)}" data-tb="${Math.round(tb)}" data-lc="${esc(run.key)}"><title>${esc(def.name)} · ${fmt(tb - ta)}</title><rect x="${xa.toFixed(1)}" y="${y + 2}" width="${ww.toFixed(1)}" height="${BAND - 4}" rx="2" fill="${c}" opacity=".22"/><rect x="${xa.toFixed(1)}" y="${ly - 2}" width="${ww.toFixed(1)}" height="2" fill="${c}"/>`;
         if (ww >= 14) {
           const label = `${def.short} ${fmt(tb - ta)}`;
           const lw = label.length * 6 + 8;
@@ -1127,7 +1096,7 @@ function renderTimeline() {
       }
       // sub-agent spawn / complete ticks from the parent's markers
       if (l.depth > 0) for (const mk of m.agentMarks.get(l.id) || []) { if (mk.t < state.a || mk.t > state.b) continue; const xx = x(mk.t); if (mk.kind === 'agent_started') html += `<g class="marker" data-mk="${esc(`${mk.lane}:${mk.t}:${mk.kind}`)}"><path d="M${xx - 5} ${y + BAND}l10 ${(rh - BAND - 4) / 2}-10 ${(rh - BAND - 4) / 2}z" fill="#86d0b9" stroke="#0f1b23" stroke-width="1"/></g>`; else if (mk.kind === 'agent_completed') html += `<rect class="marker" data-mk="${esc(`${mk.lane}:${mk.t}:${mk.kind}`)}" x="${xx - 1}" y="${y + BAND}" width="2" height="${rh - BAND - 4}" fill="#86d0b9" opacity=".5"/>`; else if (mk.kind === 'agent_interacted') html += `<rect class="marker" data-mk="${esc(`${mk.lane}:${mk.t}:${mk.kind}`)}" x="${xx - 1}" y="${y + rh - 9}" width="2" height="6" fill="#c7d5de" opacity=".8"/>`; else if (mk.kind === 'agent_interrupted') html += `<path class="marker" data-mk="${esc(`${mk.lane}:${mk.t}:${mk.kind}`)}" d="M${xx - 4} ${y + 6}l8 8m0-8l-8 8" stroke="#d76368" stroke-width="2"/>`; }
-      for (const o of l.ops) { if (!o.background || o.end <= state.a || o.start >= state.b) continue; const xa = x(Math.max(o.start, state.a)), ww = Math.max(2, x(Math.min(o.end, state.b)) - xa); html += `<g class="mark" data-op="${esc(o.id)}" data-lane="${esc(l.id)}" data-ta="${o.start}" data-tb="${o.end}" data-phase="${o.phase}"><rect x="${xa.toFixed(1)}" y="${y + rh - 5}" width="${ww.toFixed(1)}" height="3" rx="1.5" fill="#c9a15c" opacity=".9"/><rect x="${xa.toFixed(1)}" y="${y + rh - 8}" width="${ww.toFixed(1)}" height="8" fill="transparent"/></g>`; }
+      for (const o of l.ops) { if (!o.background || o.end <= state.a || o.start >= state.b) continue; const xa = x(Math.max(o.start, state.a)), ww = Math.max(2, x(Math.min(o.end, state.b)) - xa); html += `<g class="mark" data-op="${esc(o.id)}" data-lane="${esc(l.id)}" data-ta="${o.start}" data-tb="${o.end}" data-phase="${esc(o.phase)}"><rect x="${xa.toFixed(1)}" y="${y + rh - 5}" width="${ww.toFixed(1)}" height="3" rx="1.5" fill="#c9a15c" opacity=".9"/><rect x="${xa.toFixed(1)}" y="${y + rh - 8}" width="${ww.toFixed(1)}" height="8" fill="transparent"/></g>`; }
       // Tool failures (non-zero exit) render as a bold red ×. LLM failures (invalid tool call /
       // broken exec script) are shown separately as the orange × llm_error marker in the row above,
       // so they are skipped here to avoid a duplicate glyph.
@@ -1139,11 +1108,11 @@ function renderTimeline() {
           const cy = fy - 4;
           const hit = `<rect x="${(xx - 6).toFixed(1)}" y="${fy - 11}" width="12" height="13" fill="transparent"/>`;
           if (xx - lastX < 4) {
-            html += `<rect class="mark" data-op="${esc(o.id)}" data-lane="${esc(l.id)}" data-ta="${o.start}" data-tb="${o.end}" data-phase="${o.phase}" x="${(xx - 1).toFixed(1)}" y="${fy - 8}" width="2" height="8" fill="#e5484d"/>`;
+            html += `<rect class="mark" data-op="${esc(o.id)}" data-lane="${esc(l.id)}" data-ta="${o.start}" data-tb="${o.end}" data-phase="${esc(o.phase)}" x="${(xx - 1).toFixed(1)}" y="${fy - 8}" width="2" height="8" fill="#e5484d"/>`;
             continue;
           }
           lastX = xx;
-          html += `<g class="mark" data-op="${esc(o.id)}" data-lane="${esc(l.id)}" data-ta="${o.start}" data-tb="${o.end}" data-phase="${o.phase}"><path d="M${(xx - 4).toFixed(1)} ${cy - 4}l8 8m0-8l-8 8" stroke="#0f1b23" stroke-width="3.6" stroke-linecap="round"/><path d="M${(xx - 4).toFixed(1)} ${cy - 4}l8 8m0-8l-8 8" stroke="#e5484d" stroke-width="2.2" stroke-linecap="round"/>${hit}</g>`;
+          html += `<g class="mark" data-op="${esc(o.id)}" data-lane="${esc(l.id)}" data-ta="${o.start}" data-tb="${o.end}" data-phase="${esc(o.phase)}"><path d="M${(xx - 4).toFixed(1)} ${cy - 4}l8 8m0-8l-8 8" stroke="#0f1b23" stroke-width="3.6" stroke-linecap="round"/><path d="M${(xx - 4).toFixed(1)} ${cy - 4}l8 8m0-8l-8 8" stroke="#e5484d" stroke-width="2.2" stroke-linecap="round"/>${hit}</g>`;
         }
       }
       if (l.live) { const xx = x(Math.min(m.now, state.b)); if (m.now >= state.a) html += `<g class="marker" data-turn="${esc(l.id + ':' + (l.turns[l.turns.length - 1] || {}).id)}"><circle cx="${xx}" cy="${y + BAND + 1 + (rh - BAND - 6) / 2}" r="4" fill="#5fe0a0"><animate attributeName="r" values="3.5;6;3.5" dur="1.6s" repeatCount="indefinite"/></circle></g>`; }
@@ -1180,11 +1149,11 @@ function renderTimeline() {
           const selected = sg.op && sg.op === state.selected ? 'stroke="#eef6fa" stroke-width="2"' : '';
           const label = ww > 40 && o ? `<text class="op-label ${p === 'llm' || p === 'code' ? 'light' : ''}" x="${xa + 4}" y="${y + rh / 2 + 3.5}">${esc(o.title.slice(0, Math.floor((ww - 8) / 5.6)))}</text>` : '';
           const est = sg.shared ? `<rect x="${xa.toFixed(1)}" y="${y + 4}" width="${ww.toFixed(1)}" height="${rh - 8}" rx="${ww > 4 ? 2 : 0}" fill="url(#estHatch)" pointer-events="none"/>` : '';
-          html += `<g class="mark" data-op="${esc(sg.op || '')}" data-lane="${esc(l.id)}" data-ta="${sg.s}" data-tb="${sg.e}" data-phase="${p}"><rect x="${xa.toFixed(1)}" y="${y + 4}" width="${ww.toFixed(1)}" height="${rh - 8}" rx="${ww > 4 ? 2 : 0}" fill="${fillFor(p)}" ${stroke} ${selected}/>${est}${label}</g>`;
+          html += `<g class="mark" data-op="${esc(sg.op || '')}" data-lane="${esc(l.id)}" data-ta="${sg.s}" data-tb="${sg.e}" data-phase="${esc(p)}"><rect x="${xa.toFixed(1)}" y="${y + 4}" width="${ww.toFixed(1)}" height="${rh - 8}" rx="${ww > 4 ? 2 : 0}" fill="${fillFor(p)}" ${stroke} ${selected}/>${est}${label}</g>`;
         }
       } else {
         const { runs, per } = bucketRuns(segs, state.a, state.b, P, bw, () => p);
-        for (const run of runs) { const xa = L + run.start * bw, ww = Math.max(1, (run.end - run.start) * bw - .6); html += `<g class="mark" data-stage="1" data-lane="${esc(l.id)}" data-ta="${Math.round(state.a + run.start * per)}" data-tb="${Math.round(state.a + run.end * per)}" data-phase="${p}"><rect x="${xa.toFixed(1)}" y="${y + 4}" width="${ww.toFixed(1)}" height="${rh - 8}" rx="1.5" fill="${fillFor(p)}" opacity="${(.4 + .6 * run.cov).toFixed(2)}"/></g>`; }
+        for (const run of runs) { const xa = L + run.start * bw, ww = Math.max(1, (run.end - run.start) * bw - .6); html += `<g class="mark" data-stage="1" data-lane="${esc(l.id)}" data-ta="${Math.round(state.a + run.start * per)}" data-tb="${Math.round(state.a + run.end * per)}" data-phase="${esc(p)}"><rect x="${xa.toFixed(1)}" y="${y + 4}" width="${ww.toFixed(1)}" height="${rh - 8}" rx="1.5" fill="${fillFor(p)}" opacity="${(.4 + .6 * run.cov).toFixed(2)}"/></g>`; }
       }
       html += `</g>`;
     }
@@ -1451,7 +1420,7 @@ function renderOperations() {
   const intervalItem = (o, i) => {
     const l = m.laneById.get(o.lane);
     const who = l && l.depth > 0 ? ' · ' + esc(l.path.split('/').pop()) : '';
-    return `<button class="operation" data-action="inspect-interval" data-lane="${esc(o.lane)}" data-phase="${o.phase}" data-ta="${o.start}" data-tb="${o.end}"><span class="op-number">${pad(i + 1)}</span><i class="color-square" style="background:${PHASES[o.phase].color}"></i><span class="operation-copy"><strong>${PHASES[o.phase].name}</strong><small>${stampS(o.start)} → ${stampS(o.end)} · ${fmt(o.end - o.start, true)}${who}</small></span><span class="op-time">${fmt(overlap(o.start, o.end, state.a, state.b), true)}</span>${icon('right', true)}</button>`;
+    return `<button class="operation" data-action="inspect-interval" data-lane="${esc(o.lane)}" data-phase="${esc(o.phase)}" data-ta="${o.start}" data-tb="${o.end}"><span class="op-number">${pad(i + 1)}</span><i class="color-square" style="background:${PHASES[o.phase].color}"></i><span class="operation-copy"><strong>${PHASES[o.phase].name}</strong><small>${stampS(o.start)} → ${stampS(o.end)} · ${fmt(o.end - o.start, true)}${who}</small></span><span class="op-time">${fmt(overlap(o.start, o.end, state.a, state.b), true)}</span>${icon('right', true)}</button>`;
   };
   const runItem = (r, i) => {
     const l = m.laneById.get(r.lane);

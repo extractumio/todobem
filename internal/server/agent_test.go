@@ -14,6 +14,7 @@ import (
 
 	"github.com/extractumio/todobem/internal/auth"
 	"github.com/extractumio/todobem/internal/fleet"
+	"github.com/extractumio/todobem/internal/insights"
 	"github.com/extractumio/todobem/internal/model"
 	"github.com/extractumio/todobem/internal/settings"
 )
@@ -209,8 +210,11 @@ func TestAgentRefusesWithoutBearer(t *testing.T) {
 		t.Fatalf("stale token accepted: %v", err)
 	}
 	good, _ := PairingString(keyPath, pin, "7789", false, AgentBearerTTL, time.Now())
+	if _, _, err := fleet.Pair(good, "../outside", addr); err == nil {
+		t.Fatal("invalid explicit name accepted")
+	}
 	if _, _, err := fleet.Pair(good, "x", addr); err != nil {
-		t.Fatalf("fresh token: %v", err)
+		t.Fatalf("invalid name consumed the one-use token: %v", err)
 	}
 	if _, _, err := fleet.Pair(good, "x", addr); err == nil || !strings.Contains(err.Error(), "used") {
 		t.Fatalf("token reused: %v", err)
@@ -219,6 +223,59 @@ func TestAgentRefusesWithoutBearer(t *testing.T) {
 	defer wrongPin.Close()
 	if _, err := wrongPin.Hello(); err == nil || !strings.Contains(err.Error(), "pin") {
 		t.Fatalf("wrong pin accepted: %v", err)
+	}
+}
+
+// TestRemoveWithRevoke retires the old bearer before the hub discards the replacement. Merely
+// staging a key would leave the removed hub authorized indefinitely.
+func TestRemoveWithRevoke(t *testing.T) {
+	_, addr, pin, keyPath, _ := agentFixture(t)
+	_, fl, agentsPath := hubFixture(t, addr, pin, keyPath)
+	agents, _, err := fleet.LoadAgents(agentsPath)
+	if err != nil || len(agents) != 1 {
+		t.Fatalf("agents: %v %+v", err, agents)
+	}
+	old := fleet.NewClient(addr, pin, agents[0].Bearer)
+	defer old.Close()
+	if _, err := fl.Remove("a1", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Hello(); err == nil {
+		t.Fatal("removed hub's bearer still works")
+	}
+	if _, err := os.Stat(auth.NextPath(keyPath)); !os.IsNotExist(err) {
+		t.Fatalf("staged key was not promoted: %v", err)
+	}
+}
+
+func TestRevokeRecordsReplacementBeforePromotion(t *testing.T) {
+	_, addr, pin, keyPath, _ := agentFixture(t)
+	_, fl, agentsPath := hubFixture(t, addr, pin, keyPath)
+	agents, _, err := fleet.LoadAgents(agentsPath)
+	if err != nil || len(agents) != 1 {
+		t.Fatalf("agents: %v %+v", err, agents)
+	}
+	oldBearer := agents[0].Bearer
+	old := fleet.NewClient(addr, pin, oldBearer)
+	defer old.Close()
+	replacement, err := fleet.Revoke(agentsPath, agents[0], old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded, _, err := fleet.LoadAgents(agentsPath)
+	if err != nil || len(recorded) != 1 || recorded[0].Bearer != replacement.Bearer || recorded[0].Bearer == oldBearer {
+		t.Fatalf("replacement not durable: %v %+v", err, recorded)
+	}
+	if _, err := old.Hello(); err == nil {
+		t.Fatal("old bearer remained valid after promotion")
+	}
+	current := fleet.NewClient(addr, pin, recorded[0].Bearer)
+	defer current.Close()
+	if _, err := current.Hello(); err != nil {
+		t.Fatalf("durable replacement is unusable: %v", err)
+	}
+	if _, err := fl.Remove("a1", false); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -298,6 +355,86 @@ func TestFactsFlowToTheHub(t *testing.T) {
 	}
 	if code := get(t, hub, "/api/insights/report?period=all&hosts=.", &rep); code != 200 || rep.Scope.Sessions != 0 {
 		t.Fatalf("report over this machine only: %d sessions", rep.Scope.Sessions)
+	}
+}
+
+func TestRemoteFactsWithoutCacheAreNotDurablyAcknowledged(t *testing.T) {
+	agent, addr, pin, keyPath, _ := agentFixture(t)
+	pairing, err := PairingString(keyPath, pin, "7789", false, AgentBearerTTL, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	snapshotDir := filepath.Join(dir, "fleet")
+	fl := fleet.New(filepath.Join(dir, "agents.json"), snapshotDir)
+	hub := NewWithCache(settings.Homes{}, fstest.MapFS{}, "")
+	hub.SetFleet(fl)
+	if err := fl.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fl.Stop)
+	if err := fl.Add(pairing, "a1", addr); err != nil {
+		t.Fatal(err)
+	}
+	agent.agent.digest()
+	deadline := time.Now().Add(10 * time.Second)
+	for agent.insights.scanner.Progress().Running && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := fl.PollNow("a1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := hub.insights.factsFor("aaaa-1111@a1"); !ok {
+		t.Fatal("in-memory remote facts were not delivered")
+	}
+	if got := fl.Status()[0].Digested; got != 0 {
+		t.Fatalf("cache-off facts persisted as durable acknowledgements: %d", got)
+	}
+	snap, err := fleet.LoadSnapshot(snapshotDir, "a1")
+	if err != nil || len(snap.Facts) != 0 {
+		t.Fatalf("cache-off snapshot facts: %v %+v", err, snap.Facts)
+	}
+}
+
+type blockedLoader struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (l *blockedLoader) Parse(string) (*model.Session, error) {
+	select {
+	case <-l.started:
+	default:
+		close(l.started)
+	}
+	<-l.release
+	return nil, fmt.Errorf("synthetic stop")
+}
+
+// TestAgentDigestDoesNotMarkRejectedScan records a fingerprint only after Scanner.Start accepts
+// the work. Otherwise a busy report scan makes the digest permanently skip those sessions.
+func TestAgentDigestDoesNotMarkRejectedScan(t *testing.T) {
+	agent, _, _, _, _ := agentFixture(t)
+	loader := &blockedLoader{started: make(chan struct{}), release: make(chan struct{})}
+	agent.insights.scanner = insights.NewScanner(loader, 1, nil)
+	if !agent.insights.scanner.Start([]string{"busy"}) {
+		t.Fatal("could not start blocking scan")
+	}
+	<-loader.started
+	agent.agent.digest()
+	agent.agent.mu.Lock()
+	tried := len(agent.agent.tried)
+	agent.agent.mu.Unlock()
+	close(loader.release)
+	deadline := time.Now().Add(time.Second)
+	for agent.insights.scanner.Progress().Running && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if agent.insights.scanner.Progress().Running {
+		t.Fatal("blocking scan did not finish")
+	}
+	if tried != 0 {
+		t.Fatalf("busy scanner marked %d sessions as tried", tried)
 	}
 }
 

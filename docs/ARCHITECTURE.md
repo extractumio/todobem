@@ -331,7 +331,7 @@ pin. Word rules are looked up exactly (longest key first: `xcrun devicectl devic
 1. Codex `parsed_cmd` of type `read`, `search`, `list_files` short-circuits to `code`.
 2. Heredoc bodies are masked (`maskHeredocs`): only stdin consumed as interpreter source is
    kept for inspection; data heredocs (`cat`, a named script) stay opaque.
-3. The masked command is split into top-level segments at `&&`, `;`, `|`, `||`, newline
+3. The masked command is split into top-level segments at `&&`, `;`, `|`, `|&`, `||`, newline
    (quotes and `(){}` depth respected; a subshell `(cd x && npm run build) | tail` is its inner
    commands, the redirection after the paren riding on the last). Every segment is normalized:
    a comment (`# …`) or a continuation fragment (`-t page.yml | head -1)`) runs nothing; env
@@ -342,16 +342,17 @@ pin. Word rules are looked up exactly (longest key first: `xcrun devicectl devic
    `bunx`, `bun x`, `npm exec` / `x`, `pnpm dlx` / `exec`, `yarn dlx` / `exec`, `bundle exec`,
    `poetry run`, `uv run`, `pipenv run`; `head.go` `runners`) → the tool it runs, its
    `@version` dropped (`npx -c '…'` and `uv run -m` stay opaque; a scoped `@scope/tool` is not
-   a local script); `git -C dir -c k=v <sub>` → `git <sub>`; `npm --prefix … <sub>` → `npm
-   <sub>` (also before a runner: `pnpm --filter web exec tsc` → `tsc`); `npm run build:prod` /
+   a local script); `git -C dir -c k=v <sub>` → `git <sub>`; `npm --prefix … <sub>` / `yarn
+   --cwd … <sub>` → `<tool> <sub>` (also before a runner: `pnpm --filter web exec tsc` →
+   `tsc`); `npm run build:prod` /
    `pnpm test-e2e` / `npm run tests` → the base script `build` / `test` (the package.json
    `<name>[:_-]<variant>` convention; `build:watch` stays a build); `make [-C dir] [-f file]
    [-jN] [-k] [--] [VAR=val] <target>…` → `make <target>…` and `ninja [-C dir] [-jN] <target>…`
    → `ninja <target>…` (`make.go` `targetFields`: a dry run, a question, `--version` / `--help`
    → `<tool> -n`; ninja's `-t <sub-tool>` is kept); `go run <pkg>` / `cargo run --bin <name>`
    judged by the package or binary name (a `-serve` flag → service); interpreters (`python3
-   scripts/x.py` / `bun test.ts` judged by the script name — a bare word after an interpreter
-   is a subcommand, never a script guess — `bash -c '…'` by the inner command, `bash -n` a
+   scripts/x.py`, extensionless `python3 check_tests` and `bun test.ts` judged by the script
+   name after exact subcommand rules — `bash -c '…'` by the inner command, `bash -n` a
    syntax check, `python3 -` opaque). A `seg:` rule matches the segment as written **or** as
    unwrapped, so `npx -y tsc --noEmit` and `./node_modules/.bin/tsc --noEmit` are `tsc
    --noEmit`.
@@ -712,7 +713,7 @@ The key file `~/.todobem/auth.key` (32 random bytes, 0600, refused when group/wo
 created by whichever of server or CLI runs first, re-read on change so `todobem token -revoke`
 kills every session live) is the root of trust. `todobem token` mints a 52-character base32
 one-time token (`nonce ‖ issued ‖ session-ttl ‖ HMAC[:16]`): accepted within 5 minutes, once,
-and never if minted before the server booted. `POST /api/login` exchanges it for a stateless
+and never if minted before the server's boot second (the token records whole seconds). `POST /api/login` exchanges it for a stateless
 session (`expiry ‖ nonce ‖ HMAC`) in an HttpOnly, SameSite=Strict cookie, Path=/api, Max-Age
 only (30 days by default). Token and session MACs are domain-separated. Static files stay open
 (no data in them); every other `/api/*` answers 401 without a session; login / logout are JSON
@@ -732,7 +733,7 @@ served. The agent never opens a connection. Its identity is a self-signed ECDSA 
 (`~/.todobem/agent.crt`, pinned by SHA-256 at pairing) and its root of trust
 `~/.todobem/agent.key` (the UI's `auth.key` is never touched): a pairing token is
 `auth.MintToken` under that key (one use, five minutes, not before boot), a bearer is
-`auth.MintSession` with a year's TTL, and `rotate` is two-phase — `auth.StageKey` writes
+`auth.MintSession` with a year's TTL, and `rotate` is two-phase — `auth.StageKey` creates or reuses
 `agent.key.next`, `KeySource.All` accepts both keys, and the first session verified under the
 staged key promotes it. The session list is a delta (`fleet.Tracker`: a boot nonce, a scan
 generation, `changed[id]`, count and `ids_hash`; no tombstones); a model is the cache file
@@ -749,7 +750,7 @@ cursor, rows, last contact — an unreachable agent keeps its last rows), reconc
 against `count`/`ids_hash` with one full fetch on a mismatch, and fetches facts for the rows
 that changed in batches of 100 (pending ones again after five minutes). Remote sessions carry
 the id `<uuid>@<name>` and `host`; the server's `summaries()` merges them, and `loadModel`,
-`fingerprint` (the row's `(bytes, updated)` under the agent's rules), the `version` case, the
+`fingerprint` (the row's `(bytes, updated)` plus the agent's rules, cache and facts versions), the `version` case, the
 op's source span, `/api/event` (its `session` parameter) and `factsFor` hand a remote id to the
 fleet — `loadModel` through `remoteModel`, which answers a `remoteView` that polls and fetches
 spans from its agent, so the handlers ask the view what it can do; the server owns every cache
@@ -782,7 +783,8 @@ bytes, and the rotation, the reconciliation and the source spans behaved as the 
 | `/api/insights/report`, `scan`, `status`, `rules` | §10; `hosts=` narrows a report to agents by name, `.` being this machine |
 
 Every response carries `X-Todobem-Build`, a 12-hex fingerprint of the embedded `web/` tree
-(`build.go`). The page (`build.js`) keeps the first value it sees and reloads itself when a
+(`build.go`); the HTML response also records it in a SameSite=Strict, non-secret build cookie.
+The page (`build.js`) starts from the HTML's value and reloads itself when a
 later answer carries another one, and that answer is never used (the call never settles): a
 deploy (`scripts/deploy.sh`) replaces the binary under an open tab, and the tab follows on its
 next request — within a poll on the session page, the only page that polls — or as soon as it
@@ -800,8 +802,8 @@ only new or changed files have their head re-read.
 ## 9. UI (`cmd/todobem/web`)
 
 Pages (hash routes): the lock screen (on a 401), **Sessions** (the list with source marks,
-last answer, a pulsing `?` for a pending question — a question asked within the last day
-(`ASK_WINDOW`); an older one stays recorded but is no longer presented as waiting — under the
+last answer, a pulsing `?` for a pending question — the source index found no later answer, and
+its age never cancels that literal signal — under the
 default order the active sessions come first, then those with a pending question, then the
 rest by update time; an explicit sort is its key alone — the period / project / source filter
 of `filter.js`; the "active" and "waiting" chips sit on a status row under the Updated stamp,
@@ -916,18 +918,20 @@ compactions (context, re-read); background ops; the longest verdict-phase ops; f
 ops with their subgroup; unknown heads and unknown time by subgroup; the main thread's tool calls
 by phase and subgroup (calls, exclusive time, query misses, failures); lifecycle × model ×
 effort cells; and the **delivery walk** (`facts_delivery.go`): one pass over every op of every
-lane in start order — change ops (first, last), the first successful verification at or after
-the last change (a completed test op that did not fail, or a stop hook whose command classified
-as `test` and raised no hook error: `VerifiedBy` agent / hook) and the distinct kinds of every
+lane in start order — recorded change ops (first, last), the first successful verification at or after
+the last change (a completed non-compound test op, or a stop hook
+whose command classified as `test` and raised no hook error: `VerifiedBy` agent / hook) and the distinct kinds of every
 such verification in the order they ran (`VerifiedKinds`: what verified the session by the name
-the rule table gave it), the test runs and how many failed (a failed test is a verdict, not a
-failed tool call), the stop hooks run whatever their command, the last verdict, the end of the
+the rule table gave it), the test runs and how many failed (including test-running hooks; a
+failed test is a verdict, not a failed tool call), the stop hooks run whatever their command, the last verdict, the end of the
 last review run (a review skill run, Codex review mode, a review-role lane) and the change ops
 after it, the unknown + no-telemetry time on the root after the last change (the walk may have
-missed a test there), every `git push` after a change with what ran between that change and
-the push (`Pushes`: a verification or not, test runs in the window and whether the last one
-failed, the root's blind time inside the window) and the change ops after the last push, and
-per-turn counts (turns with edits, those with no successful verification after their last edit,
+missed a test there), every successful non-compound `git push` after a change with what ran between that change and the push (`Pushes`: a verification or not, test runs in the window and whether the last one
+failed, the root's blind time inside the window) and the change ops after the last push. A
+compound's shares are allocation estimates, not an execution trace: its change and push shares
+are not delivery events, and a test share has no per-step verdict; D17 and a later push window stay no data until a recorded passing test resolves
+that ambiguity. Per-turn counts include turns with edits, those with no successful verification after their last edit,
+and those whose result is ambiguous for the same reason,
 unknown time inside the root's change windows). Session scope: a sub-agent's edit is the
 session's edit and a sub-agent's test verifies it. Retry windows carry the retry op and what ran
 between the failure and the retry (`Recovery`: none — reads and queries only; fix — a change op
@@ -957,9 +961,9 @@ denominator nor in "no data" — the page says "of M sessions with changes".
 | T1 | You and the agent | exposure | the first model call after a break of 1 s or more: its uncached input | tokens, by gap bucket; stats: the starts after breaks of 15 min or more and their uncached input |
 | D4 | Sub-agents | exposure | worker waits during which at most one sub-agent was inside a turn (both harnesses block the thread on the wait call, so the root never works meanwhile); not applicable with fewer than two sub-agents | the wait, keyed "one sub-agent at a time" / "several, one at a time" / "no sub-agent inside a turn" (the lane in the note) |
 | T6 | Sub-agents | exposure | a sub-agent's first call (its instructions and context); not applicable without a sub-agent | tokens; how many spent more to start than to work |
-| D17 | Verification loop | check | at session end: the session changed a file and no verification (a successful test op, or a test-running stop hook without error) started at or after its last change; not measurable with unknown / no-telemetry time after the last change; not applicable without a change op | sessions, keyed by source, each row over the measurable sessions of its source (`of_<source>`); stats: turns with edits and those unverified, test runs and failed ones, last verdict failed, the first verifying kind of each verified session (`verified_kind:<kind>`) and the sessions verified by a lint / type check / syntax check alone, sessions that ran stop hooks and those verified by one |
+| D17 | Verification loop | check | at session end: the session changed a file and no verification (a successful non-compound test op or a test-running stop hook without error) started at or after its last change; not measurable with unknown / no-telemetry time or an unresolved compound test share after the last change; not applicable without a recorded change op | sessions, keyed by source, each row over the measurable sessions of its source (`of_<source>`); stats: turns with edits and those unverified or ambiguous, test runs and failed ones (including hooks), last verdict failed, the first verifying kind of each verified session (`verified_kind:<kind>`) and the sessions verified by a lint / type check / syntax check alone, sessions that ran stop hooks and those verified by one |
 | D24 | Verification loop | check | a review run ended before the session's last change op; not applicable without a review run | sessions, keyed by the number of edits after the review (1, 2–5, more) |
-| D25 | Verification loop | check | a `git push` with a change op before it and no verification started between the last change and the push (CI after the push is not in the log; an edit to any file counts); a push whose window holds unknown / no-telemetry root time is no data; not applicable without a push after a change | sessions, one finding per push, keyed "no test ran between the last edit and the push" / "tests ran between, none passed"; stats: pushes and unverified ones, pushes after a failed test, sessions with edits after their last push and those edits |
+| D25 | Verification loop | check | a successful non-compound `git push` with a recorded change op before it and no verification started between the last change and the push (CI after the push is not in the log; an edit to any file counts); a push whose window holds unknown / no-telemetry root time or an unresolved compound test share is no data; not applicable without a push after a change | sessions, one finding per push, keyed "no test ran between the last edit and the push" / "tests ran between, none passed"; stats: pushes and unverified ones, pushes after a failed test, sessions with edits after their last push and those edits |
 | D7 | Failures and retries | exposure | a retry group with a failed attempt; per failed-to-retry window, what ran between the failure and the retry (only reads, a fix on any lane, an infra step, a wait, another step, several kinds, a user turn) and whether the retry failed again | the retry, fix, recovery and queue time, by shape; a group on a sub-agent lane is parallel time; stats: windows by recovery path, blind test retries that passed |
 | D15 | Failures and retries | info | a failed step in the code phase (edit, patch, script, shell, git, hosting, network); query misses and CI status waits excluded | count, by subgroup |
 
@@ -1244,7 +1248,9 @@ simulation (the three Claude Code sessions matched to the second).
   a silent all-to-one. Per category, not per segment (`build && test && lint && typecheck` is
   50/50, not 25/75): the categories are what the question is about. The dominant phase still
   names the op, so retry groups, failures and shapes did not move. (a) remains a possible
-  refinement on the same `Shares` schema (a measured share would replace an equal one).
+  refinement on the same `Shares` schema (a measured share would replace an equal one). A live
+  refresh always recomputes from the immutable literal sleep value; an earlier short refresh
+  cannot shrink that evidence for later refreshes.
 - **2026-09-19, stage hues and activity tints (reviewed by the `pragmatic` agent).** Four of
   the eight stage colours were their home activity's hex (Implementation = Development blue,
   Verification = Testing yellow, Deployment = Release green, Maintenance = Infrastructure tan),

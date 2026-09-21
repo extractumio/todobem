@@ -342,6 +342,7 @@ const INSIGHT_TEXT = {
         const s = c.stats || {};
         const parts = [INSIGHT_TEXT.states.checkSessions(c.sessions, c.of, 'with changes, no test passed after the last edit')];
         if (s.edit_turns) parts.push(`${s.edit_turns_unverified || 0} of ${plural(s.edit_turns, 'turn')} with edits had no passing test after their last edit.`);
+        if (s.edit_turns_ambiguous) parts.push(`${plural(s.edit_turns_ambiguous, 'turn')} had a failed compound test with no per-step verdict.`);
         if (s.tests) parts.push(`${s.tests_failed || 0} of ${plural(s.tests, 'test run')} failed.`);
         if (s.last_verdict_failed) parts.push(`In ${plural(s.last_verdict_failed, 'session')} the last test failed.`);
         const kinds = verifiedKinds(s);

@@ -38,5 +38,13 @@ func TestBuildHeaderFollowsTheEmbeddedWeb(t *testing.T) {
 		if got := w.Header().Get(BuildHeader); got != a.build {
 			t.Fatalf("%s: %s=%q, want %q", path, BuildHeader, got, a.build)
 		}
+		cookies := w.Result().Cookies()
+		if path == "/" {
+			if len(cookies) != 1 || cookies[0].Name != buildCookie || cookies[0].Value != a.build || cookies[0].Path != "/" || cookies[0].SameSite != http.SameSiteStrictMode {
+				t.Fatalf("%s: build cookie = %+v", path, cookies)
+			}
+		} else if len(cookies) != 0 {
+			t.Fatalf("%s: unexpected cookies = %+v", path, cookies)
+		}
 	}
 }

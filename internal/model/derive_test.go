@@ -536,4 +536,12 @@ func TestCompoundCommandInvariants(t *testing.T) {
 	if second := o.Shares[0].Ms + o.Shares[1].Ms; first != 800 || second != 1200 || o.Shares[0].Ms != 600 {
 		t.Fatalf("live shares %d then %d (%+v)", first, second, o.Shares)
 	}
+	// A short first refresh must not destroy the requested sleep duration used by later ones.
+	sleep := mkOp("c2", classify.Test, 200, 200, "running", "")
+	sleep.Open, sleep.Shares = true, SharesOf(classify.Command("sleep 1 && go test ./...", "").Parts)
+	shareWallClock(sleep, 700)
+	shareWallClock(sleep, 1400)
+	if sleep.Shares[0].Ms != 1000 || sleep.Shares[1].Ms != 200 {
+		t.Fatalf("literal sleep changed across refreshes: %+v", sleep.Shares)
+	}
 }

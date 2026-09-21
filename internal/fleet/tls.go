@@ -18,6 +18,9 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/extractumio/todobem/internal/atomicfile"
+	"github.com/extractumio/todobem/internal/auth"
 )
 
 // The agent's TLS identity is a self-signed certificate minted on first start and pinned by its
@@ -38,6 +41,9 @@ func LoadOrCreateCert(certPath, keyPath string) (tls.Certificate, string, error)
 		if err := createCert(certPath, keyPath); err != nil {
 			return tls.Certificate{}, "", err
 		}
+	}
+	if err := auth.CheckPrivate(keyPath); err != nil {
+		return tls.Certificate{}, "", fmt.Errorf("agent tls key: %w", err)
 	}
 	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
@@ -97,10 +103,10 @@ func createCert(certPath, keyPath string) error {
 	if err := os.MkdirAll(filepath.Dir(certPath), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+	if err := atomicfile.Write(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
 		return err
 	}
-	return os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644)
+	return atomicfile.Write(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644)
 }
 
 // ServerTLS is the listener's configuration: the agent's certificate, TLS 1.3 only.
@@ -125,10 +131,17 @@ func PinnedTransport(pin string) *http.Transport {
 					return errors.New("no certificate presented")
 				}
 				if got := Pin(raw[0]); got != pin {
-					return fmt.Errorf("certificate pin %s… does not match the paired %s…", got[:12], pin[:12])
+					return fmt.Errorf("certificate pin %s does not match the paired %s", shortPin(got), shortPin(pin))
 				}
 				return nil
 			},
 		},
 	}
+}
+
+func shortPin(pin string) string {
+	if len(pin) > 12 {
+		return pin[:12] + "…"
+	}
+	return pin
 }

@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -19,6 +20,18 @@ type Pairing struct {
 
 const scheme = "todobem-agent"
 
+// CheckPin validates the lowercase hexadecimal SHA-256 certificate fingerprint stored in a
+// pairing string or agents file.
+func CheckPin(pin string) error {
+	if len(pin) != 64 || pin != strings.ToLower(pin) {
+		return errors.New("certificate pin must be 64 lowercase hexadecimal characters")
+	}
+	if _, err := hex.DecodeString(pin); err != nil {
+		return errors.New("certificate pin must be 64 lowercase hexadecimal characters")
+	}
+	return nil
+}
+
 // FormatPairing prints the pairing string.
 func FormatPairing(hostname, port, pin, token string) string {
 	return fmt.Sprintf("%s://%s/#%s.%s", scheme, net.JoinHostPort(hostname, port), pin, token)
@@ -32,7 +45,7 @@ func ParsePairing(s string) (Pairing, error) {
 		return Pairing{}, errors.New("not a pairing string (expected todobem-agent://host:port/#pin.token)")
 	}
 	pin, token, ok := strings.Cut(u.Fragment, ".")
-	if !ok || len(pin) != 64 || len(token) != 52 {
+	if !ok || CheckPin(pin) != nil || len(token) != 52 {
 		return Pairing{}, errors.New("pairing string: the fragment must be <64-hex pin>.<52-char token>")
 	}
 	if u.Host == "" {

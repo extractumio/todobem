@@ -365,6 +365,7 @@ func (a *agentSvc) digest() {
 	a.mu.Unlock()
 	roots := s.src.Roots() // newest first
 	var ids []string
+	keys := map[string]string{}
 	for _, fm := range roots {
 		if _, ok := s.insights.factsFor(fm.ID); ok {
 			continue
@@ -372,18 +373,22 @@ func (a *agentSvc) digest() {
 		key := fingerprintKey(s.fingerprint(fm.ID))
 		a.mu.Lock()
 		tried := a.tried[fm.ID] == key
-		if !tried {
-			a.tried[fm.ID] = key
-		}
 		a.mu.Unlock()
 		if !tried {
 			ids = append(ids, fm.ID)
+			keys[fm.ID] = key
 		}
 	}
 	if len(ids) == 0 {
 		return
 	}
-	if s.insights.scanner.Start(ids) {
-		log.Printf("agent: digest: parsing %d sessions (%d roots)", len(ids), len(roots))
+	if !s.insights.scanner.Start(ids) {
+		return
 	}
+	a.mu.Lock()
+	for _, id := range ids {
+		a.tried[id] = keys[id]
+	}
+	a.mu.Unlock()
+	log.Printf("agent: digest: parsing %d sessions (%d roots)", len(ids), len(roots))
 }
