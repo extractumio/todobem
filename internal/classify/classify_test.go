@@ -108,6 +108,10 @@ func TestCommand(t *testing.T) {
 		{"./dev ci-push origin main", Release, "release-flag"},
 		{"./dev worktree create mysql-fixture-startup origin/main", Code, "vcs-subcommand"},
 		{"./dev build", Build, "build-flag"},
+		// setsid only detaches the command it launches, like nohup: the command is what ran
+		{"setsid -w bash -c './dev build' </dev/null", Build, "build-flag"},
+		{"setsid go test ./...", Test, "go test"},
+		{"ditto build/Products/Debug/App.app artifacts/App.app", Code, "cp"},
 		{"./dev typecheck", Test, "test-flag"}, // a type check verifies; it sits with npm run typecheck, not with build
 		// tsc emits JavaScript (build); with --noEmit it only checks types (test outranks the word rule)
 		{"tsc", Build, "tsc"}, {"npx tsc -p tsconfig.json", Build, "tsc"}, {"npx --no-install tsc -p tsconfig.json", Build, "tsc"}, {"bunx tsc -p .", Build, "tsc"},
@@ -456,6 +460,7 @@ func TestHead(t *testing.T) {
 		{"native_path=\"$(skills/screencast/scripts/native/build.sh 2>/dev/null)\"; \"$native_path\" doctor", "$native_path"},
 		{"sudo -n timeout 30 ./deploy-thing --now", "./deploy-thing"},
 		{"env -u FOO bash -lc 'make'", "bash"},
+		{"setsid -w ./dev viewer-test </dev/null", "./dev"},
 		{"cd /repo && ./dev build > /tmp/b.log 2>&1", "cd"},
 		{"python3 - <<'PY'\nprint(1)\nPY", "python3"},
 		{"", ""},

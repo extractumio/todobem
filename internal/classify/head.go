@@ -7,7 +7,7 @@ import (
 
 // unwrapHead reduces a simple command to the fields a rule is matched on: a leading env
 // assignment, shell keywords (`if`, `while`, `!`) and wrapper words (sudo, nohup, exec, env,
-// timeout, …) with their flags are stripped; `node_modules/.bin/<tool>` and `node …/cli.js`
+// timeout, setsid, …) with their flags are stripped; `node_modules/.bin/<tool>` and `node …/cli.js`
 // become the tool; a package runner (`npx`, `bunx`, `npm exec`, `pnpm dlx` / `exec`, `yarn dlx`
 // / `exec`, `bun x`, `bundle exec`, `poetry run`, `uv run`, `pipenv run`) becomes the tool it
 // runs; `git` / `npm` / `pnpm` / `yarn` lose their option prefix so the subcommand is the second
@@ -39,8 +39,8 @@ unwrap:
 			seg = strings.Join(fields[1:], " ")
 			continue unwrap
 		}
-		switch h {
-		case "sudo", "nohup", "exec", "command", "builtin", "nice", "timeout", "gtimeout", "env", "xargs", "caffeinate", "time":
+		switch {
+		case wrapperWords[h]:
 			rest := fields[1:]
 			if h == "command" && len(rest) > 0 && (rest[0] == "-v" || rest[0] == "-V") {
 				break unwrap // `command -v x` is a probe: matched as its own word rule by the caller
@@ -159,8 +159,10 @@ unwrap:
 // nested quote broke the segmenter (a psql statement quoted inside an ssh command): data.
 var sqlWords = set("SELECT", "WITH", "FROM", "WHERE", "GROUP", "ORDER", "LIMIT", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "JOIN", "LEFT", "INNER", "UNION", "VALUES", "AND", "OR", "ON", "AS", "HAVING")
 
-// wrapperWords are the words unwrapHead strips with their flags (a path form included).
-var wrapperWords = set("sudo", "nohup", "exec", "command", "builtin", "nice", "timeout", "gtimeout", "env", "xargs", "caffeinate", "time")
+// wrapperWords launch the command that follows them (after their flags): the command is what
+// ran. unwrapHead strips them (a path form included), and Head goes through unwrapHead, so the
+// classifier and the unknown-head grouping agree.
+var wrapperWords = set("sudo", "nohup", "setsid", "exec", "command", "builtin", "nice", "timeout", "gtimeout", "env", "xargs", "caffeinate", "time")
 
 // reScriptVariant is an npm script name that is a variant of a base script the table lists
 // (`build:prod`, `e2e:install`, `bench:stop`, `lint:fix` → build, e2e, bench, lint).

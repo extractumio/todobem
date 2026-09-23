@@ -1290,8 +1290,8 @@ func maskHeredocs(cmd string) (string, []heredocSource) {
 }
 
 // Head names the command a rollout line ran, for grouping unmatched commands: the executable of
-// the first top-level segment that runs one — env assignments, wrapper words (env, sudo, nohup,
-// timeout, time, exec, command, nice) and package runners stripped, the same way the rules see
+// the first top-level segment that runs one — env assignments, wrapper words (wrapperWords: env, sudo,
+// nohup, setsid, timeout, …) and package runners stripped, the same way the rules see
 // it (unwrapHead), a variable assigned by the command itself resolved (resolveVars). Segments
 // that run nothing (an assignment, a comment, a `for …` header, a function definition) are
 // skipped, so a loop is named by its body. A heredoc script is named by its interpreter.
