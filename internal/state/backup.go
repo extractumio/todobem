@@ -14,9 +14,11 @@ import (
 // keepBackups is how many migration backups stay; older ones go when a new one is taken.
 const keepBackups = 3
 
-// outside lists what a backup leaves out: derived data (the cache), the installed binaries, the
-// backups themselves and the locks. Everything else in the state directory is state.
-var outside = map[string]bool{"cache": true, "bin": true, BackupsDir: true, LockName: true, "update.lock": true}
+// outside lists what a backup leaves out and a restore never touches: derived data (the cache),
+// the installed binaries, the backups themselves, the locks, and rules.json — the user's own
+// file, which no migration rewrites and no rollback may take back. Everything else in the state
+// directory is state.
+var outside = map[string]bool{"cache": true, "bin": true, BackupsDir: true, LockName: true, "update.lock": true, "rules.json": true}
 
 // inScope reports whether a top-level entry of the state directory belongs to a backup.
 // Dot-files are atomicfile's temporaries.

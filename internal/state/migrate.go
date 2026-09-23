@@ -14,8 +14,8 @@ type Migration struct {
 }
 
 // migrations[i] turns schema i+1 into schema i+2. Append only: a published migration never
-// changes. A new one ships with a fixture of the previous schema's files and a test (§12 of
-// docs/ARCHITECTURE.md says when a change needs one).
+// changes. A new one ships with a fixture of the previous schema's files and a test;
+// docs/ARCHITECTURE.md §7.5 says when a change needs one.
 var migrations []Migration
 
 // Schema is the state schema this binary reads and writes: 1 plus one per migration.

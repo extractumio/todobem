@@ -1,7 +1,7 @@
 // Package update installs a newer release of todobem over the installed one and rolls back to
-// the previous one. The installed binary only fetches, checks and hands over (Fetch); the
-// incoming binary switches itself in (Apply) — so what a release does after the hand-off can
-// change in any later release. docs/ARCHITECTURE.md §12.
+// the previous one. The installed binary only fetches, checks and stages the incoming one
+// (Stage), then hands over; the incoming binary switches itself in (Apply) — so what a
+// release does after the hand-off can change in any later release. docs/ARCHITECTURE.md §7.5.
 package update
 
 import (

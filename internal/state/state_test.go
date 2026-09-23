@@ -213,6 +213,38 @@ func TestRestoreForRollsBackTheLastMigration(t *testing.T) {
 	}
 }
 
+// rules.json is the user's own: a migration's backup does not take it and a rollback never
+// takes back what the user wrote after the upgrade.
+func TestRestoreLeavesTheUsersRules(t *testing.T) {
+	withMigrations(t, rename("a", "b"))
+	dir := t.TempDir()
+	setSchema(t, dir, 1)
+	writeFile(t, filepath.Join(dir, "a"), "payload", 0600)
+	writeFile(t, filepath.Join(dir, "rules.json"), `{"v":1}`, 0600)
+	rep, err := Prepare(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, rep.Backup, "rules.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("rules.json went into the backup")
+	}
+	writeFile(t, filepath.Join(dir, "rules.json"), `{"v":2}`, 0600)
+	if _, err := RestoreFor(dir, 1); err != nil {
+		t.Fatal(err)
+	}
+	if readFile(t, filepath.Join(dir, "rules.json")) != `{"v":2}` {
+		t.Fatal("the rollback took back the user's rules")
+	}
+}
+
+func TestHoldRefusesNewerState(t *testing.T) {
+	dir := t.TempDir()
+	setSchema(t, dir, Schema()+1)
+	if _, _, err := Hold(dir); err == nil {
+		t.Fatal("held state newer than the binary")
+	}
+}
+
 func TestRestoreForRefusesWithoutAMatchingBackup(t *testing.T) {
 	dir := t.TempDir()
 	setSchema(t, dir, 3)

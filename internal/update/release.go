@@ -50,7 +50,9 @@ func ParseArchiveName(name string) (v Version, goos, goarch string, err error) {
 	return v, parts[1], parts[2], nil
 }
 
-// ParseSums reads a SHA256SUMS file: "<64 hex>  <name>" per line.
+// ParseSums reads a SHA256SUMS file: "<64 hex>  <name>" per line. A line of another shape is
+// skipped (a later release may add comments or names this version does not know); what matters
+// is that the archive wanted is listed, which CheckSum requires. Frozen in every release.
 func ParseSums(b []byte) (map[string]string, error) {
 	sums := map[string]string{}
 	sc := bufio.NewScanner(bytes.NewReader(b))
@@ -61,12 +63,12 @@ func ParseSums(b []byte) (map[string]string, error) {
 		}
 		fields := strings.Fields(line)
 		if len(fields) != 2 || len(fields[0]) != 64 || strings.Trim(fields[0], "0123456789abcdef") != "" {
-			return nil, fmt.Errorf("%s: malformed line %q", SumsName, line)
+			continue
 		}
 		sums[strings.TrimPrefix(fields[1], "*")] = fields[0]
 	}
 	if len(sums) == 0 {
-		return nil, fmt.Errorf("%s: empty", SumsName)
+		return nil, fmt.Errorf("%s: no checksum in it", SumsName)
 	}
 	return sums, sc.Err()
 }
@@ -103,16 +105,40 @@ func (r *Remote) base() string { return "https://" + githubHost + "/" + r.Repo +
 
 // Latest is the version of the repository's latest release: the tag named in the Location of
 // the /releases/latest redirect (…/releases/tag/vX.Y.Z). Drafts and prereleases are never latest.
+// A repository that moved answers with a redirect to its new …/releases/latest, followed up to
+// three times on github.com. Frozen in every release.
 func (r *Remote) Latest() (Version, error) {
 	c := *r.Client
 	c.Timeout = 30 * time.Second
 	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	resp, err := c.Get(r.base() + "/latest")
-	if err != nil {
-		return Version{}, fmt.Errorf("latest release of %s: %w", r.Repo, err)
+	u := r.base() + "/latest"
+	for hop := 0; ; hop++ {
+		resp, err := c.Get(u)
+		if err != nil {
+			return Version{}, fmt.Errorf("latest release of %s: %w", r.Repo, err)
+		}
+		resp.Body.Close()
+		loc := resp.Header.Get("Location")
+		if next, ok := movedLatest(u, loc); ok && hop < 3 {
+			u = next
+			continue
+		}
+		return latestFromLocation(r.Repo, resp.StatusCode, loc)
 	}
-	resp.Body.Close()
-	return latestFromLocation(r.Repo, resp.StatusCode, resp.Header.Get("Location"))
+}
+
+// movedLatest is the Location of a moved repository's /releases/latest, resolved against the
+// request URL: the same answer again, one repository further, on github.com over HTTPS only.
+func movedLatest(from, location string) (string, bool) {
+	base, err := url.Parse(from)
+	if err != nil || location == "" {
+		return "", false
+	}
+	u, err := base.Parse(location)
+	if err != nil || u.Scheme != "https" || u.Host != githubHost || !strings.HasSuffix(u.Path, "/releases/latest") {
+		return "", false
+	}
+	return u.String(), true
 }
 
 // latestFromLocation reads the tag out of the /releases/latest answer.

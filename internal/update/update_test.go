@@ -57,6 +57,11 @@ func TestParseSums(t *testing.T) {
 	if err != nil || sums["todobem_v0.1.0_linux_amd64.tar.gz"] != h || sums["install.sh"] != h {
 		t.Fatalf("ParseSums = %v, %v", sums, err)
 	}
+	// Lines this version does not understand are skipped, not fatal: later releases may add some.
+	mixed, err := ParseSums([]byte("# signed by release-2027\n" + h + "  todobem_v0.2.0_linux_amd64.tar.gz\n" + h + "  name with spaces.txt\n"))
+	if err != nil || len(mixed) != 1 || mixed["todobem_v0.2.0_linux_amd64.tar.gz"] != h {
+		t.Fatalf("ParseSums(mixed) = %v, %v", mixed, err)
+	}
 	for _, bad := range []string{"", "nothex  file\n", strings.Repeat("AB", 32) + "  f\n", h + "\n"} {
 		if _, err := ParseSums([]byte(bad)); err == nil {
 			t.Errorf("ParseSums(%q) accepted", bad)
@@ -81,6 +86,24 @@ func TestLatestFromLocation(t *testing.T) {
 	} {
 		if _, err := latestFromLocation("o/r", c.status, c.loc); err == nil {
 			t.Errorf("latestFromLocation(%d, %q) accepted", c.status, c.loc)
+		}
+	}
+}
+
+// A repository that moved redirects /releases/latest to its new /releases/latest.
+func TestMovedLatest(t *testing.T) {
+	from := "https://github.com/o/r/releases/latest"
+	for loc, want := range map[string]string{
+		"https://github.com/o2/r2/releases/latest":   "https://github.com/o2/r2/releases/latest",
+		"/o2/r2/releases/latest":                     "https://github.com/o2/r2/releases/latest",
+		"https://github.com/o/r/releases/tag/v1.0.0": "",
+		"http://github.com/o2/r2/releases/latest":    "",
+		"https://evil.example/o/r/releases/latest":   "",
+		"": "",
+	} {
+		got, ok := movedLatest(from, loc)
+		if (want != "") != ok || got != want {
+			t.Errorf("movedLatest(%q) = %q, %v", loc, got, ok)
 		}
 	}
 }
@@ -127,7 +150,7 @@ func makeArchive(t *testing.T, dir string, entries ...entry) string {
 	return p
 }
 
-func TestExtractBinaryAcceptsOnlyTheKnownFiles(t *testing.T) {
+func TestExtractBinaryTakesOnlyTheBinary(t *testing.T) {
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "out")
 	ok := makeArchive(t, dir, entry{name: "todobem", body: "#!bin"}, entry{name: "LICENSE", body: "agpl"}, entry{name: "OFL.txt", body: "ofl"})
@@ -140,7 +163,6 @@ func TestExtractBinaryAcceptsOnlyTheKnownFiles(t *testing.T) {
 	for name, entries := range map[string][]entry{
 		"path":      {{name: "../todobem", body: "x"}},
 		"subdir":    {{name: "bin/todobem", body: "x"}},
-		"extra":     {{name: "todobem", body: "x"}, {name: "evil.sh", body: "x"}},
 		"twice":     {{name: "todobem", body: "x"}, {name: "todobem", body: "y"}},
 		"symlink":   {{name: "todobem", kind: tar.TypeSymlink}},
 		"no binary": {{name: "LICENSE", body: "x"}},
@@ -149,6 +171,15 @@ func TestExtractBinaryAcceptsOnlyTheKnownFiles(t *testing.T) {
 		if err := ExtractBinary(makeArchive(t, d, entries...), filepath.Join(d, "out")); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+	// A later release may add files: they are skipped, never written, never a refusal.
+	d := t.TempDir()
+	later := makeArchive(t, d, entry{name: "NOTICE", body: "n"}, entry{name: "todobem", body: "#!bin"}, entry{name: "completions/todobem.bash", body: "c"}, entry{name: "../escape", body: "x"})
+	if err := ExtractBinary(later, filepath.Join(d, "out")); err != nil {
+		t.Fatalf("an archive with more files: %v", err)
+	}
+	if entries, _ := os.ReadDir(d); len(entries) != 2 {
+		t.Fatalf("more than the binary was written: %v", entries)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "plain"), []byte("not gzip"), 0600); err != nil {
 		t.Fatal(err)

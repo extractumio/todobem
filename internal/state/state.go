@@ -1,7 +1,7 @@
 // Package state versions todobem's durable files under ~/.todobem and migrates them from one
 // format to the next: state.json names the schema the files are in, the binary knows the schema
 // it reads (Schema), and the gate that runs before any state is read brings the two together —
-// migrating forward under a backup, refusing state newer than the binary. docs/ARCHITECTURE.md §12.
+// migrating forward under a backup, refusing state newer than the binary. docs/ARCHITECTURE.md §7.5.
 package state
 
 import (
@@ -110,7 +110,7 @@ func Prepare(dir string) (*Report, error) {
 		return nil, err
 	}
 	defer lock.Close()
-	f, _, err = Read(dir) // another process may have migrated while this one waited for nothing
+	f, _, err = Read(dir) // another process may have migrated between the first read and the lock
 	if err != nil || f.Schema == Schema() {
 		return nil, err
 	}
@@ -130,6 +130,14 @@ func Hold(dir string) (io.Closer, *Report, error) {
 		return nil, rep, errors.New("the state is locked by a migration or a rollback in progress: try again when it has finished")
 	}
 	if err != nil {
+		return nil, rep, err
+	}
+	// A rollback may have restored an older schema between the gate and the lock.
+	if f, _, err := Read(dir); err != nil || f.Schema != Schema() {
+		lock.Close()
+		if err == nil {
+			err = fmt.Errorf("the state changed to schema %d while starting: start again", f.Schema)
+		}
 		return nil, rep, err
 	}
 	return lock, rep, nil

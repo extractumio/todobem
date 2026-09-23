@@ -37,7 +37,7 @@ func main() {
 			os.Exit(runUpgrade(os.Args[2:]))
 		}
 		switch os.Args[1] {
-		case "token", "agent", "hub":
+		case "token", "agent", "hub", "cache", "unknown":
 			if code := gateState(); code != 0 {
 				os.Exit(code)
 			}
@@ -75,6 +75,16 @@ func main() {
 		fmt.Println(versionLine())
 		return
 	}
+	// The state gate, before anything reads a file of ~/.todobem (settings, rules, keys): migrate
+	// state an older release wrote, refuse state a newer one wrote; then hold the state for as
+	// long as this process serves, so a migration or a rollback started meanwhile stops instead
+	// of changing the files underneath.
+	held, rep, err := state.Hold(settings.Dir())
+	if err != nil {
+		log.Fatalf("state: %v", err)
+	}
+	defer held.Close()
+	reportMigration(rep)
 	if *addr == "" {
 		*addr = "127.0.0.1:7788"
 		if *agentMode {
@@ -101,16 +111,6 @@ func main() {
 	} else if len(loaded) > 0 {
 		fmt.Printf("loaded user rules: %v\n", loaded)
 	}
-
-	// The state gate: migrate state an older release wrote, refuse state a newer one wrote; then
-	// hold the state for as long as this process serves, so a migration or a rollback started
-	// meanwhile stops instead of changing the files underneath.
-	held, rep, err := state.Hold(settings.Dir())
-	if err != nil {
-		log.Fatalf("state: %v", err)
-	}
-	defer held.Close()
-	reportMigration(rep)
 
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {

@@ -11,9 +11,6 @@ import (
 	"os"
 )
 
-// archiveFiles is everything a release archive may hold; the binary is required.
-var archiveFiles = map[string]bool{"todobem": true, "LICENSE": true, "LICENSING.md": true, "OFL.txt": true, "README.md": true}
-
 const maxBinary = 256 << 20
 
 // ErrChecksum is an archive whose sha256 is not the one its release lists.
@@ -40,8 +37,10 @@ func CheckSum(path, name string, sums map[string]string) error {
 	return nil
 }
 
-// ExtractBinary writes the archive's todobem to dst (mode 0755). The archive must hold only
-// the known files, each a regular file at the top level, none twice.
+// ExtractBinary writes the archive's todobem to dst (mode 0755): exactly one top-level entry
+// named todobem, a regular file. Every other entry is skipped unread — nothing but the binary
+// is ever written — so a later release may add files to its archive without an installed
+// version refusing it (this code is frozen in every released binary).
 func ExtractBinary(archive, dst string) error {
 	f, err := os.Open(archive)
 	if err != nil {
@@ -53,7 +52,6 @@ func ExtractBinary(archive, dst string) error {
 		return fmt.Errorf("%s: not a gzip archive", archive)
 	}
 	tr := tar.NewReader(gz)
-	seen := map[string]bool{}
 	found := false
 	for {
 		h, err := tr.Next()
@@ -63,15 +61,15 @@ func ExtractBinary(archive, dst string) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", archive, err)
 		}
-		if !archiveFiles[h.Name] || seen[h.Name] {
-			return fmt.Errorf("%s: unexpected entry %q", archive, h.Name)
-		}
-		seen[h.Name] = true
-		if h.Typeflag != tar.TypeReg {
-			return fmt.Errorf("%s: %q is not a regular file", archive, h.Name)
-		}
 		if h.Name != "todobem" {
 			continue
+		}
+		if found {
+			os.Remove(dst)
+			return fmt.Errorf("%s: todobem twice", archive)
+		}
+		if h.Typeflag != tar.TypeReg {
+			return fmt.Errorf("%s: todobem is not a regular file", archive)
 		}
 		if h.Size > maxBinary {
 			return fmt.Errorf("%s: the binary is larger than %d bytes", archive, maxBinary)

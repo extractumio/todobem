@@ -9,9 +9,11 @@
 # is left alone: `todobem upgrade` replaces it. Every later version is installed by
 # `todobem upgrade`, which checks what it downloads the same way.
 set -eu
+# Every expansion is ${braced}: macOS /bin/sh reads a byte of a following multibyte character
+# ("$arch…") as part of the name.
 
 repo="${TODOBEM_REPO:-extractumio/todobem}"
-base="https://github.com/$repo/releases"
+base="https://github.com/${repo}/releases"
 
 fail() {
   echo "todobem install: $*" >&2
@@ -41,50 +43,54 @@ else
 fi
 
 [ -n "${HOME:-}" ] || fail "HOME is not set"
-dir="$HOME/.todobem/bin"
-if [ -e "$dir/todobem" ]; then
-  fail "todobem is already installed in $dir — run \`todobem upgrade\` instead"
+dir="${HOME}/.todobem/bin"
+if [ -e "${dir}/todobem" ]; then
+  fail "todobem is already installed in ${dir} — run \`todobem upgrade\` instead"
 fi
 
 version="${TODOBEM_VERSION:-}"
-if [ -z "$version" ]; then
+if [ -z "${version}" ]; then
   # /releases/latest redirects to /releases/tag/<version> of the latest release.
-  url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$base/latest")" || fail "cannot reach $base"
+  url="$(curl --proto =https -fsSLI -o /dev/null -w '%{url_effective}' "${base}/latest")" || fail "cannot reach ${base}"
   version="${url##*/tag/}"
-  [ "$version" != "$url" ] || fail "no release published in $repo yet"
+  [ "${version}" != "${url}" ] || fail "no release published in ${repo} yet"
 fi
-case "$version" in
+case "${version}" in
   v[0-9]*.[0-9]*.[0-9]*) ;;
-  *) fail "not a release version: $version" ;;
+  *) fail "not a release version: ${version}" ;;
 esac
 
 archive="todobem_${version}_${os}_${arch}.tar.gz"
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT INT TERM
+trap 'rm -rf "${tmp}"' EXIT INT TERM
 
-echo "Downloading todobem $version for $os/$arch…"
-curl -fsSL -o "$tmp/SHA256SUMS" "$base/download/$version/SHA256SUMS" || fail "no SHA256SUMS in release $version"
-curl -fsSL -o "$tmp/$archive" "$base/download/$version/$archive" || fail "release $version has no build for $os/$arch"
+echo "Downloading todobem ${version} for ${os}/${arch}…"
+curl --proto =https -fsSL -o "${tmp}/SHA256SUMS" "${base}/download/${version}/SHA256SUMS" || fail "no SHA256SUMS in release ${version}"
+curl --proto =https -fsSL -o "${tmp}/${archive}" "${base}/download/${version}/${archive}" || fail "release ${version} has no build for ${os}/${arch}"
 
-want="$(awk -v f="$archive" '$2 == f || $2 == "*" f { print $1 }' "$tmp/SHA256SUMS")"
-[ -n "$want" ] || fail "SHA256SUMS does not list $archive"
-got="$(sha256 "$tmp/$archive")"
-[ "$got" = "$want" ] || fail "checksum mismatch for $archive — nothing installed"
+want="$(awk -v f="${archive}" '$2 == f || $2 == "*" f { print $1 }' "${tmp}/SHA256SUMS")"
+[ -n "${want}" ] || fail "SHA256SUMS does not list ${archive}"
+got="$(sha256 "${tmp}/${archive}")"
+[ "${got}" = "${want}" ] || fail "checksum mismatch for ${archive} — nothing installed"
 
-mkdir -p "$tmp/x"
-tar -xzf "$tmp/$archive" -C "$tmp/x" todobem || fail "$archive holds no todobem binary"
-[ -f "$tmp/x/todobem" ] && [ ! -L "$tmp/x/todobem" ] || fail "$archive holds no todobem binary"
+mkdir -p "${tmp}/x"
+tar -xzf "${tmp}/${archive}" -C "${tmp}/x" todobem || fail "${archive} holds no todobem binary"
+[ -f "${tmp}/x/todobem" ] && [ ! -L "${tmp}/x/todobem" ] || fail "${archive} holds no todobem binary"
 
-mkdir -p "$dir"
-chmod 700 "$HOME/.todobem" "$dir"
-chmod 755 "$tmp/x/todobem"
-mv "$tmp/x/todobem" "$dir/todobem"
+mkdir -p "${dir}"
+chmod 700 "${HOME}/.todobem" "${dir}"
+chmod 755 "${tmp}/x/todobem"
+mv "${tmp}/x/todobem" "${dir}/todobem"
 
-echo "Installed $("$dir/todobem" -version)"
-echo "  binary: $dir/todobem"
-case ":$PATH:" in
-  *":$dir:"*) ;;
-  *) echo "  add it to your PATH:  export PATH=\"$dir:\$PATH\"" ;;
+echo "Installed $("${dir}/todobem" -version)"
+echo "  binary: ${dir}/todobem"
+case ":${PATH}:" in
+  *":${dir}:"*) ;;
+  *) echo "  add it to your PATH:  export PATH=\"${dir}:\${PATH}\"" ;;
 esac
+found="$(command -v todobem 2>/dev/null || true)"
+if [ -n "${found}" ] && [ "${found}" != "${dir}/todobem" ]; then
+  echo "  note:   ${found} comes first in your PATH; \`todobem upgrade\` only upgrades ${dir}/todobem"
+fi
 echo "  start:  todobem          (the UI on http://127.0.0.1:7788)"
 echo "  later:  todobem upgrade  ·  todobem upgrade rollback"
