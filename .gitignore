@@ -17,6 +17,8 @@ coverage.*
 
 # Validation reports quote real sessions verbatim; they stay local (the protocol: docs/ARCHITECTURE.md §11)
 /docs/validation-reports/
+# Implementation plans, drafts and hand-offs: working notes, not project documentation
+/docs/ephemerals/
 # Russian draft of the architecture; the public document is docs/ARCHITECTURE.md
 /docs/ARCHITECTURE.html
 

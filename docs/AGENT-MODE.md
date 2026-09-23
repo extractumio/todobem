@@ -536,7 +536,7 @@ table warns 30 days before a bearer expires.
   page names the agent's file path as it names local ones.
 - `filter.js`: a **Host** select (All hosts · this machine · each agent) rendered when the list
   holds more than one host. The Project select names paths without an ellipsis; a path seen on
-  exactly one agent is labelled with it (`ai4 · greg/app`), one seen on several says how many
+  exactly one agent is labelled with it (`web-01 · dev/app`), one seen on several says how many
   ("· 3 hosts"). Insights reuse it (`hosts=` parameter, like `sources=`). The host chip and the
   select live in `filter.js`, not in `app.js`.
 - `settings.js`: the Servers section (§5.1).
