@@ -2397,6 +2397,7 @@ test('whatever the text tries, the output holds only the renderer\'s own tags an
     '```html\n<script>x</script>\n```\n`<b>` | <i> |\n|---|---|\n| <u> | & |',
     '# <h1 onclick=x>\n> <div>\n- <li>\n\n**<em>**',
     '*'.repeat(30000), '['.repeat(30000), '`'.repeat(30000), ('[a](b) ' + '**' + '_').repeat(4000),
+    '[a]('.repeat(8000), '[x]'.repeat(10000) + ']('.repeat(5000),
   ];
   const started = Date.now();
   for (const text of nasty) safeHTML(md(h, text));

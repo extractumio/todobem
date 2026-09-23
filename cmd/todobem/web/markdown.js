@@ -273,32 +273,36 @@ const Markdown = (() => {
     return null;
   }
 
-  // bracketLink parses `[text](destination)` or `![alt](destination)` at i, the bracket; the
-  // text is rendered inline without links of its own; a title after the destination is
-  // accepted and dropped. Anything that does not parse stays literal text.
-  function bracketLink(s, i) {
-    let depth = 0;
-    let j = i;
-    for (; j < s.length; j++) {
-      if (s[j] === '\\') {
+  // pairs maps the index of every '[' and '(' of s to the index of its matching ']' or ')':
+  // one pass with a stack per kind, a backslash escaping the next character. bracketLink looks
+  // the ends up instead of scanning ahead from every bracket, which made a long run of
+  // unmatched brackets quadratic. The partner is the one the scan ahead would find.
+  function pairs(s) {
+    const close = new Map();
+    const square = [];
+    const round = [];
+    for (let j = 0; j < s.length; j++) {
+      const c = s[j];
+      if (c === '\\') {
         j++;
         continue;
       }
-      if (s[j] === '[') depth++;
-      else if (s[j] === ']' && --depth === 0) break;
+      if (c === '[') square.push(j);
+      else if (c === ']' && square.length) close.set(square.pop(), j);
+      else if (c === '(') round.push(j);
+      else if (c === ')' && round.length) close.set(round.pop(), j);
     }
-    if (j >= s.length || s[j + 1] !== '(') return null;
-    let k = j + 2;
-    let open = 1;
-    for (; k < s.length; k++) {
-      if (s[k] === '\\') {
-        k++;
-        continue;
-      }
-      if (s[k] === '(') open++;
-      else if (s[k] === ')' && --open === 0) break;
-    }
-    if (k >= s.length) return null;
+    return close;
+  }
+
+  // bracketLink parses `[text](destination)` or `![alt](destination)` at i, the bracket, with
+  // the partners from pairs(s); the text is rendered inline without links of its own; a title
+  // after the destination is accepted and dropped. Anything that does not parse stays literal.
+  function bracketLink(s, i, close) {
+    const j = close.get(i);
+    if (j === undefined || s[j + 1] !== '(') return null;
+    const k = close.get(j + 1);
+    if (k === undefined) return null;
     const m = DESTINATION.exec(s.slice(j + 2, k).trim());
     if (!m) return null;
     const dest = m[1].replace(/^<|>$/g, '').replace(ESCAPED, '$1');
@@ -314,6 +318,7 @@ const Markdown = (() => {
     const out = [];
     const delims = [];
     let text = '';
+    let close = null;
     const emit = () => {
       if (text) out.push({ text });
       text = '';
@@ -359,7 +364,8 @@ const Markdown = (() => {
         continue;
       }
       if (!noLinks && (c === '[' || (c === '!' && s[i + 1] === '['))) {
-        const r = bracketLink(s, c === '!' ? i + 1 : i);
+        close = close || pairs(s);
+        const r = bracketLink(s, c === '!' ? i + 1 : i, close);
         if (r) {
           emit();
           out.push({ text: r.html });
