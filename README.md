@@ -26,7 +26,7 @@ the time it cannot classify. Then it groups where the time went by the habits of
 click away.
 
 ```sh
-go install github.com/extractumio/todobem/cmd/todobem@latest && todobem
+curl -fsSL https://github.com/extractumio/todobem/releases/latest/download/install.sh | sh
 ```
 
 No account, no cloud, no telemetry. Your sessions never leave your machine.
@@ -85,15 +85,31 @@ shows whether it worked.
 
 ## Quick start
 
-Requires Go 1.22+. Nothing else — no npm, no database, no build step for the UI.
+One binary for macOS (Apple Silicon) and Linux (x86-64); no Go, no sudo, nothing else:
 
 ```sh
-go install github.com/extractumio/todobem/cmd/todobem@latest
+curl -fsSL https://github.com/extractumio/todobem/releases/latest/download/install.sh | sh
 todobem                 # serves http://127.0.0.1:7788 and opens it, logged in (macOS, Linux)
 todobem token           # a one-time login link, for any other browser or platform
 ```
 
-Or from a clone, running in the background:
+The installer puts the binary at `~/.todobem/bin/todobem` after checking it against the
+release's `SHA256SUMS`, and prints the `PATH` line to add; an exact version:
+`… | TODOBEM_VERSION=v0.1.0 sh`. Later versions install over it:
+
+```sh
+todobem upgrade check       # the installed and the latest version
+todobem upgrade             # download, check, install; restart todobem to use it
+todobem upgrade rollback    # back to the previous version (stop todobem first)
+```
+
+An upgrade that changes the format of the files in `~/.todobem` migrates them on the first
+start, after a backup, and a rollback restores that backup. `todobem upgrade` goes online only
+when you run it, to this repository's releases, and sends nothing about you. To uninstall: `rm -rf ~/.todobem` (the settings,
+keys and cache go with it).
+
+Or build from source (Go 1.22+): `go install github.com/extractumio/todobem/cmd/todobem@latest`
+— a build that `todobem upgrade` never replaces. From a clone, running in the background:
 
 ```sh
 git clone https://github.com/extractumio/todobem && cd todobem
@@ -162,7 +178,8 @@ Sessions contain whatever your agents read and wrote, so todobem treats them tha
   `todobem token -revoke` logs everyone out immediately.
 - **Read-only.** The session logs are never written to; todobem writes only under `~/.todobem/`
   (settings, key, cache).
-- **No outbound calls, no telemetry** — the one exception is a fleet you pair yourself (below).
+- **No outbound calls, no telemetry** — the exceptions are a fleet you pair yourself (below) and
+  `todobem upgrade`, which fetches release files from GitHub when you run it and sends nothing.
 
 <details>
 <summary><b>Access commands</b></summary>
@@ -198,7 +215,10 @@ todobem hub rotate web-01              # a new bearer; the old one retires on fi
 todobem hub remove -revoke web-01      # forget it, and revoke its bearer
 ```
 
-The agent listens on every interface; firewall `:7789` to the hub.
+The agent listens on every interface; firewall `:7789` to the hub. Upgrade each host on its own
+(`todobem upgrade`, then restart); a hub and an agent of different releases keep listing each
+other's sessions, and models open when both have the same cache version (the release notes
+say when it changes).
 
 Remote sessions join the list with a host chip; Insights filter by host; a remote session opens
 as if it were local. Design and wire protocol: [`docs/AGENT-MODE.md`](docs/AGENT-MODE.md).
@@ -213,7 +233,7 @@ After=network-online.target
 
 [Service]
 User=ci
-ExecStart=/usr/local/bin/todobem -agent
+ExecStart=/home/ci/.todobem/bin/todobem -agent
 Restart=on-failure
 RestartSec=5
 

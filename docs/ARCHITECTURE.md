@@ -58,8 +58,9 @@ built from; Insights reads the derived model and never a log line.
 
 | path | responsibility |
 |---|---|
-| `cmd/todobem/main.go` | entry point, flags (`-addr`, `-codex`, `-claude`, `-settings`, `-open`, `-rules`, `-cache`, `-auth`, `-agent`, `-agent-key`, `-version`), subcommands `token`, `cache`, `unknown`, `agent`, `hub`; embeds `web/`; `runAgent` is agent mode, the hub's `fleet.Fleet` is attached here |
+| `cmd/todobem/main.go` | entry point, flags (`-addr`, `-codex`, `-claude`, `-settings`, `-open`, `-rules`, `-cache`, `-auth`, `-agent`, `-agent-key`, `-version`), subcommands `token`, `cache`, `unknown`, `agent`, `hub`, `version`, `upgrade`; the state gate; embeds `web/`; `runAgent` is agent mode, the hub's `fleet.Fleet` is attached here |
 | `cmd/todobem/agent.go` | `todobem agent pair` (a pairing string from the agent key) and `todobem hub add / list / remove / doctor / rotate` (the agents file; a running hub picks it up) |
+| `cmd/todobem/version.go`, `upgrade.go` | `todobem version [--json]`; `todobem upgrade [check | rollback]` and the incoming binary's `upgrade apply` (§7.5) |
 | `cmd/todobem/unknown.go` | `todobem unknown`: unmatched commands and telemetry gaps across sessions, the loop the `resolve-unknown` skill runs |
 | `cmd/todobem/web/` | `index.html`, `app.js` (session list, timeline, breakdown, inspector), `inspector.js`, `filter.js` (period + project + host + source filter; the host chip), `settings.js`, `insights.js`, `dropdown.js` (the list of every `select.select`, drawn by the page over the native control, which keeps its value and its `change` event), `markdown.js` (a small GFM-subset renderer that escapes everything and links only http/https/mailto, plus `prose()` — the rendered view of every recorded message — and the Show raw / Show rendered switch every prose panel carries), `harness.js` (what `prose()` renders through: the tags a message carries as fields, sections and chips, the text between them through `markdown.js`), `app.css` (the surface finish: `grain.svg` is the one texture tile it lays over the page; `grain.js` re-lays it on a dense screen as rasters scaled to the screen, so a speck stays one CSS pixel), `build.js` (the reload onto a new server build, §8), `fonts/` (Fira Sans, self-hosted); `cmd/todobem/app_test.js` runs the SPA under `node --test` |
 | `cmd/dump/` | developer tool: totals, per-lane partition checks, stage runs, groups, longest and unknown ops, `-ops` TSV, `-insights` facts and findings |
@@ -69,7 +70,11 @@ built from; Insights reads the derived model and never a log line.
 | `internal/classify/` | `classify.go` (the rule table `Rules`, priority, segments, heredocs), `head.go` (head unwrapping: wrappers, runners, option prefixes), `make.go` (make / ninja targets), `shell.go` (tokenizer, `Identity`), `lifecycle.go` (stages, change kinds, pins, matchers, fingerprint), `subgroup.go`, `userconfig.go` (overlay) |
 | `internal/model/` | `model.go` (schema), `derive.go` (partition, groups, totals), `lifecycle.go` (the second partition) |
 | `internal/server/` | JSON API, auth gate, session pools, `/api/settings`, `/api/insights/*`; `agent.go` is agent mode (the `/agent/v1/*` handlers, the digest), `remote.go` the hub side (composite ids routed to the fleet, `/api/fleet*`) |
-| `internal/fleet/` | agent mode's protocol and hub side: `wire.go` (the v1 types), `ids.go` (`<uuid>@<host>`), `pairing.go`, `tls.go` (self-signed certificate, pinned transport), `cursor.go` (the delta tracker), `agents.go` (`~/.todobem/agents.json`), `snapshot.go`, `client.go`, `fleet.go` (pollers, conditional model fetches, facts to a sink, control), `version.go` |
+| `internal/fleet/` | agent mode's protocol and hub side: `wire.go` (the v1 types), `ids.go` (`<uuid>@<host>`), `pairing.go`, `tls.go` (self-signed certificate, pinned transport), `cursor.go` (the delta tracker), `agents.go` (`~/.todobem/agents.json`), `snapshot.go`, `client.go`, `fleet.go` (pollers, conditional model fetches, facts to a sink, control), `version.go` (the build's name in a hello, from `internal/buildinfo`) |
+| `internal/buildinfo/` | the release identity set by `-ldflags` (version, commit, build time, releases repository); `dev-<rev>` otherwise |
+| `internal/update/` | the updater: versions, release URLs and `SHA256SUMS`, archive checks, staging, the switch and the rollback (§7.5) |
+| `internal/state/` | the state schema: the gate, migrations, backups, the state lock (§7.5) |
+| `e2e/`, `scripts/install.sh` | the release tests (`-tags e2e`) and the installer published with every release |
 | `internal/atomicfile/` | the one atomic file write (temp file + rename) behind settings, cache entries, sidecars, the agents file and the snapshots |
 | `internal/auth/` | key file, one-time tokens, HMAC sessions, the staged key of a two-phase rotation |
 | `internal/settings/` | `~/.todobem/settings.json`: the session folders per source |
@@ -809,6 +814,88 @@ list. Verified 2026-09-19 against one Linux agent (160 sessions of both sources)
 opens in ~0.16 s from the agent and ~3 ms from the hub's cache, an idle poll is a few hundred
 bytes, and the rotation, the reconciliation and the source spans behaved as the tests say.
 
+### 7.5 Releases, upgrades and the state schema (`internal/buildinfo`, `internal/update`, `internal/state`)
+
+`v0.1.0` is the first release; nothing built before it is supported, so every guarantee here
+starts there. A release build carries `buildinfo.Version`, `Commit`, `BuiltAt` and
+`ReleasesRepo` (`-ldflags -X`); any other build names itself `dev-<rev>[+dirty]`.
+`todobem -version` prints `todobem <version> <os>/<arch> protocol <n> state <n>`;
+`todobem version --json` is what one todobem reads from another (fields only ever added).
+
+**Install and layout.** `scripts/install.sh` (published with every release) downloads the
+archive for the OS/arch and the release's `SHA256SUMS`, checks the checksum and puts the binary
+at `~/.todobem/bin/todobem`; it refuses over an existing installation. Archives are
+`todobem_<version>_<os>_<arch>.tar.gz` holding `todobem`, `LICENSE`, `LICENSING.md`, `OFL.txt`,
+`README.md` — these names, the `SHA256SUMS` format and the release URLs are frozen from
+`v0.1.0` on, since every installed version finds its successor with them.
+
+**Upgrade: the installed binary hands over.** `todobem upgrade` runs the *installed* binary,
+so what it does is frozen for as long as anyone runs that version; it therefore does little:
+refuse unless it is the release in `~/.todobem/bin` (`not_managed`), take `bin/update.lock`,
+resolve the target (`-version`, `-file` with its `SHA256SUMS` beside it, else the tag in the
+`Location` of `/releases/latest`), refuse an older one (only `rollback` goes back) and the
+same one unless `-reinstall`, download the archive (HTTPS, redirects only to GitHub's hosts,
+100 MiB) and `SHA256SUMS` (a line it cannot read is skipped; the archive wanted must be
+listed), check the checksum, extract the one top-level regular file `todobem` (every other
+entry skipped unread, so a later archive may carry more files) to `bin/.todobem.new`, run its `version --json` (15 s: a first launch on
+macOS may wait for the malware scan) and require the version, OS and arch asked for; then it
+runs `.todobem.new upgrade apply`. The **incoming** binary switches itself in — the installed
+file is hard-linked and renamed over `todobem.prev`, `.todobem.new` renamed over `todobem`
+(renames only: a running todobem keeps its old file, macOS never sees a signed binary
+overwritten) — and anything a later release adds to an upgrade (a service restart, a
+readiness check) goes there. `todobem upgrade rollback` swaps `todobem` and `todobem.prev`
+(twice goes forward again) and runs from either file, so a version that cannot start is
+rolled back with `~/.todobem/bin/todobem.prev upgrade rollback`. Exit codes: 0 done or nothing
+to do, 1 failure, 2 usage, 4 incompatible or not managed, 5 busy, 6 checksum.
+
+**Frozen from `v0.1.0` on** — every installed version relies on it, so it only ever grows:
+the release URLs and file names, `SHA256SUMS` (`<sha256>  <name>` lines), an archive with a
+top-level `todobem`; every later binary answers `version --json` with at least `version`,
+`os`, `arch` and `state_schema`, and accepts `upgrade apply -from <version>` when run as
+`bin/.todobem.new`; `state.json`, the backup layout and `migrated_from` stay readable by the
+rollback of every older release. The updater's
+only outbound call is to the releases of `buildinfo.ReleasesRepo`, and only when the owner
+runs it; there is no background check.
+
+**The state schema.** `~/.todobem/state.json` names the schema of the files the user and
+pairing created (settings, the auth and agent keys and certificate, the agents file, the fleet
+snapshots); `state.Schema()` is the one this binary reads — 1 plus one per entry of
+`state.migrations`, append only. The gate (`state.Prepare`) runs before any state is read, in
+every role (first thing after the flags) and in `token`, `agent`, `hub`, `cache`, `unknown`: the same schema passes; an older one is migrated —
+exclusive `state.lock` (a running viewer or agent holds it shared for its lifetime through
+`state.Hold`, which also re-checks the schema under its lock, so the migration refuses with
+"stop the other todobem first"), a copy of every state file to `backups/state-<N>-<time>/`
+(0700, modes kept), the migrations in order, then
+`state.json` with `migrated_from: {schema, backup}`, and any failure restores the backup; a
+newer one is refused ("run `todobem upgrade rollback`"); a missing one is stamped (a fresh
+install, or files of a development build, used as they are). `version` and `upgrade` skip the
+gate, so the recovery commands work exactly when the state is newer than the binary. A
+rollback to a binary of an older schema restores the recorded backup first (every todobem of
+the user stopped); the last three backups are kept. Not state: `cache/` and the facts
+sidecars, versioned and recomputed on their own; `rules.json`, the user's file, is neither
+backed up nor rewritten nor taken back by a rollback.
+
+| Change | Needs |
+|---|---|
+| A new optional field, file or setting with a default | nothing: readers tolerate absence |
+| A rename, restructure, changed meaning or units, a file moved or split | a migration, a fixture of the previous schema's files and a test, a line in the release notes |
+| The cache or facts format | `cacheVersion` / `FactsVersion`, as before |
+| The wire protocol | additive within protocol v1; anything else is its own design |
+
+Hosts upgrade one by one; a hub and an agent of different releases keep the session list on
+protocol v1, and models and facts need equal cache and facts versions (§7.4).
+
+**Release tests.** `e2e/` (`//go:build e2e`) drives the real binaries of a published release
+in isolated `HOME`s: the published `install.sh`; a viewer and an agent on free ports, paired
+over TLS, a login from `todobem token`, both fixture sessions listed with an exact partition
+and the agent's sessions arriving through the hub; `upgrade -reinstall` (the release's own
+downloader against its own published files); a migration by a `next` build of the same commit
+(one patch ahead, `-tags e2emigration`, which adds a test migration `state/migrate_e2e.go`);
+the rollback, with the state back byte for byte; the refusals (an archive that cannot run, a
+changed byte, a copy outside `bin/`, state newer than the binary); and the upgrade from the
+previous release by *its* updater, pairing and keys carried over. A release is published as a
+prerelease, these tests run against it on each target, and only then does it become `latest`.
+
 ---
 
 ## 8. Server API (`internal/server`, loopback, gzip, behind the gate)
@@ -1167,6 +1254,9 @@ simulation (the three Claude Code sessions matched to the second).
 - **A new source**: a package under `internal/` emitting `model.*` only, implementing
   `source.Source` with a `LaneParser` per file, registered in `server.NewWithCache` and
   `cmd/dump`, with a name and mark in `filter.js` `SOURCES` and a section in `settings.js`.
+- **A state format change** (a file under `~/.todobem` the user or pairing created): §7.5's
+  table says whether it needs a migration; one is appended to `state.migrations` with a
+  fixture of the previous schema's files and a test, and named in the release notes.
 - **A schema change**: `model.go`, §3 here, `app.js` and `cmd/dump` together; bump the store's
   `cacheVersion` or the classifier's schema tag so caches re-derive; bump `FactsVersion` when
   `Extract` changes.
@@ -1175,6 +1265,16 @@ simulation (the three Claude Code sessions matched to the second).
 
 ## 13. Decision record (what shaped the design, with dates)
 
+- **2026-09-23, releases and upgrades (reviewed twice by the `pragmatic` agent).** `v0.1.0`
+  is the first version; no compatibility with anything built before it. The installed binary
+  only fetches, checks and hands over, and the incoming one applies itself: what an old
+  updater does is frozen forever, so it should do as little as possible. No signature yet —
+  a key in the same account as the publishing credentials adds little; it can arrive in any
+  later release and protects every upgrade after it. No service manager integration and no
+  automatic rollback in `v0.1.0`: the owner restarts, `upgrade rollback` is manual. State
+  gets a schema from the first release on, because the gate must already be in the binary a
+  migration will one day need to refuse. The release tests run real published binaries, not
+  a mocked updater: a release is a prerelease until they pass on every target.
 - **2026-09-21, the unknown-command sweep (reviewed by the `pragmatic` agent).** Every session's
   `Outside stages → Unknown` (449 sessions, 4,628 ops, 6 h 18 m, 351 heads) clustered by cause.
   Bugs first: the env-prefix regexp backtracked into quoted / `$(…)` values with a space and left

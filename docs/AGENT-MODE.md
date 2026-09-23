@@ -349,7 +349,7 @@ and when the `boot` half of the cursor changes — not on every poll.
 ```
 ← 200 {
   "protocol": 1,
-  "version": "2f72db5",            // vcs.revision[:7], "+dirty" when modified, "dev" when unknown
+  "version": "v0.1.0",             // the release; a build from a clone: "dev-<rev[:7]>[+dirty]", else "dev"
   "os": "linux", "arch": "amd64",
   "hostname": "web-01",
   "started": 1758270000000, "now": 1758273600000,

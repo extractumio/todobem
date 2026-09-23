@@ -40,8 +40,11 @@ disable). `make`/`scripts/deploy.sh` build and run it.
 
 Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `source.Session.Refresh`
 (the shared joiner: one `LaneParser` per file) → `model.Derive` → `server` JSON → `app.js`.
-- `cmd/todobem/main.go` — entry point, flags, subcommands (`token`, `cache`, `agent`, `hub`),
-  agent mode (`runAgent`) and the hub's fleet, embeds `web/`; `agent.go` — `todobem agent pair`
+- `cmd/todobem/main.go` — entry point, flags, subcommands (`token`, `cache`, `agent`, `hub`,
+  `version`, `upgrade`), the state gate, agent mode (`runAgent`) and the hub's fleet, embeds
+  `web/`; `version.go` — `todobem version [--json]`, what one todobem reads from another;
+  `upgrade.go` — `todobem upgrade [check|rollback]` and the incoming binary's `upgrade apply`
+  (`docs/ARCHITECTURE.md` §7.5); `agent.go` — `todobem agent pair`
   and `todobem hub add|list|remove|doctor|rotate` (the agents file; a running hub reloads it);
   `unknown.go` — `todobem unknown`: unmatched commands and telemetry gaps across sessions, the
   loop the `resolve-unknown` skill runs (`.claude/skills/resolve-unknown/`, symlinked from
@@ -112,7 +115,19 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
   tracker: boot nonce, generation, `ids_hash`), `agents.go` (`~/.todobem/agents.json`, 0600),
   `snapshot.go` (`~/.todobem/fleet/<name>.json.gz`), `client.go`, `fleet.go` (one poller per
   agent, reconciliation, conditional model fetches, facts to the server's sink, pair / remove /
-  rotate / doctor), `version.go` (`-version` from the build info).
+  rotate / doctor), `version.go` (the build's name in a hello, from `internal/buildinfo`).
+- `internal/buildinfo/` — the release identity `-ldflags` sets (version, commit, build time, the
+  releases repository); `dev-<rev>[+dirty]` for any other build.
+- `internal/update/` — the updater: versions, release URLs and `SHA256SUMS` (names frozen from
+  `v0.1.0` on), archive checks, staging, the switch and the rollback. The installed binary only
+  fetches, checks and hands over; the incoming one applies itself.
+- `internal/state/` — the schema of `~/.todobem`: the gate every role runs before reading state
+  (migrate an older schema after a backup, refuse a newer one), `migrations` (append only), the
+  backups, the state lock a running todobem holds shared. When a change needs a migration:
+  `docs/ARCHITECTURE.md` §7.5.
+- `e2e/` — the release tests (`-tags e2e`): real published binaries in isolated HOMEs, install,
+  a paired hub and agent, reinstall, migration, rollback, refusals, the upgrade from the previous
+  release; `scripts/install.sh` — the installer published with every release.
 - `internal/atomicfile/` — the one atomic file write (temp file + rename) every durable file
   goes through: settings, cache entries and sidecars, the agents file, the snapshots.
 - `internal/auth/` — the lite authentication: key file (0600, refused when group/world-readable,
@@ -202,7 +217,10 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
    bearer; a **hub** dials only the agents listed in its `~/.todobem/agents.json` (0600, their
    read credentials), and announces that list at start; and a test or a verification run may
    connect a hub and an agent of its own, on loopback, for as long as it runs. Neither role ever
-   speaks to anything else; nothing else ever speaks out. The UI stays on loopback in every mode.
+   speaks to anything else. The one other exception is the updater: `todobem upgrade`, run by
+   the owner, fetches the published release files of the project's GitHub repository over HTTPS;
+   nothing about the machine or its sessions is sent, and nothing checks in the background.
+   Nothing else ever speaks out. The UI stays on loopback in every mode.
 
 ## Engineering rules
 
@@ -238,10 +256,10 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
 
 ## Definition of done
 
-- `gofmt -l .` empty, `go vet ./...`, `go test ./...`, `node --test cmd/todobem/app_test.js`
-  green; then `go run ./cmd/dump <root-thread-id>` on several recent sessions of both sources:
-  no `partition mismatch`, no new `unknown` heads. Classifier changes also pass
-  `docs/ARCHITECTURE.md` §11 (the validation protocol).
+- `gofmt -l .` empty, `go vet ./...` and `go vet -tags e2e ./e2e`, `go test ./...`,
+  `node --test cmd/todobem/app_test.js` green; then `go run ./cmd/dump <root-thread-id>` on
+  several recent sessions of both sources: no `partition mismatch`, no new `unknown` heads.
+  Classifier changes also pass `docs/ARCHITECTURE.md` §11 (the validation protocol).
 - UI changes: exercise the real page in a browser (session list, timeline, brush, inspector,
   Follow mode) and check the console. Tests and source reading do not replace this.
 - Seeing a change in the browser: `./scripts/deploy.sh` — it builds, replaces the instance on
@@ -266,3 +284,7 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
   for session logs, secrets, private hostnames, the `todobem` binary and generated files.
   Push the branch explicitly, verify the remote hash, report destination and commit.
 - Keep `AGENTS.md` a relative symlink to `CLAUDE.md`; this file is the single source of rules.
+- Releases follow the owner's private runbook; never create, edit or promote a GitHub release
+  any other way. The first release is `v0.1.0`; nothing built before it is supported. A change
+  to a file under `~/.todobem` that the user or pairing created follows
+  `docs/ARCHITECTURE.md` §7.5 (a migration when the table says so).
