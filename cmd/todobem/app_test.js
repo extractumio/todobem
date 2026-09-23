@@ -804,17 +804,77 @@ test('the breakdown leads with lifecycle stages: same total as the activity list
   assert.match(row('implement'), /model 1s · tools 1s/);
   assert.match(row('llm'), /Model output, no tool call/);
   assert.match(row('llm'), /<span class="time num">30s/);
-  // not stages: the llm and wait_user rows sit under "Outside stages", after every stage row
+  // not a stage: the llm row sits under "Outside stages", after every stage row; the wait is the
+  // same row as under Activity and is listed once, there — the heading says so
   const outsideAt = body.indexOf('>Outside stages<');
   assert.ok(outsideAt > lifecycleAt && outsideAt < activityAt, 'an Outside stages footer sits between the stages and the activity list');
   for (const lc of ['review', 'implement', 'test']) assert.ok(body.indexOf(`data-lc="${lc}"`) < outsideAt, `${lc} is a stage row`);
-  for (const lc of ['llm', 'wait_user']) assert.ok(body.indexOf(`data-lc="${lc}"`) > outsideAt, `${lc} is not a stage`);
+  assert.ok(body.indexOf('data-lc="llm"') > outsideAt, 'model output without a tool call is not a stage');
+  assert.equal(row('wait_user'), '', 'a wait identical to its Activity row is not repeated');
+  assert.match(body, /<h3>Lifecycle stage<\/h3><span class="mini-note">same time, by SDLC stage · waits, gaps and unknown: see Activity<\/span>/, 'no stage took any wait here, so no amount is named');
   assert.equal(row('operate'), '', 'a stage with no time and no records is hidden');
   const shares = [...body.matchAll(/data-lc="([a-z_]+)"[^]*?<span class="share num">([^<]*)<\/span>/g)].map(m => parseFloat(m[2]));
-  assert.ok(Math.abs(shares.reduce((n, x) => n + x, 0) - 100) < 0.2, `lifecycle shares sum to 100: ${shares}`);
-  const activity = [...body.matchAll(/data-phase="([a-z_]+)"[^]*?<span class="share num">([^<]*)<\/span>/g)].map(m => parseFloat(m[2]));
-  assert.ok(Math.abs(activity.reduce((n, x) => n + x, 0) - 100) < 0.2, `activity shares still sum to 100: ${activity}`);
+  const activity = [...body.matchAll(/data-phase="([a-z_]+)"[^]*?<span class="share num">([^<]*)<\/span>/g)].map(m => [m[1], parseFloat(m[2])]);
+  const waitShare = activity.find(([k]) => k === 'wait_user')[1];
+  assert.ok(Math.abs(shares.reduce((n, x) => n + x, 0) + waitShare - 100) < 0.2, `the stages, the model output and the wait listed under Activity add up to 100: ${shares} + ${waitShare}`);
+  assert.ok(Math.abs(activity.reduce((n, [, x]) => n + x, 0) - 100) < 0.2, `activity shares still sum to 100: ${activity}`);
   assert.match(row('review'), /<span class="count num">2<\/span>/, 'the two operations inside the review turn');
+});
+
+test('a wait a turn signal booked to its stage is listed under Outside stages only by its remainder, and says so; Unknown carries its model share', async () => {
+  const h = await harness().ready();
+  const model = lifecycleSession();
+  const lane = model.lanes[0];
+  // a hook wait in the plain turn (no signal: it passes through) and a sub-agent wait inside
+  // the review turn, which the skill run books to Code review with the rest of that turn; an
+  // unknown command in the plain turn, whose model output before it is unknown too
+  lane.ops.push(
+    { id: 'op-H', lane: 'lane', turn: 'turn', title: 'hook', phase: 'wait_worker', kind: 'hook', sub: 'hooks', status: 'completed', start: 40000, end: 50000, lc: 'wait_worker', lc_rule: 'phase wait_worker' },
+    { id: 'op-U', lane: 'lane', turn: 'turn', title: 'frobnicate', phase: 'unknown', kind: 'frobnicate', sub: 'command', status: 'completed', start: 30000, end: 31000, lc: 'unknown', lc_rule: 'phase unknown' },
+    { id: 'op-W', lane: 'lane', turn: 'turn2', title: 'Agent', phase: 'wait_worker', kind: 'agent', sub: 'agents', status: 'completed', start: 201000, end: 241000, lc: 'review', lc_rule: 'skill code-review-cc' },
+  );
+  lane.segments = lane.segments.flatMap(sg => {
+    if (sg.s === 20000) return [{ s: 20000, e: 25000, p: 'llm', lc: 'llm' }, { s: 25000, e: 30000, p: 'llm', lc: 'unknown' }, { s: 30000, e: 31000, p: 'unknown', lc: 'unknown', op: 'op-U', sub: 'command' }, { s: 31000, e: 40000, p: 'llm', lc: 'llm' }, { s: 40000, e: 50000, p: 'wait_worker', lc: 'wait_worker', op: 'op-H', sub: 'hooks' }];
+    if (sg.s === 101000) return [{ s: 101000, e: 201000, p: 'llm', lc: 'review' }, { s: 201000, e: 241000, p: 'wait_worker', lc: 'review', op: 'op-W', sub: 'agents' }, { s: 241000, e: 301000, p: 'llm', lc: 'review' }];
+    return [sg];
+  });
+  await h.open('session', model);
+  const body = h.node('breakdownBody').innerHTML;
+  const outsideAt = body.indexOf('>Outside stages<'), activityAt = body.indexOf('>Activity<');
+  const lcRow = (body.match(/data-lc="wait_worker"[^]*?<\/button>/) || [''])[0];
+  const phaseRow = (body.match(/data-phase="wait_worker"[^]*?<\/button>/) || [''])[0];
+  assert.ok(body.indexOf('data-lc="wait_worker"') > outsideAt && body.indexOf('data-lc="wait_worker"') < activityAt, 'the remainder sits under Outside stages');
+  assert.match(lcRow, /<span class="time num">10s</, 'the 10 s the review turn did not claim');
+  assert.match(lcRow, /<small class="row-sub">40s more inside the stages above<\/small>/, 'the row reconciles with the 50 s under Activity by a number');
+  assert.match(body, /<span class="mini-note">same time, by SDLC stage · waits, gaps and unknown: see Activity · the stages hold 40s of them<\/span>/, 'the heading totals what the stages took');
+  assert.match(lcRow, /<span class="count num">1<\/span>/, 'one operation outside a stage');
+  assert.match(phaseRow, /<span class="time num">50s</, 'the Activity row keeps the whole wait');
+  assert.match(phaseRow, /<span class="count num">2<\/span>/);
+  // the review stage grew by the 40 s wait it took, as its tools time
+  assert.match((body.match(/data-lc="review"[^]*?<\/button>/) || [''])[0], /model 3m · tools 51s/);
+  // Unknown: 1 s of command under Activity, 6 s here with the model output before it — split, not "remainder"
+  const unknownLc = (body.match(/data-lc="unknown"[^]*?<\/button>/) || [''])[0];
+  assert.ok(body.indexOf('data-lc="unknown"') > outsideAt && body.indexOf('data-lc="unknown"') < activityAt, 'Unknown sits under Outside stages');
+  assert.match(unknownLc, /<span class="time num">6s</);
+  assert.match(unknownLc, /<small class="row-sub">model 5s · tools 1s<\/small>/);
+  assert.match((body.match(/data-phase="unknown"[^]*?<\/button>/) || [''])[0], /<span class="time num">1s</);
+  assert.equal(h.errors.length, 0);
+});
+
+test('a wait a stage took whole leaves no Outside stages row, and the heading still says the stages hold it', async () => {
+  const h = await harness().ready();
+  const model = lifecycleSession();
+  const lane = model.lanes[0];
+  lane.ops.push({ id: 'op-W', lane: 'lane', turn: 'turn2', title: 'Agent', phase: 'wait_worker', kind: 'agent', sub: 'agents', status: 'completed', start: 201000, end: 241000, lc: 'review', lc_rule: 'skill code-review-cc' });
+  lane.segments = lane.segments.flatMap(sg => sg.s === 101000
+    ? [{ s: 101000, e: 201000, p: 'llm', lc: 'review' }, { s: 201000, e: 241000, p: 'wait_worker', lc: 'review', op: 'op-W', sub: 'agents' }, { s: 241000, e: 301000, p: 'llm', lc: 'review' }]
+    : [sg]);
+  await h.open('session', model);
+  const body = h.node('breakdownBody').innerHTML;
+  assert.equal(body.indexOf('data-lc="wait_worker"'), -1, 'nothing of the wait is outside a stage: no row');
+  assert.match((body.match(/data-phase="wait_worker"[^]*?<\/button>/) || [''])[0], /<span class="time num">40s</, 'Activity keeps the whole wait');
+  assert.match(body, /the stages hold 40s of them<\/span>/, 'the heading names the 40 s the stages took, so the wait is not read twice');
+  assert.equal(h.errors.length, 0);
 });
 
 test('Development lists sub-rows by what its calls did, and a sub-row filters the operations list', async () => {
@@ -865,6 +925,12 @@ test('a compound command is listed under every phase it shares, the breakdown na
   const build = (body.match(/<button class="breakdown-item"[^]*?data-phase="build"[^]*?<\/button>/) || [''])[0];
   assert.match(build, /<small class="row-sub">≈ 5s shared from compound commands<\/small>/, 'the Build row names its estimated part in the label, not only in the tooltip');
   assert.match(build, /<span class="time num">≈ 5s/, 'the number itself reads as an estimate');
+  // the stage rows the shares landed in say so the same way: Implementation took the build share, Verification the test share
+  const implement = (body.match(/data-lc="implement"[^]*?<\/button>/) || [''])[0];
+  assert.match(implement, /<small class="row-sub">model 1s · tools 6s · ≈ 5s shared from compound commands<\/small>/);
+  assert.match(implement, /<span class="time num">≈ 7s/);
+  assert.match((body.match(/data-lc="test"[^]*?<\/button>/) || [''])[0], /· ≈ 5s shared from compound commands<\/small>[^]*?<span class="time num">≈ 12s/);
+  assert.doesNotMatch((body.match(/data-lc="review"[^]*?<\/button>/) || [''])[0], /≈/, 'a stage with no share carries no mark');
   assert.match(h.node('chartSvg').innerHTML, /<rect class="est" [^>]*fill="url\(#estHatch\)"/, 'the estimated span is hatched in the lane fill');
   assert.match(body, /data-sub-phase="build" data-sub="compile"/, 'the share lands in the compile sub-row');
   h.action('filter', { phase: 'build' });
@@ -1026,7 +1092,7 @@ test('the legend separates activity fills from the stage pipeline; every stage h
   const body = h.node('breakdownBody').innerHTML;
   assert.match(body, /data-lc="review"[^]*?<span class="name"><i class="color-rail" style="background:#cf5e9e">/);
   assert.match(body, /data-phase="test"[^]*?<span class="name"><i class="color-square" style="background:#f0d76c">/);
-  assert.match(body, /data-lc="wait_user"[^]*?<span class="name"><i class="color-square"/, 'a pass-through row is its activity: a square');
+  assert.match(body, /data-lc="llm"[^]*?<span class="name"><i class="color-square" style="background:#348989">/, 'a row outside the stages is its activity: a square');
 });
 
 // The legend is the session's, not the palette's: an activity or a stage no lane spent time in
@@ -2341,13 +2407,153 @@ test('whatever the text tries, the output holds only the renderer\'s own tags an
   assert.equal(h.errors.length, 0);
 });
 
+/* ---------- harness.js: the rendered view of a harness message ---------- */
+
+const hm = (h, text, ref) => h.run(`Harness.render(${JSON.stringify(text)}, ${JSON.stringify(ref)})`);
+// the harness view adds its own fixed tags to the renderer's
+function safeHarnessHTML(html) {
+  const own = { section: /^class="harness-section( unclosed)?"$/, h4: /^class="harness-tag"$/, dl: /^class="harness-fields"$/, dt: /^$/, dd: /^$/, span: /^class="(md-ref" title="[^"]*|harness-(attr|ref|empty))"$/, b: /^$/ };
+  const rest = html.replace(/<\/?(section|h4|dl|dt|dd|span|b)([^>]*)>/g, (m, name, attrs) => {
+    if (attrs.trim()) assert.match(attrs.trim(), own[name], `attributes on <${name}>: ${attrs}`);
+    return '';
+  });
+  safeHTML(rest);
+}
+
+test('a harness message renders its tags as structure: fields, sections, chips, Markdown between them', async () => {
+  const h = harness();
+  // Claude Code's task notification: one-line values are fields, the result is Markdown
+  const notice = 'task-notification\n<task-notification>\n<task-id>a0e7c</task-id>\n<status>completed</status>\n<summary>Agent "Stress-test plan" finished</summary>\n<result>## 1. Task type\nDesign review (no code changed).\n\n- one\n- two</result>\n</task-notification>';
+  assert.equal(hm(h, notice, 'task-notification'),
+    '<section class="harness-section"><h4 class="harness-tag">task-notification</h4>'
+    + '<dl class="harness-fields"><dt>task-id</dt><dd><p>a0e7c</p></dd><dt>status</dt><dd><p>completed</p></dd><dt>summary</dt><dd><p>Agent &quot;Stress-test plan&quot; finished</p></dd></dl>'
+    + '<section class="harness-section"><h4 class="harness-tag">result</h4><h2>1. Task type</h2><p>Design review (no code changed).</p><ul><li>one</li><li>two</li></ul></section></section>');
+  // attributes are chips in the label; the body is Markdown
+  assert.equal(hm(h, 'teammate-message\n<teammate-message teammate_id="rev-1" summary=\'done\' color=blue>The **review** is in.\nSee `x.go`.</teammate-message>', 'teammate-message'),
+    '<section class="harness-section"><h4 class="harness-tag">teammate-message<span class="harness-attr">teammate_id=<b>rev-1</b></span><span class="harness-attr">summary=<b>done</b></span><span class="harness-attr">color=<b>blue</b></span></h4><p>The <strong>review</strong> is in.\nSee <code>x.go</code>.</p></section>');
+  // Codex's environment context: nested elements, indented, and a whole subtree on one line —
+  // a tag right after another tag is a tag; whitespace-only text is nothing
+  assert.equal(hm(h, 'environment_context\n<environment_context>\n  <current_date>2026-09-21</current_date>\n  <filesystem><workspace_roots><root>/synthetic</root></workspace_roots><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem>\n</environment_context>', 'environment_context'),
+    '<section class="harness-section"><h4 class="harness-tag">environment_context</h4><dl class="harness-fields"><dt>current_date</dt><dd><p>2026-09-21</p></dd></dl>'
+    + '<section class="harness-section"><h4 class="harness-tag">filesystem</h4><section class="harness-section"><h4 class="harness-tag">workspace_roots</h4><dl class="harness-fields"><dt>root</dt><dd><p>/synthetic</p></dd></dl></section>'
+    + '<section class="harness-section"><h4 class="harness-tag">permission_profile<span class="harness-attr">type=<b>disabled</b></span></h4><section class="harness-section"><h4 class="harness-tag">file_system<span class="harness-attr">type=<b>unrestricted</b></span></h4></section></section></section></section>');
+  // Codex's AGENTS.md: Markdown before the wrapper, Markdown inside it; a tag inside a fence is code
+  assert.equal(hm(h, 'AGENTS.md\n# AGENTS.md instructions for /synthetic\n\n<INSTRUCTIONS>\n## Rules\n- run tests\n```html\n<b>literal</b>\n```\n</INSTRUCTIONS>', 'AGENTS.md'),
+    '<span class="harness-ref">AGENTS.md</span><h1>AGENTS.md instructions for /synthetic</h1><section class="harness-section"><h4 class="harness-tag">INSTRUCTIONS</h4><h2>Rules</h2><ul><li>run tests</li></ul><pre><code class="lang-html">&lt;b&gt;literal&lt;/b&gt;\n</code></pre></section>');
+  // a notice without a wrapper keeps its ref as an eyebrow and is Markdown
+  assert.equal(hm(h, 'auto-continuation\nYour session *continues*.', 'auto-continuation'), '<span class="harness-ref">auto-continuation</span><p>Your session <em>continues</em>.</p>');
+  // no ref (an older marker): the text is the text
+  assert.equal(hm(h, '\nplain note', ''), '<p>plain note</p>');
+  assert.equal(hm(h, 'plain note', undefined), '<p>plain note</p>');
+  // an inline tag in prose is text; a closer with nothing open is text; an empty element says so
+  assert.equal(hm(h, 'x\n<note>use <b>bold</b> here</note>\n</stray>\n<flag></flag>\n<solo/>', 'x'),
+    '<span class="harness-ref">x</span><dl class="harness-fields"><dt>note</dt><dd><p>use &lt;b&gt;bold&lt;/b&gt; here</p></dd></dl><p>&lt;/stray&gt;</p><dl class="harness-fields"><dt>flag</dt><dd><span class="harness-empty">(empty)</span></dd><dt>solo</dt><dd><span class="harness-empty">(empty)</span></dd></dl>');
+  // Codex's sub-agent notification: a line of JSON is fields and sections by its keys — the
+  // sub-agent's completion text reads as Markdown; a clipped one does not parse and is as recorded
+  assert.equal(hm(h, 'subagent_notification\n<subagent_notification>{"agent_path":"a_b","status":{"completed":"**Task**\\n\\nDone."},"tags":["x",2,null],"n":3}</subagent_notification>', 'subagent_notification'),
+    '<section class="harness-section"><h4 class="harness-tag">subagent_notification</h4><dl class="harness-fields"><dt>agent_path</dt><dd><p>a_b</p></dd></dl>'
+    + '<section class="harness-section"><h4 class="harness-tag">status</h4><section class="harness-section"><h4 class="harness-tag">completed</h4><p><strong>Task</strong></p><p>Done.</p></section></section>'
+    + '<section class="harness-section"><h4 class="harness-tag">tags</h4><dl class="harness-fields"><dt>tags[0]</dt><dd><p>x</p></dd><dt>tags[1]</dt><dd><p>2</p></dd><dt>tags[2]</dt><dd><p>null</p></dd></dl></section><dl class="harness-fields"><dt>n</dt><dd><p>3</p></dd></dl></section>');
+  assert.equal(hm(h, 'subagent_notification\n<subagent_notification>{"agent_path":"a_b","stat…', 'subagent_notification'),
+    '<section class="harness-section unclosed"><h4 class="harness-tag">subagent_notification</h4><pre><code class="lang-json">{&quot;agent_path&quot;:&quot;a_b&quot;,&quot;stat…\n</code></pre></section>');
+  // the nesting's indentation is not the text's: a list inside <subagents> is a list, deeper indentation stays
+  assert.equal(hm(h, 'x\n<env>\n  <subagents>\n    - a: B\n    - c: D\n      more\n  </subagents>\n</env>', 'x'),
+    '<span class="harness-ref">x</span><section class="harness-section"><h4 class="harness-tag">env</h4><section class="harness-section"><h4 class="harness-tag">subagents</h4><ul><li>a: B</li><li>c: D\nmore</li></ul></section></section>');
+  // a value that merely starts with a bracket is text, not JSON: a field, a link, a task box
+  assert.equal(hm(h, 'x\n<summary>[Reviewer] finished</summary>\n[see the plan](https://example.com/p)\n<n>[x] done</n>', 'x'),
+    '<span class="harness-ref">x</span><dl class="harness-fields"><dt>summary</dt><dd><p>[Reviewer] finished</p></dd></dl><p><a href="https://example.com/p" target="_blank" rel="noopener noreferrer">see the plan</a></p><dl class="harness-fields"><dt>n</dt><dd><p>[x] done</p></dd></dl>');
+  // an integer JSON cannot hold refuses the structured view: the line as recorded, not a wrong number
+  assert.equal(hm(h, 'x\n<n>{"id":12345678901234567890}</n>', 'x'), '<span class="harness-ref">x</span><section class="harness-section"><h4 class="harness-tag">n</h4><pre><code class="lang-json">{&quot;id&quot;:12345678901234567890}\n</code></pre></section>');
+  // an autolink is not a tag
+  assert.equal(hm(h, 'x\n<https://example.com/a>', 'x'), '<span class="harness-ref">x</span><p><a href="https://example.com/a" target="_blank" rel="noopener noreferrer">https://example.com/a</a></p>');
+  // clipped at 1,500 characters: the open elements run to the end and are marked
+  assert.equal(hm(h, 'task-notification\n<task-notification>\n<status>completed</status>\n<result>## Findings\nThe plan…', 'task-notification'),
+    '<section class="harness-section unclosed"><h4 class="harness-tag">task-notification</h4><dl class="harness-fields"><dt>status</dt><dd><p>completed</p></dd></dl><section class="harness-section unclosed"><h4 class="harness-tag">result</h4><h2>Findings</h2><p>The plan…</p></section></section>');
+  // an outer closer closes what is still open inside it
+  assert.equal(hm(h, 'x\n<a>\n<b>one\n</a>\nafter', 'x'), '<span class="harness-ref">x</span><section class="harness-section"><h4 class="harness-tag">a</h4><dl class="harness-fields"><dt>b</dt><dd><p>one</p></dd></dl></section><p>after</p>');
+  assert.equal(h.errors.length, 0);
+});
+
+test('whatever a harness message tries, the output holds only the two renderers\' own tags', async () => {
+  const h = harness();
+  const nasty = [
+    '<script>alert(1)</script>\n<img src=https://evil.example/p.png onerror=alert(1)>\n<a href="javascript:alert(1)">x</a>',
+    '<task-notification onclick="alert(1)">\n<summary onload=x>"quoted" & <i>em</i></summary>\n<result>[x](javascript:alert(1))</result>',
+    '<div id="a" class="b">\n<style>body{display:none}</style>\n</div>\n<svg><use href="x"/></svg>',
+    '<' + 'a>\n'.repeat(5000), '</a>\n'.repeat(5000), '<a b="' + '"'.repeat(5000) + '">', ('<x>' + '`'.repeat(50)).repeat(500),
+  ];
+  const started = Date.now();
+  for (const text of nasty) safeHarnessHTML(hm(h, text, 'ref'));
+  assert.ok(Date.now() - started < 2000, 'pathological input renders in bounded time');
+  // nesting is capped: a 20,000-deep one-line nest renders (the openers past the cap are text) instead of running the stack out
+  const deep = hm(h, 'ref\n' + '<a>'.repeat(20000) + 'x', 'ref');
+  safeHarnessHTML(deep);
+  assert.equal((deep.match(/<section /g) || []).length + (deep.match(/<dt>/g) || []).length, 64, '64 elements: 63 sections and the innermost, a one-line field');
+  assert.match(deep, /&lt;a&gt;&lt;a&gt;/);
+  const deepJSON = hm(h, 'ref\n<j>' + '['.repeat(20000) + ']'.repeat(20000) + '</j>', 'ref');
+  safeHarnessHTML(deepJSON);
+  // the tag and attribute names are escaped like any text; an event handler is a chip, not an attribute
+  assert.equal(hm(h, 'ref\n<task onclick="alert(1)">x</task>', 'ref'), '<span class="harness-ref">ref</span><section class="harness-section"><h4 class="harness-tag">task<span class="harness-attr">onclick=<b>alert(1)</b></span></h4><p>x</p></section>');
+  assert.equal(hm(h, 'ref\n<script>alert(1)</script>', 'ref'), '<span class="harness-ref">ref</span><dl class="harness-fields"><dt>script</dt><dd><p>alert(1)</p></dd></dl>');
+  assert.equal(h.errors.length, 0);
+});
+
+test('a harness block inside a user prompt is structure too, and a plain prompt keeps every space of the record', async () => {
+  const h = await harness().ready();
+  const model = session();
+  // Claude Code closes a paste with the id repeated on the closer
+  const prompt = '<system-reminder>\nThe file was edited outside the session.\nRe-read it before editing.\n</system-reminder>\nFix the **flaky** test.\n\n<pasted_content id="a1">\n    indented paste\n</pasted_content id="a1">\nand after';
+  const indented = '    four spaces lead\n    every line';
+  model.lanes[0].markers = [{ kind: 'user_message', t: 1000, text: prompt }, { kind: 'user_message', t: 2000, text: indented }, { kind: 'final_answer', t: 60000, text: 'Done: see <details>\n<summary>log</summary>\nok\n</details>' }];
+  model.lanes[0].turns = [{ id: 'turn', start: 1000, end: 60000, status: 'completed', final: 'Done.' }];
+  await h.open('session', model);
+  const conv = h.node('conversation').innerHTML;
+  assert.ok(conv.includes('<div class="conv-text prose-md "><section class="harness-section"><h4 class="harness-tag">system-reminder</h4><p>The file was edited outside the session.\nRe-read it before editing.</p></section><p>Fix the <strong>flaky</strong> test.</p><section class="harness-section"><h4 class="harness-tag">pasted_content<span class="harness-attr">id=<b>a1</b></span></h4><p>indented paste</p></section><p>and after</p></div>'), 'the reminder and the paste are sections, the prompt between them Markdown, the paste dedented and closed by its attributed closer');
+  // the first-message card is the same view
+  assert.match(h.node('main').innerHTML, /<div class="prose-block scroll-fade prose-md"><section class="harness-section"><h4 class="harness-tag">system-reminder<\/h4>/);
+  // a prompt that is indented as a whole keeps its indentation: outside every tag, spaces are the record's
+  assert.ok(conv.includes(`<div class="conv-text prose-md "><p>${indented}</p></div>`), 'no dedent of top-level text');
+  // an inline tag in an answer follows text and stays text; the block after it is structure
+  assert.ok(conv.includes('<p>Done: see &lt;details&gt;</p><dl class="harness-fields"><dt>summary</dt><dd><p>log</p></dd></dl><p>ok\n&lt;/details&gt;</p>'), 'a closer with nothing open is text');
+  assert.equal(h.errors.length, 0);
+});
+
+test('a clipped harness message offers its dialog, which completes it from the source event', async () => {
+  const h = await harness().ready();
+  const model = session();
+  model.source = 'claude';
+  const full = '<task-notification>\n<status>completed</status>\n<result>## Findings\n\n' + 'x'.repeat(2000) + '\n\nThe **end**.</result>\n</task-notification>';
+  const text = 'task-notification\n' + full.slice(0, 1480) + '…';
+  model.lanes[0].markers = [{ kind: 'system_message', t: 1500, ref: 'task-notification', text, src: { file: '/synthetic/s.jsonl', off: 40, len: 9 } }];
+  await h.open('session', model);
+  const conv = h.node('conversation').innerHTML;
+  assert.match(conv, /<section class="harness-section unclosed"><h4 class="harness-tag">result<\/h4>/, 'the panel shows the clipped text, its open element marked');
+  assert.match(conv, /<button class="text-btn" data-action="marker" data-mk="lane:1500:system_message"[^>]*>Full text<\/button>/);
+  const opening = h.action('marker', { mk: 'lane:1500:system_message' });
+  assert.match(h.node('inspector').innerHTML, /<section class="harness-section unclosed"><h4 class="harness-tag">result<\/h4>/, 'the dialog opens on the clipped text');
+  // a Claude Code line: the text is message.content, one string
+  h.take('/api/event?session=session&file=%2Fsynthetic%2Fs.jsonl&off=40&len=9').resolve({ type: 'user', message: { role: 'user', content: full } });
+  await opening; await flush();
+  const completed = h.node('mkText').innerHTML;
+  assert.match(completed, /^<section class="harness-section"><h4 class="harness-tag">task-notification<\/h4>/, 'completed: the wrapper is closed');
+  assert.match(completed, /<p>The <strong>end<\/strong>\.<\/p><\/section><\/section>$/);
+  // the switch shows the completed text as recorded, ref line first like every harness marker
+  h.action('text-view');
+  assert.match(h.node('inspector').innerHTML, /<div class="prose-block prose-log prose-raw" id="mkText">task-notification\n&lt;task-notification&gt;/);
+  h.take('/api/event?session=session&file=%2Fsynthetic%2Fs.jsonl&off=40&len=9').resolve({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: full }] } });
+  await flush();
+  assert.match(h.node('mkText').innerHTML, /The \*\*end\*\*\.&lt;\/result&gt;\n&lt;\/task-notification&gt;$/, 'text blocks are joined too');
+  assert.equal(h.errors.length, 0);
+});
+
 test('every prose panel renders Markdown and one switch shows every text as recorded', async () => {
   const h = await harness().ready();
   const model = session();
   const request = 'Fix `session_test.go`:\n- first\n- second';
   const answer = '## Done\n\nSee [app.js:1](/synthetic/app.js).';
+  const notice = 'task-notification\n<task-notification>\n<status>completed</status>\n<result>## Done\n\nAll **good**.</result>\n</task-notification>';
   model.lanes[0].markers = [
-    { kind: 'user_message', t: 1000, text: request }, { kind: 'system_message', t: 1500, text: 'ref\n<hook> text' },
+    { kind: 'user_message', t: 1000, text: request }, { kind: 'system_message', t: 1500, ref: 'task-notification', text: notice },
     { kind: 'question', t: 30000, text: 'Ship **now**?' }, { kind: 'final_answer', t: 60000, text: answer },
   ];
   model.lanes[0].turns = [{ id: 'turn', start: 1000, end: 60000, status: 'completed', final: answer }];
@@ -2357,8 +2563,11 @@ test('every prose panel renders Markdown and one switch shows every text as reco
   assert.match(rendered(), /<div class="answer-block prose-block scroll-fade prose-md" tabindex="0"><h2>Done<\/h2><p>See <span class="md-ref" title="\/synthetic\/app.js">app.js:1<\/span>\.<\/p><\/div>/);
   const conv = () => h.node('conversation').innerHTML;
   assert.match(conv(), /<div class="conv-text prose-md "><p>Ship <strong>now<\/strong>\?<\/p><\/div>/);
-  // a harness message is never Markdown, in either view
-  assert.match(conv(), /<div class="conv-text prose-raw ">ref\n&lt;hook&gt; text<\/div>/);
+  // a harness message is its tags as structure: the wrapper a section, a one-line value a
+  // field, a longer one Markdown; the ref line is the label, not text
+  const noticeHTML = '<section class="harness-section"><h4 class="harness-tag">task-notification</h4><dl class="harness-fields"><dt>status</dt><dd><p>completed</p></dd></dl><section class="harness-section"><h4 class="harness-tag">result</h4><h2>Done</h2><p>All <strong>good</strong>.</p></section></section>';
+  assert.ok(conv().includes(`<div class="conv-text prose-md ">${noticeHTML}</div>`), 'the harness message is rendered as structure');
+  assert.doesNotMatch(conv(), /Full text/, 'a message that is not clipped offers no dialog');
   // the clamp button hides for a short text and shows for a long one
   assert.match(conv(), /<button class="text-btn" data-action="conv-toggle" data-key="60000:final_answer" style="margin-top:4px" hidden>Show all<\/button>/);
   const long = { ...model, lanes: [{ ...model.lanes[0], markers: [{ kind: 'user_message', t: 1000, text: 'x'.repeat(400) }] }] };
@@ -2375,13 +2584,23 @@ test('every prose panel renders Markdown and one switch shows every text as reco
   assert.doesNotMatch(blocks(), /Show raw/);
   assert.equal((blocks().match(/>Show rendered</g) || []).length, 3, 'first message, last answer, conversation');
   h.run("inspectMarker('lane:30000:question')");
-  assert.match(h.node('inspector').innerHTML, /<div class="prose-block prose-log prose-raw">Ship \*\*now\*\*\?<\/div>/);
+  assert.match(h.node('inspector').innerHTML, /<div class="prose-block prose-log prose-raw" id="mkText">Ship \*\*now\*\*\?<\/div>/);
   h.action('text-view');
-  assert.match(h.node('inspector').innerHTML, /<div class="prose-block prose-log prose-md"><p>Ship <strong>now<\/strong>\?<\/p><\/div>/);
+  assert.match(h.node('inspector').innerHTML, /<div class="prose-block prose-log prose-md" id="mkText"><p>Ship <strong>now<\/strong>\?<\/p><\/div>/);
   assert.match(conv(), /<div class="conv-text prose-md "><p>Ship <strong>now<\/strong>\?<\/p><\/div>/);
-  // a marker that is not a message stays as recorded and offers no switch
+  // the harness message follows the same switch: as recorded in the raw view, structure in the other
+  h.action('text-view');
+  assert.ok(conv().includes(`<div class="conv-text prose-raw ">${notice.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>`), 'raw: the recorded text, ref line included');
   h.run("inspectMarker('lane:1500:system_message')");
-  assert.match(h.node('inspector').innerHTML, /<div class="prose-block prose-log prose-raw">ref\n&lt;hook&gt; text<\/div>/);
+  assert.match(h.node('inspector').innerHTML, /<div class="prose-block prose-log prose-raw" id="mkText">task-notification\n&lt;task-notification&gt;/);
+  assert.match(h.node('inspector').innerHTML, /text-view/, 'the marker dialog of a harness message carries the switch');
+  h.action('text-view');
+  assert.ok(h.node('inspector').innerHTML.includes(`<div class="prose-block prose-log prose-md" id="mkText">${noticeHTML}</div>`));
+  // a marker that is not a message stays as recorded and offers no switch
+  const other = { ...model, id: 'other', lanes: [{ ...model.lanes[0], markers: [{ kind: 'compaction', t: 45000, text: 'summary <b>kept</b>' }] }] };
+  await h.open('other', other);
+  h.run("inspectMarker('lane:45000:compaction')");
+  assert.match(h.node('inspector').innerHTML, /<div class="prose-block prose-log prose-raw" id="mkText">summary &lt;b&gt;kept&lt;\/b&gt;<\/div>/);
   assert.doesNotMatch(h.node('inspector').innerHTML, /text-view/);
   assert.equal(h.errors.length, 0);
 });

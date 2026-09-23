@@ -25,18 +25,36 @@ async function inspectMarker(key) {
   const request = ++inspectorRequest;
   state.reopen = () => inspectMarker(key);
   const dlg = $('#inspector'); const def = MARKS[kind] || { name: kind, color: '#aaa' };
-  // a user message, a question and a final answer are prose; every other marker is shown as recorded
+  // a user message, a question, a final answer and a harness message are prose (harness.js: the
+  // tags as structure, the text as Markdown; a harness marker's first line is its ref); every
+  // other marker is shown as recorded
   const message = ['user_message', 'question', 'final_answer'].includes(kind);
-  dlg.innerHTML = `<div class="dialog-head"><span class="eyebrow">Marker</span><div class="answer-actions">${message ? viewToggle() : ''}<button class="btn icon-only ghost" data-action="close-inspector" aria-label="Close" autofocus>${icon('close')}</button></div></div><div class="dialog-body"><span class="chip"><i class="color-square" style="background:${def.color}"></i>${esc(def.name)}</span><h2 id="inspectorTitle">${stampS(mk.t)} · ${esc(l.path)}</h2>${mk.ref && m.laneById.get(mk.ref) ? `<p class="desc">Sub-agent: ${esc(m.laneById.get(mk.ref).path)}</p>` : ''}<div class="prose-block prose-log ${message ? proseView() : 'prose-raw'}">${message ? prose(mk.text || '(no text)') : esc(mk.text || '(no text)')}</div><div class="dialog-actions"><button class="btn primary" data-action="jump" data-t="${mk.t}">${icon('expand', true)}Zoom around this moment</button></div><details class="json-details"><summary>Source event (raw)</summary><pre class="event-log" id="mkSource">loading…</pre></details></div>`;
+  const harness = kind === 'system_message';
+  const text = mk.text || '(no text)';
+  const shown = message || harness ? prose(text, harness ? mk.ref : '') : esc(text);
+  dlg.innerHTML = `<div class="dialog-head"><span class="eyebrow">Marker</span><div class="answer-actions">${message || harness ? viewToggle() : ''}<button class="btn icon-only ghost" data-action="close-inspector" aria-label="Close" autofocus>${icon('close')}</button></div></div><div class="dialog-body"><span class="chip"><i class="color-square" style="background:${def.color}"></i>${esc(def.name)}</span><h2 id="inspectorTitle">${stampS(mk.t)} · ${esc(l.path)}</h2>${mk.ref && m.laneById.get(mk.ref) ? `<p class="desc">Sub-agent: ${esc(m.laneById.get(mk.ref).path)}</p>` : ''}<div class="prose-block prose-log ${message || harness ? proseView() : 'prose-raw'}" id="mkText">${shown}</div><div class="dialog-actions"><button class="btn primary" data-action="jump" data-t="${mk.t}">${icon('expand', true)}Zoom around this moment</button></div><details class="json-details"><summary>Source event (raw)</summary><pre class="event-log" id="mkSource">loading…</pre></details></div>`;
   if (!dlg.open) dlg.showModal();
   const source = $('#mkSource');
   const ownsRequest = () => request === inspectorRequest && dlg.open && state.page === 'session' && current()?.id === m.id;
   if (mk.src) {
     try {
       const d = await api(`/api/event?session=${encodeURIComponent(m.id)}&file=${encodeURIComponent(mk.src.file)}&off=${mk.src.off}&len=${mk.src.len}`);
-      if (ownsRequest()) source.textContent = JSON.stringify(d, null, 1).slice(0, 60000);
+      if (!ownsRequest()) return;
+      source.textContent = JSON.stringify(d, null, 1).slice(0, 60000);
+      // the adapters clip a harness message's marker text; the source event has all of it
+      const full = harness && mk.text.endsWith('…') ? eventText(d) : '';
+      if (full) $('#mkText').innerHTML = prose(`${mk.ref || ''}\n${full}`, mk.ref);
     } catch (e) { if (ownsRequest()) source.textContent = 'unavailable'; }
   } else source.textContent = '(no source pointer)';
+}
+// eventText is the text of a recorded user-role event, whichever source wrote it: a Codex
+// response item (payload.content[].text) or event message (payload.message), a Claude Code line
+// (message.content as one string or as text blocks). Empty when the event carries none.
+function eventText(d) {
+  const content = d?.payload?.content ?? d?.message?.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) return content.filter(c => typeof c.text === 'string').map(c => c.text).join('');
+  return typeof d?.payload?.message === 'string' ? d.payload.message : '';
 }
 // inspectWait explains a waiting interval: what the agent last said before it stopped (the
 // preceding turn's final answer / last final_answer marker) and the user message that ended it.
@@ -140,7 +158,7 @@ async function inspectLane(id) {
     const content = d.payload?.content || [];
     if (!prompt.headerOnly) {
       // the marker text of an agent message is clipped; the source event has all of it
-      const full = content.filter(c => typeof c.text === 'string').map(c => c.text).join('');
+      const full = eventText(d);
       if (full.length > prompt.marker.text.length) $('#lanePromptText').innerHTML = prose(full);
       return;
     }

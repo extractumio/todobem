@@ -236,6 +236,24 @@ main{padding:22px 28px 40px;display:flex;flex-direction:column;gap:24px;max-widt
 .prose-md a:hover{text-decoration-color:currentColor}
 .prose-md .md-ref{border-bottom:1px dotted var(--subtle);cursor:help;overflow-wrap:anywhere}
 .prose-md hr{border:0;border-top:1px solid var(--line);margin:.8em 0}
+/* the rendered view of a harness message (harness.js): the tags the harness wrapped it in become
+   the structure they carry — a one-line value a row of a field list, a longer body a labelled
+   section (a rail like a quote, the tag name as a monospace label with its attributes as chips),
+   the text between them Markdown — so a task notification or a teammate message reads as a record,
+   not as a wall of angle brackets. The eyebrow is the adapter's ref when the text has no wrapper. */
+.harness-ref{display:block;font-family:ui-monospace,Menlo,monospace;font-size:11.5px;letter-spacing:.3px;color:var(--subtle);margin:0 0 6px}
+.harness-section{margin:0 0 .7em;padding:6px 10px;border-left:2px solid var(--line)}
+.harness-section>:last-child{margin-bottom:0}
+/* an element the clipped text never closed: the rail is dashed where the record was cut */
+.harness-section.unclosed{border-left-style:dashed}
+.prose-md .harness-tag{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;font-family:ui-monospace,Menlo,monospace;font-size:12px;font-weight:600;line-height:1.35;color:var(--muted);margin:0 0 6px}
+.harness-attr{font-weight:400;color:var(--subtle);overflow-wrap:anywhere}
+.harness-attr b{font-weight:500;color:var(--muted)}
+.harness-fields{display:grid;grid-template-columns:fit-content(40%) minmax(0,1fr);gap:3px 14px;margin:0 0 .7em;font-size:13px}
+.harness-fields dt{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--subtle);overflow-wrap:anywhere;line-height:1.55}
+.harness-fields dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.harness-fields dd>p{margin:0}
+.harness-empty{color:var(--subtle);font-style:italic}
 .session-summary{display:flex;flex-wrap:wrap;gap:8px 26px;margin:16px 0 0;padding-top:12px;border-top:1px solid var(--line-soft)}
 .session-summary div{display:flex;flex-direction:column;gap:2px}
 .session-summary dt{font-size:12px;letter-spacing:.8px;text-transform:uppercase;color:var(--subtle)}
@@ -425,7 +443,8 @@ kbd{background:#243543;box-shadow:var(--edge);clip-path:var(--chamfer);padding:1
 .conv{display:flex;flex-direction:column;max-height:560px;overflow:auto}
 .conv-item{display:grid;grid-template-columns:96px 1fr;gap:12px;padding:12px 22px;border-top:1px solid var(--line-soft);text-align:left;width:100%}
 .conv-item:hover{background:#243543}
-.conv-time{font-size:12px;color:var(--subtle);font-family:ui-monospace,Menlo,monospace;line-height:1.5;text-align:left}
+/* a button centres its content: pinned to the top, or the label of a tall message floats mid-way */
+.conv-time{font-size:12px;color:var(--subtle);font-family:ui-monospace,Menlo,monospace;line-height:1.5;text-align:left;align-self:start}
 .conv-time b{display:block;color:var(--muted);font-family:inherit;font-weight:600}
 .conv-text{font-size:14px;white-space:pre-wrap;word-break:break-word;max-height:7.5em;overflow:hidden;position:relative}
 .conv-text.prose-md{white-space:normal}

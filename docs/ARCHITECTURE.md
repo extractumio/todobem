@@ -61,7 +61,7 @@ built from; Insights reads the derived model and never a log line.
 | `cmd/todobem/main.go` | entry point, flags (`-addr`, `-codex`, `-claude`, `-settings`, `-open`, `-rules`, `-cache`, `-auth`, `-agent`, `-agent-key`, `-version`), subcommands `token`, `cache`, `unknown`, `agent`, `hub`; embeds `web/`; `runAgent` is agent mode, the hub's `fleet.Fleet` is attached here |
 | `cmd/todobem/agent.go` | `todobem agent pair` (a pairing string from the agent key) and `todobem hub add / list / remove / doctor / rotate` (the agents file; a running hub picks it up) |
 | `cmd/todobem/unknown.go` | `todobem unknown`: unmatched commands and telemetry gaps across sessions, the loop the `resolve-unknown` skill runs |
-| `cmd/todobem/web/` | `index.html`, `app.js` (session list, timeline, breakdown, inspector), `inspector.js`, `filter.js` (period + project + host + source filter; the host chip), `settings.js`, `insights.js`, `dropdown.js` (the list of every `select.select`, drawn by the page over the native control, which keeps its value and its `change` event), `markdown.js` (the rendered view of a recorded message: a small GFM-subset renderer that escapes everything and links only http/https/mailto, plus the Show raw / Show rendered switch every prose panel carries), `app.css` (the surface finish: `grain.svg` is the one texture tile it lays over the page; `grain.js` re-lays it on a dense screen as rasters scaled to the screen, so a speck stays one CSS pixel), `build.js` (the reload onto a new server build, §8), `fonts/` (Fira Sans, self-hosted); `cmd/todobem/app_test.js` runs the SPA under `node --test` |
+| `cmd/todobem/web/` | `index.html`, `app.js` (session list, timeline, breakdown, inspector), `inspector.js`, `filter.js` (period + project + host + source filter; the host chip), `settings.js`, `insights.js`, `dropdown.js` (the list of every `select.select`, drawn by the page over the native control, which keeps its value and its `change` event), `markdown.js` (a small GFM-subset renderer that escapes everything and links only http/https/mailto, plus `prose()` — the rendered view of every recorded message — and the Show raw / Show rendered switch every prose panel carries), `harness.js` (what `prose()` renders through: the tags a message carries as fields, sections and chips, the text between them through `markdown.js`), `app.css` (the surface finish: `grain.svg` is the one texture tile it lays over the page; `grain.js` re-lays it on a dense screen as rasters scaled to the screen, so a speck stays one CSS pixel), `build.js` (the reload onto a new server build, §8), `fonts/` (Fira Sans, self-hosted); `cmd/todobem/app_test.js` runs the SPA under `node --test` |
 | `cmd/dump/` | developer tool: totals, per-lane partition checks, stage runs, groups, longest and unknown ops, `-ops` TSV, `-insights` facts and findings |
 | `internal/source/` | the seam: `Meta`, `Source`, `Session` (joiner), `LaneParser`, `Multi`, `Summaries`, `TailReader`, text helpers |
 | `internal/codex/` | Codex adapter: `index.go`, `reader.go` (line typing by prefix), `lane.go` (turns, ops, markers), `tokens.go` |
@@ -348,9 +348,9 @@ pin. Word rules are looked up exactly (longest key first: `xcrun devicectl devic
    `$(…)` / `${…}` / backtick expansion with its own quotes and parentheses balanced, or an
    unquoted run, ending only at unquoted whitespace, so `LOG="/tmp/x_$(date +%s)_y.log"` never
    leaves `+%s)_y.log"` behind as a command; a segment that is only assignments runs nothing) —,
-   `sudo` /
-   `nohup` / `exec` / `command` / `nice` / `timeout` / `env` / `xargs` / `caffeinate` / `time`
-   wrappers and shell keywords stripped (`for x in …` / `case` headers carry no command);
+   `sudo` / `nohup` / `setsid` / `exec` / `command` / `nice` / `timeout` / `env` / `xargs` /
+   `caffeinate` / `time` wrappers (`head.go` `wrapperWords`, shared with `Head`) and shell
+   keywords stripped (`for x in …` / `case` headers carry no command);
    `node_modules/.bin/<tool>` → `<tool>`; a package runner (`npx [-y] [-p pkg] [--] <tool>`,
    `bunx`, `bun x`, `npm exec` / `x`, `pnpm dlx` / `exec`, `yarn dlx` / `exec`, `bundle exec`,
    `poetry run`, `uv run`, `pipenv run`; `head.go` `runners`) → the tool it runs, its
@@ -600,8 +600,9 @@ for a **group** of operations — a turn, or a run inside a turn — after the w
 read, never for one call by itself. An **operation** answers *what*: one tool call, one model
 output, one wait. Non-stage time (waiting for the user, waiting for workers, compaction, hooks,
 telemetry gaps, unknown commands, the model output of a turn that made no tool call) exists only
-at the operation level: in the stage view it keeps its own key and the UI lists it under
-"Outside stages", never absorbed into a neighbouring stage and never shown as one.
+at the operation level: in the stage view it keeps its own key, never absorbed into a
+neighbouring stage and never shown as one. The breakdown lists it once, under Activity; "Outside
+stages" holds only what that list does not say (§9.3).
 
 Every assignment is a literal harness-level signal or the **order** of such signals inside one
 turn; nothing is inferred from a duration, a similarity or prose (product rules 1, 3, 4).
@@ -874,8 +875,33 @@ passes through `esc()`, the tags come from a fixed set, a link is only http/http
 (checked on the raw destination), any other destination (Claude Code's `[app.js:12](/abs/path)`
 file references) is a reference with the path as its tooltip, an image is a link and never an
 `<img>`, and a newline or leading space inside a paragraph or list item stays (pre-wrap): the
-line structure of a chat message is part of the record. A harness message is never rendered.
-`index.html` carries a Content-Security-Policy meta (`default-src 'self'`, images `'self'`,
+line structure of a chat message is part of the record. Every message goes through `harness.js`
+first: the tags a message carries — all of a harness message (a `system_message` marker: Claude
+Code's `<task-notification>` and `<teammate-message>`, Codex's AGENTS.md inside `<INSTRUCTIONS>`,
+its `<environment_context>`, `<recommended_plugins>`), the `<system-reminder>`, `<pasted_content>`
+or `<ide_selection>` block Claude Code slips into a user's prompt — are rendered as the structure
+they carry, and a message without tags is exactly its Markdown: an element whose value is one
+line is a row of a field list, one with a longer body or nested elements a labelled section, an
+attribute a chip in
+that label, a line of JSON (Codex's `<subagent_notification>`, recognised by its opening shape
+`{"` / `["`) the same fields and sections by its keys so the sub-agent's completion text reads
+as Markdown (unparsable — clipped — it is a code block as recorded; an integer beyond the safe
+range refuses the structured view), text nested in an element dedented by its common
+indentation (text outside every element — a whole prompt — keeps its spaces: they are the
+record's), every other run of text Markdown through `markdown.js` — under the same guarantees
+(tag and attribute names pass through `esc()`, the HTML tags are the renderer's own fixed set,
+nesting capped at 64 so a hostile text cannot run the stack out, a renderer fault falls back to
+the escaped text). A tag opens only where nothing but blanks separate it from the start of its
+line or from the previous tag (Codex writes a whole `<filesystem>…</filesystem>` subtree on one
+line; an inline `<b>` in prose follows text and stays text) and never inside a fence; a closer
+closes the innermost open element of its name; an element still open at the end of the text —
+the adapters clip a harness message at 1,500 characters — runs to the end and is marked with a
+dashed rail. The conversation panel shows the
+clipped text and offers the marker dialog, which completes it from the source event
+(`/api/event`, the text of a Codex response item or a Claude Code line, `eventText`), as the
+agent card already did for a clipped spawn prompt. The marker text's first line is the adapter's
+ref (the tag it recognised): dropped from the rendering, shown as an eyebrow when the text has
+no wrapper of that name. `index.html` carries a Content-Security-Policy meta (`default-src 'self'`, images `'self'`,
 `data:` and `blob:` — the last for the grain rasters `grain.js` makes in the page — inline styles
 allowed, no inline scripts) as the backstop: a renderer bug cannot become a script or an outbound
 request. `app_test.js` holds the structural invariant (only the
@@ -915,10 +941,22 @@ Three lists over the selected window (main thread exclusive, or every lane; "ins
 only" changes the denominator):
 
 - **Lifecycle stage** — the SDLC stages only, each with its model / tools split (a review hour
-  includes its model time; the Development row never does);
-- **Outside stages** — waiting for user, waiting for workers, compaction, no telemetry, unknown,
-  "Model output, no tool call": inside or between the stages, same denominator, so the two lists
-  add up to the whole;
+  includes its model time; the Development row never does) and, like an activity row, `≈` on
+  its number and the amount in its label when a compound command's equal share (§5.5) landed
+  in it;
+- **Outside stages** — only what the Activity list does not already say, same denominator:
+  "Model output, no tool call"; a wait or compaction row by its *remainder* outside every stage
+  when a turn's stage (a skill run, plan mode, an agent's role, an inherited parent stage —
+  `stageAt` covers every op of the turn) or an overlay pin took the rest of it — the row says how
+  much more the stages hold; and Unknown with its model / tools split when it differs from the
+  Activity row, which it can in both directions (the model output around an unknown command is
+  unknown in this partition, §6.4; a turn's stage takes the command with its turn). Waiting for
+  user, idle time and telemetry gaps are intervals that never take a stage, and a wait,
+  compaction or unknown nothing touched is the same segments as under Activity, so those are
+  not repeated: the stage heading says "waits, gaps and unknown: see Activity" and, when the
+  stages took some of them, how much ("the stages hold 40s of them"), so a wait a stage took
+  whole — no remainder row — is still not read twice. Σ stages + model output + the Activity
+  rows of the non-stage keys − the amount the heading names = elapsed;
 - **Activity** — the phases, with **sub-rows** for Development (reading, searching, editing,
   git, code hosting, network, MCP, shell), Build (compiling & bundling, installing
   dependencies), Waiting for workers (sub-agents, polling, hooks) and Unknown (scripts, tools,

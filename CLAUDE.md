@@ -49,7 +49,10 @@ Pipeline: `source.Multi.Scan` (every source's index) → `Multi.Open` → `sourc
   (`index.html`, `app.js` timeline/breakdown/inspector, `app.css`, `filter.js` the period +
   project + host + source filter shared by the session list and the Insights report (and the
   host chip of a remote row), `settings.js` the folders and the Servers section, `markdown.js` the
-  renderer of recorded messages (a GFM subset, escapes everything, web links only), `model.js`
+  Markdown renderer (a GFM subset, escapes everything, web links only) and `prose()`, the one
+  view of a recorded message, `harness.js` what it renders through (the tags a message carries —
+  a harness message, a `<system-reminder>` inside a prompt — as fields, sections and chips; the
+  text between them through `markdown.js`), `model.js`
   the remote-safe view-model normalization/indexes, and the Show
   raw switch, `grain.js` the surface grain rasterized for a dense screen, `build.js` the reload onto a new
   server build, and `SOURCES` — the source names and marks); `cmd/todobem/app_test.js` — its

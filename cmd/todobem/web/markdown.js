@@ -470,20 +470,30 @@ const Markdown = (() => {
 /* ---------- the prose view ---------- */
 // How the app shows a recorded message: rendered by default, the text as recorded when the Raw
 // view is on. One switch (`state.rawText`) drives every panel and dialog; each carries the
-// same button. Rendered HTML is memoized per text — the conversation panel is drawn again on
-// every zoom step — and forgotten when a session is installed (`resetProse`).
+// same button. Rendering goes through harness.js: the tags a message carries — a harness
+// message's wrapper, the <system-reminder> or <pasted_content> block the harness put inside a
+// user's prompt — become structure, every run of text between them is this renderer's Markdown,
+// and a text without tags is exactly that Markdown. Rendered HTML is memoized per text — the
+// conversation panel is drawn again on every zoom step — and forgotten when a session is
+// installed (`resetProse`).
 const renderedProse = new Map();
 function resetProse() {
   renderedProse.clear();
 }
-// prose is the inner HTML of a prose block for a recorded text
-function prose(text) {
+// prose is the inner HTML of a prose block for a recorded text; ref is a harness marker's ref,
+// its first line, which the view drops (see harness.js)
+function prose(text, ref = '') {
   const t = String(text ?? '');
   if (state.rawText) return esc(t);
-  let html = renderedProse.get(t);
+  const key = `${ref}\n${t}`;
+  let html = renderedProse.get(key);
   if (html === undefined) {
-    html = Markdown.render(t);
-    renderedProse.set(t, html);
+    try {
+      html = Harness.render(t, ref);
+    } catch (e) {
+      html = esc(t); // a renderer fault shows the record, never an empty panel
+    }
+    renderedProse.set(key, html);
   }
   return html;
 }
