@@ -21,6 +21,7 @@ import (
 	"github.com/extractumio/todobem/internal/fleet"
 	"github.com/extractumio/todobem/internal/server"
 	"github.com/extractumio/todobem/internal/settings"
+	"github.com/extractumio/todobem/internal/state"
 	"github.com/extractumio/todobem/internal/store"
 )
 
@@ -29,6 +30,18 @@ var webFS embed.FS
 
 func main() {
 	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "version":
+			os.Exit(runVersion(os.Args[2:]))
+		case "upgrade":
+			os.Exit(runUpgrade(os.Args[2:]))
+		}
+		switch os.Args[1] {
+		case "token", "agent", "hub":
+			if code := gateState(); code != 0 {
+				os.Exit(code)
+			}
+		}
 		switch os.Args[1] {
 		case "token":
 			os.Exit(runToken(os.Args[2:]))
@@ -54,12 +67,12 @@ func main() {
 	cacheDir := flag.String("cache", "", "directory for the parsed-session cache (default ~/.todobem/cache or $TODOBEM_CACHE; \"off\" disables)")
 	authPath := flag.String("auth", auth.DefaultKeyPath(), "auth key file that gates the UI (default ~/.todobem/auth.key or $TODOBEM_AUTH; \"off\" leaves the UI open)")
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "usage: todobem [flags]          serve the UI\n       todobem -agent [flags]   run as an agent for a hub (headless; see docs/AGENT-MODE.md)\n       todobem token [flags]    mint a one-time login link (see: todobem token -h)\n       todobem agent pair       mint a pairing string for the hub (on an agent host)\n       todobem hub <cmd>        add | list | remove | doctor | rotate paired agents (on the hub)\n       todobem cache [flags]    show or prune the parsed-session cache (see: todobem cache -h)\n       todobem unknown [flags]  unmatched commands and telemetry gaps across sessions (see: todobem unknown -h)\n\nflags:\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "usage: todobem [flags]          serve the UI\n       todobem -agent [flags]   run as an agent for a hub (headless; see docs/AGENT-MODE.md)\n       todobem token [flags]    mint a one-time login link (see: todobem token -h)\n       todobem agent pair       mint a pairing string for the hub (on an agent host)\n       todobem hub <cmd>        add | list | remove | doctor | rotate paired agents (on the hub)\n       todobem cache [flags]    show or prune the parsed-session cache (see: todobem cache -h)\n       todobem version [-json]  this build (-json: what `todobem upgrade` reads)\n       todobem upgrade [...]    install a newer release, or roll back (see: todobem upgrade -h)\n       todobem unknown [flags]  unmatched commands and telemetry gaps across sessions (see: todobem unknown -h)\n\nflags:\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
 	if *version {
-		fmt.Println(fleet.VersionLine())
+		fmt.Println(versionLine())
 		return
 	}
 	if *addr == "" {
@@ -88,6 +101,16 @@ func main() {
 	} else if len(loaded) > 0 {
 		fmt.Printf("loaded user rules: %v\n", loaded)
 	}
+
+	// The state gate: migrate state an older release wrote, refuse state a newer one wrote; then
+	// hold the state for as long as this process serves, so a migration or a rollback started
+	// meanwhile stops instead of changing the files underneath.
+	held, rep, err := state.Hold(settings.Dir())
+	if err != nil {
+		log.Fatalf("state: %v", err)
+	}
+	defer held.Close()
+	reportMigration(rep)
 
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {
@@ -369,4 +392,23 @@ func (h sessionHomes) Describe() string {
 		return noun + ": " + strings.Join(homes, ", ")
 	}
 	return fmt.Sprintf("%s · %s (%s)", part("codex home", h.Homes.Codex), part("claude home", h.Homes.Claude), h.source)
+}
+
+// gateState runs the state gate for a command that writes state (a key, the agents file) and
+// returns its exit code: 0 to go on.
+func gateState() int {
+	rep, err := state.Prepare(settings.Dir())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "state:", err)
+		return 1
+	}
+	reportMigration(rep)
+	return 0
+}
+
+// reportMigration names a migration the gate just ran.
+func reportMigration(rep *state.Report) {
+	if rep != nil {
+		fmt.Fprintf(os.Stderr, "state: migrated from schema %d to %d; backup %s (`todobem upgrade rollback` restores it)\n", rep.From, rep.To, filepath.Join(settings.Dir(), rep.Backup))
+	}
 }
