@@ -109,6 +109,9 @@ func TestRelease(t *testing.T) {
 		}
 		p := newHost(t, "previous")
 		p.install(t, *previous)
+		// The previous release's frozen Latest(): GitHub's /releases/latest names it, since this
+		// release is still a prerelease.
+		mustContain(t, p.run(t, 0, p.bin(), "upgrade", "check"), "latest "+*previous)
 		p.product(t, true)
 		before := p.stateFiles(t)
 		out := p.run(t, 0, p.bin(), "upgrade", "-version", *release) // the previous binary's updater
