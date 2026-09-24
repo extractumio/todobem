@@ -6,6 +6,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/extractumio/todobem/internal/buildinfo"
 	"github.com/extractumio/todobem/internal/settings"
 )
 
@@ -37,6 +38,9 @@ func TestBuildHeaderFollowsTheEmbeddedWeb(t *testing.T) {
 		a.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "http://127.0.0.1"+path, nil))
 		if got := w.Header().Get(BuildHeader); got != a.build {
 			t.Fatalf("%s: %s=%q, want %q", path, BuildHeader, got, a.build)
+		}
+		if got := w.Header().Get(VersionHeader); got == "" || got != buildinfo.Current() {
+			t.Fatalf("%s: %s=%q, want %q", path, VersionHeader, got, buildinfo.Current())
 		}
 		cookies := w.Result().Cookies()
 		if path == "/" {

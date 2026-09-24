@@ -920,7 +920,9 @@ later answer carries another one, and that answer is never used (the call never 
 deploy (`scripts/deploy.sh`) replaces the binary under an open tab, and the tab follows on its
 next request — within a poll on the session page, the only page that polls — or as soon as it
 comes back into view (a tab returning asks the gate's state); a restart of the same binary
-never reloads it.
+never reloads it. Every response also carries `X-Todobem-Version` (`buildinfo.Current()`:
+`vX.Y.Z` for a release, `dev-<rev>` otherwise); the page keeps the last one it saw and shows it
+in the sidebar and the footer, so the browser never names a version the binary is not.
 
 Pools: an LRU of 6 parser-backed sessions (`opened`, expensive, refreshed on demand) and a
 separate pool of 32 cache-served read-only models, so browsing history never evicts a live

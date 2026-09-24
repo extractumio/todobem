@@ -1130,14 +1130,20 @@ test('the legend lists only the activities and stages the session has', async ()
   assert.match(legend, /<div class="legend-pipeline" id="legendLifecycle"><span class="row note">No stage recorded/);
 });
 
-// The product version is one literal (APP_VERSION): the sidebar shows it once the app boots, the
-// page footer names it on every page.
-test('the sidebar and the footer show the one product version', async () => {
-  const h = await harness().ready();
-  const version = h.run('APP_VERSION');
-  assert.match(version, /^\d+\.\d+$/);
-  assert.equal(h.node('appVersion').textContent, `todobem / ${version}`);
-  assert.ok(h.node('main').innerHTML.includes(`todobem / ${version}</span></footer>`), 'the footer names the version');
+// The product version is the one the server names (X-Todobem-Version): the sidebar shows it
+// once the app boots, the page footer on every page; a server without the header gets no
+// version rather than a wrong one.
+test('the sidebar and the footer show the version the server runs', async () => {
+  const h = harness();
+  h.take('/api/auth').resolve({ enabled: false, authenticated: true }, 200, { 'X-Todobem-Version': 'v0.1.1' }); await flush();
+  h.take('/api/sessions').resolve([]); await flush();
+  h.take('/api/sessions').resolve([]); await flush();
+  assert.equal(h.node('appVersion').textContent, 'todobem / v0.1.1');
+  assert.ok(h.node('main').innerHTML.includes('todobem / v0.1.1</span></footer>'), 'the footer names the version');
+  assert.equal(h.errors.length, 0);
+  const old = await harness().ready();
+  assert.equal(old.node('appVersion').textContent, 'todobem');
+  assert.ok(old.node('main').innerHTML.includes('· todobem</span></footer>'), 'no header, no version');
 });
 
 // The marks legend under the chart follows the same rule: a row for a glyph only when some lane

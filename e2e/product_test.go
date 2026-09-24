@@ -83,6 +83,18 @@ func (h *host) product(t *testing.T, pair bool) {
 			t.Fatalf("%s: partition %d of elapsed %d", r.ID, sum, sess.Totals.ElapsedMs)
 		}
 	}
+	// The release under test names its version on every answer; the page shows it. (A previous
+	// release, running in E3 before its upgrade, may predate the header.)
+	if v := h.info(t, h.bin()).Version; v == *release {
+		resp, err := c.http.Get(c.base + "/api/auth")
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if got := resp.Header.Get("X-Todobem-Version"); got != v {
+			t.Fatalf("X-Todobem-Version = %q, the binary is %s", got, v)
+		}
+	}
 	var fleet struct {
 		Agents []struct {
 			Name    string `json:"name"`

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/extractumio/todobem/internal/auth"
+	"github.com/extractumio/todobem/internal/buildinfo"
 	"github.com/extractumio/todobem/internal/classify"
 	"github.com/extractumio/todobem/internal/claude"
 	"github.com/extractumio/todobem/internal/codex"
@@ -152,6 +153,7 @@ func (s *Server) Handler(listenAddr ...string) http.Handler {
 			return
 		}
 		w.Header().Set(BuildHeader, s.build)
+		w.Header().Set(VersionHeader, buildinfo.Current())
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			api.ServeHTTP(w, r)
 			return

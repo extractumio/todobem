@@ -12,6 +12,11 @@ import (
 // a deploy replaces the binary under an open tab, and the tab follows without a manual reload.
 const BuildHeader = "X-Todobem-Build"
 
+// VersionHeader names the product version the server runs (internal/buildinfo: a release's
+// vX.Y.Z, dev-<rev> for a build from a clone), on every response too: the page shows it in the
+// sidebar and the footer, so what the browser says is what the binary is.
+const VersionHeader = "X-Todobem-Version"
+
 // buildCookie lets the scripts identify the build of the HTML document itself. Without it, the
 // first API answer after a deploy could make an old document accept a new server as its own.
 const buildCookie = "todobem-page-build"

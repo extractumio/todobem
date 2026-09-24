@@ -14,10 +14,16 @@ const pageBuildCookie = () => {
   }
 };
 let pageBuild = pageBuildCookie();
+// serverVersion is the product version the server names on every answer (X-Todobem-Version:
+// vX.Y.Z for a release, dev-<rev> for a build from a clone); null until one arrives, or from a
+// server that predates the header.
+let serverVersion = null;
 // followBuild reads one answer; true means the page is reloading and the answer must not be
 // used — the caller hands back a promise that never settles, so the old scripts never render
 // a new build's data in the moment before the unload lands.
 function followBuild(r) {
+  const version = r.headers?.get('X-Todobem-Version');
+  if (version) serverVersion = version;
   const build = r.headers?.get('X-Todobem-Build');
   if (!build) return false;
   if (pageBuild === null) {

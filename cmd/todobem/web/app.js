@@ -12,9 +12,9 @@ const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 const sum = a => a.reduce((n, x) => n + x, 0);
 const pad = n => String(n).padStart(2, '0');
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
-// APP_VERSION is the product version the sidebar and the page footer show (the build hash is
-// `todobem -version`); the one literal, bumped on a release.
-const APP_VERSION = '0.2';
+// productName is what the sidebar and the page footer show: the version the server names on its
+// answers (build.js serverVersion), so the page never states a version the binary is not.
+const productName = () => (serverVersion ? `todobem / ${serverVersion}` : 'todobem');
 const MAIN_THREAD = 'main thread';
 const MOTHER_AGENT = 'mother agent';
 const overlap = (s, e, a, b) => Math.max(0, Math.min(e, b) - Math.max(s, a));
@@ -656,7 +656,7 @@ function remoteHosts() {
 function footer() {
   const n = remoteHosts().length;
   const origin = n ? `Local files and ${plural(n, 'paired server')}. Nothing leaves this machine except to them.` : 'Local files only. Nothing leaves this machine.';
-  return `<footer class="page-footer"><span class="row">${icon('shield', true)}${esc(origin)}</span><span>Times shown in ${esc(TZ)} · todobem / ${APP_VERSION}</span></footer>`;
+  return `<footer class="page-footer"><span class="row">${icon('shield', true)}${esc(origin)}</span><span>Times shown in ${esc(TZ)} · ${esc(productName())}</span></footer>`;
 }
 // sidebarOrigin keeps the sidebar's note honest about where the logs come from: its text node
 // changes, the markup stays index.html's.
@@ -1921,13 +1921,13 @@ function tokenFromHash() {
   return m[1];
 }
 async function boot() {
-  const version = $('#appVersion');
-  if (version) version.textContent = `todobem / ${APP_VERSION}`;
   try {
     const st = await api('/api/auth');
     state.authEnabled = !!st.enabled;
     $('#lockBtn').hidden = !state.authEnabled;
   } catch (e) { if (!(e instanceof AuthError)) console.warn(e); }
+  const version = $('#appVersion');
+  if (version) version.textContent = productName();
   restoreFleetFilter();
   const applied = await loadSessions();
   if (!applied) return;
